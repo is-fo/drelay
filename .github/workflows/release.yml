@@ -1,0 +1,196 @@
+name: release
+
+# Publishing happens on a version tag. The tag has to match the version in
+# src/main/resources/drelay.properties, because that is the version the jar reports and the version
+# the auto-updater compares against - a mismatch would either make an update invisible or make the
+# same release install itself forever.
+#
+# The workflow can also be started by hand. With `publish` left false it builds and uploads the jar
+# as a workflow artifact and changes nothing else, which is the way to check a release candidate.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release for the tag
+        type: boolean
+        default: false
+      tag:
+        description: Tag to build (required when publishing from a branch)
+        type: string
+        required: false
+
+permissions:
+  contents: write        # create the release
+  id-token: write        # attest the build provenance
+  attestations: write
+
+jobs:
+  version:
+    name: check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Read and check the version
+        id: read
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version=//p' src/main/resources/drelay.properties | tr -d '[:space:]')"
+          if [ -z "$version" ]; then
+            echo "no version= line in src/main/resources/drelay.properties"
+            exit 1
+          fi
+          # A prerelease version (1.1.0-rc1) is still published, but as a GitHub prerelease, which
+          # keeps it out of /releases/latest: a user's auto-updater therefore only ever sees a
+          # finished version, while anyone who wants the candidate can download it by tag.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "version '$version' is not a semantic version (major.minor.patch, optionally -prerelease)"
+            exit 1
+          fi
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "this build is drelay $version, tagged $tag"
+
+          # The Maven version is a second copy of the same fact, and a release whose jar and pom
+          # disagree is exactly the kind of drift that is invisible until someone tries to use it.
+          pom="$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' pom.xml | head -n 1)"
+          if [ "$pom" != "$version" ]; then
+            echo "pom.xml says $pom but drelay.properties says $version; bump both"
+            exit 1
+          fi
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          expected="v${{ steps.read.outputs.version }}"
+          actual="${GITHUB_REF_NAME}"
+          if [ "$expected" != "$actual" ]; then
+            echo "the tag is $actual but drelay.properties says $expected"
+            echo "bump src/main/resources/drelay.properties, commit, re-tag"
+            exit 1
+          fi
+
+  build:
+    name: build the jar
+    needs: version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build
+        run: mvn --batch-mode --no-transfer-progress clean package
+
+      - name: Verify the jar
+        run: |
+          set -euo pipefail
+          test -f target/drelay.jar
+          java -jar target/drelay.jar --version
+          java -jar target/drelay.jar --help > /dev/null
+          for entry in relay-routes.json tools/Set-AddressClaim.ps1 tools/Restore-HostsFile.ps1; do
+            unzip -l target/drelay.jar "$entry" > /dev/null || { echo "missing from the jar: $entry"; exit 1; }
+          done
+          if unzip -l target/drelay.jar | grep -E 'Tests\.class'; then
+            echo "test classes must not be packaged: they live in src/test/java"
+            exit 1
+          fi
+          echo "jar size: $(du -h target/drelay.jar | cut -f1)"
+
+      - name: Run the offline checks
+        run: |
+          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests; do
+            echo "== networking.$check"
+            java -cp "target/classes:target/test-classes" "networking.$check"
+          done
+
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/drelay.jar dist/drelay.jar
+          cd dist
+          # The same format the launcher parses, and the same file name it fetches from the release.
+          sha256sum drelay.jar > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/drelay.jar
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-files
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish the release
+    needs: [version, build]
+    if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download the release files
+        uses: actions/download-artifact@v8
+        with:
+          name: release-files
+          path: dist
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Written with printf rather than a heredoc: YAML indents the whole block, and stripping that
+          # indentation afterwards would also strip the indentation inside the fenced code examples.
+          {
+            printf '**Download `drelay.jar` and run it.** It needs Java 25 or newer and nothing else:\n\n'
+            printf '```powershell\njava -jar drelay.jar\n```\n\n'
+            printf 'Windows will ask for administrator rights, because claiming the game server addresses\n'
+            printf 'on the loopback interface needs them. The launcher then extracts the files it ships,\n'
+            printf 'refreshes the server addresses, claims them, starts the relay and opens the dashboard at\n'
+            printf '<http://127.0.0.1:8765/>. Ctrl+C in that window stops it and gives the claims back.\n\n'
+            printf 'Already running an older version? It updates itself on the next start, checking the\n'
+            printf 'download against `SHA256SUMS.txt` before it replaces anything.\n\n'
+            printf 'This release is also signed with a build provenance attestation:\n\n'
+            printf '```powershell\ngh attestation verify drelay.jar --repo %s\n```\n' "${REPOSITORY}"
+          } > notes.md
+          cat notes.md
+
+      - name: Verify the checksum file before publishing
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag || needs.version.outputs.tag }}
+          name: drelay ${{ needs.version.outputs.version }}
+          body_path: notes.md
+          files: |
+            dist/drelay.jar
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}

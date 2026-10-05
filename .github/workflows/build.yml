@@ -1,0 +1,74 @@
+name: build
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+# Nothing here writes to the repository, so the token needs no more than read access. A pull
+# request from a fork gets even less, which is the point.
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The project targets Java 25 (IO.println, virtual threads). 25 is the minimum, and building
+      # on exactly the minimum is what keeps an accidental use of a JDK 26 API from reaching a user.
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build the release jar
+        run: mvn --batch-mode --no-transfer-progress clean package
+
+      # The checks are standalone main classes, not a JUnit suite, so Surefire does not run them:
+      # they are invoked explicitly here, exactly as build.ps1 does locally.
+      - name: Run the offline checks
+        run: |
+          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests; do
+            echo "== networking.$check"
+            java -cp "target/classes:target/test-classes" "networking.$check"
+          done
+
+      # These checks are about the packaged artifact rather than the sources: a jar whose manifest
+      # names the wrong entry point, or that is missing the files the launcher extracts, or that
+      # carries test classes it should not, builds perfectly and fails for every user.
+      - name: Check the jar is runnable
+        run: |
+          java -jar target/drelay.jar --version
+          java -jar target/drelay.jar --help > /dev/null
+          echo "the version in the jar must match drelay.properties"
+          java -jar target/drelay.jar --version | grep -F "$(sed -n 's/^version=//p' src/main/resources/drelay.properties)"
+
+      - name: Check the jar contains what the launcher extracts
+        run: |
+          for entry in relay-routes.json tools/Set-AddressClaim.ps1 tools/Restore-HostsFile.ps1 drelay.properties; do
+            unzip -l target/drelay.jar "$entry" > /dev/null || { echo "missing from the jar: $entry"; exit 1; }
+          done
+
+      - name: Check the jar carries no test classes
+        run: |
+          if unzip -l target/drelay.jar | grep -E 'Tests\.class'; then
+            echo "test classes must not be packaged: they live in src/test/java"
+            exit 1
+          fi
+          echo "no test classes in the jar"
+
+      - name: Upload the jar
+        uses: actions/upload-artifact@v7
+        with:
+          name: drelay-jar
+          path: target/drelay.jar
+          if-no-files-found: error
