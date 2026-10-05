@@ -5,13 +5,72 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>org.isak</groupId>
-    <artifactId>DRelay</artifactId>
-    <version>1.0</version>
+    <artifactId>drelay</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>drelay</name>
+    <description>Local TCP relay and packet inspector for Darza's Dominion</description>
 
     <properties>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
+        <!-- JDK 25 is the minimum: the code uses IO.println (JEP 512) and implicit classes. -->
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+        <!-- The launcher jar. Fixed name so the auto-updater can swap it in place. -->
+        <jar.name>drelay</jar.name>
+        <main.class>networking.Launcher</main.class>
     </properties>
 
+    <build>
+        <!-- The jar is the release artifact, so name it predictably: target/drelay.jar. -->
+        <finalName>${jar.name}</finalName>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.14.0</version>
+                <configuration>
+                    <release>${maven.compiler.release}</release>
+                    <compilerArgs>
+                        <arg>-Xlint:all,-serial</arg>
+                    </compilerArgs>
+                </configuration>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <version>3.4.2</version>
+                <configuration>
+                    <archive>
+                        <manifest>
+                            <mainClass>${main.class}</mainClass>
+                            <addDefaultImplementationEntries>true</addDefaultImplementationEntries>
+                        </manifest>
+                        <manifestEntries>
+                            <Implementation-Version>${project.version}</Implementation-Version>
+                            <Automatic-Module-Name>drelay</Automatic-Module-Name>
+                        </manifestEntries>
+                    </archive>
+                </configuration>
+            </plugin>
+
+            <!-- The offline checks are plain main classes rather than a JUnit suite: they run without a
+                 test framework, and `java -cp target/classes;target/test-classes networking.FrameTests`
+                 is exactly how a developer runs one of them by hand. That makes Surefire the wrong
+                 runner for them, so it is configured to keep out of the way and the checks are run
+                 explicitly by build.ps1 and by the CI workflow. Surefire would otherwise report a
+                 build that ran zero tests as a success, which is a worse failure mode than not using
+                 it at all. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
