@@ -375,7 +375,115 @@ reason string.
 
 ---
 
-## 5. Running the verification
+## 5. Changing a packet the server sent
+
+Everything above *adds* bytes to the client→server stream. This section is the one feature that
+changes bytes the server wrote, and it exists for exactly one effect.
+
+### 5.1 Why it exists
+
+`StatusEffect.Confused` — "Scrambles core movement controls" — is applied **client-side only**. The
+server states the effect; the client is the one that swaps the movement axes; and nothing in the
+client expires the effect on a timer. So the only way for a session not to be affected by it is for
+the client never to learn about it.
+
+It matters. In the 2026-10-05 session the character died at 10% HP with `Confused` and `Slowed`
+active, under a boss that re-applied the debuff every few hundred milliseconds for the last 1.5
+seconds of the fight.
+
+### 5.2 Where the effect is on the wire
+
+`StatsType.StatusEffects` (78) inside a `GmUpdate` (id 1), with `DataType 8`:
+
+```
+u8 count, then count × 9 bytes:  [i32 Effect][u8 Tier][f32 Duration]   (all little-endian)
+```
+
+Effect ordinal 11 is `Confused`. Walking all 26,278 `GmUpdate` packets of that session decodes every
+one to its exact byte length and finds the legacy `StatsType.Confused` (68) **never** used, so this
+list is the only channel.
+
+### 5.3 Why not just shorten the duration
+
+Because it does nothing, and it looks like it should work. The client's only status model is
+`Entity.Effects.EffectData`, which every server list **replaces wholesale**
+(`StatusEffects.UpdateEffects`: `EffectData = statusEffects`). "Do I have this effect" is answered by
+`ContainsEffect`, which scans the array comparing `Effect == effect` and never reads `Duration`.
+`StatusEffectInstance`'s equality is a hash of `Effect`, `Tier` and `Id` — not `Duration` — and the
+client's own ticking status model (`DarzaGameNet.Packets.Status`) is never instantiated anywhere in
+the shipped client, so nothing decrements it locally. An entry of zero seconds and an entry of five
+seconds are the same entry.
+
+### 5.4 How the strip works, and what it refuses to do
+
+`networking.packets.UpdateScan` walks the payload and reports the *offsets* of each status list;
+`networking.packets.ConfusedStrip` cuts the nine bytes out and rebuilds the payload. `Relay.pump`
+re-frames it with the session's own detected length byte order. Three properties are load-bearing:
+
+- **the walk must land on the exact last byte.** A walk that "mostly" worked yields offsets that are
+  wrong by a few bytes, and a rewrite built on them desynchronises the session — a failure that looks
+  like a server problem hours later, with nothing in the log pointing at the cause. `UpdateScan.walk`
+  returns `false` for anything it cannot account for, and `ConfusedStrip` refuses a payload it cannot
+  re-read after rewriting.
+- **only one object is touched.** Whose list gets rewritten is `networking.PlayerLocator`, which
+  derives the local player's object id from `GmHealthUpdate`: the object whose `Hp`/`Health` stat
+  equals a reading that just arrived on this connection is the player. The exact marker
+  (`StatsType.OwnCharacterId`, 183) exists but is sent only on the full dumps at world entry and at
+  the death transition — nine times in four hours — which is too late to be useful on its own, so it
+  is used as a confirmation when it appears. A world that cannot be resolved is left alone, and every
+  resolution is logged.
+- **the log keeps the original.** The packet event is emitted before the rewrite, so `events-*.jsonl`
+  still shows what the server actually said; the rewrite is a separate `note` event carrying the
+  object id, the byte counts and both payloads.
+
+### 5.5 Turning it on
+
+Off by default: it is a gameplay change, not an observability one, and the relay should not rewrite
+what a server said unless a run asked it to.
+
+```powershell
+# the route table (see the "strip" block in relay-routes.json)
+"strip": { "confused": true, "effect": 11, "minVotes": 3 }
+
+# or one run, no file edits:
+java -jar drelay.jar -Ddrelay.strip.confused=true
+```
+
+`effect` is the `StatusEffect` ordinal to remove (11 is `Confused`; the enum is in the decompiled
+client, and the ordinals do not change). `minVotes` is how many health readings an object must match
+before the relay believes it is the local player — raising it makes a mis-identification less likely
+and the feature slower to arm.
+
+Two things to know before a live run:
+
+- **the server keeps sending it.** The client's copy is replaced by every list the server sends, so
+  the strip must fire on every occurrence, and it will. What it cannot do is stop the server applying
+  the effect to its own model; if anything server-side ever depends on the player being confused, this
+  is where that would show up.
+- **a crowded world can mis-identify the player.** In a fifteen-player fight, several characters can
+  be at the same health as the operator at the same moment. Replaying the capture resolves the right
+  object in every session and every world checked against the `OwnCharacterId` marker, but one busy
+  world in that capture stayed ambiguous. The blast radius is bounded — one other object loses one
+  effect — and the log names the object it acted on, so it is visible rather than silent.
+
+### 5.6 Verification
+
+`tools/tests/test_strip_confused.py` drives a real relay against a fake server and asserts that the
+strip is off by default, that it removes only the local player's entry (leaving another object's in
+the same packet alone), that the packet is exactly nine bytes shorter, that the framing survives a
+following packet, and that the log says what happened. The offline suite
+(`networking.UpdateScanTests`) pins the walk against every `DataType`, refuses truncated payloads, and
+includes one real captured packet — `seq 331827` of the 2026-10-05 session, the `GmUpdate` that
+carried `Confused` 100 ms after that character died.
+
+`work/` holds the capture-level tooling used to establish all of this: `live_stat_ids.py` (every stat
+id in a run, with a complete walk), `scan_events_status.py` (effect ordinals and durations),
+`live_player_id.py` (player identification margins per world), `make_replay.py` plus
+`networking.CaptureReplay` (replays a capture through the real Java walker, locator and strip).
+
+---
+
+## 6. Running the verification
 
 ```powershell
 # build (javac and jar, no Maven needed) and run the Java checks with it
@@ -386,10 +494,12 @@ java -cp "target\classes;target\test-classes" networking.PrimitiveTests     # pr
 java -cp "target\classes;target\test-classes" networking.FrameTests         # framing, both byte orders
 java -cp "target\classes;target\test-classes" networking.InjectionTests     # injected bytes, the state gate, the rule, the write lock
 java -cp "target\classes;target\test-classes" networking.ClientPacketsTests # the client's clock field in Move/Shoot/ActivateObject
+java -cp "target\classes;target\test-classes" networking.UpdateScanTests      # the GmUpdate walk, the strip, the player locator
 python tools\tests\test_relay.py                     # byte-exact forwarding
 python tools\tests\test_relay_little_endian.py       # both length orders end to end
 python tools\tests\test_reconnect_log.py             # a retarget is decoded and learned
 python tools\tests\test_auto_nexus.py                # the whole auto-nexus chain against a fake server
+python tools\tests\test_strip_confused.py            # a server->client rewrite: off by default, narrow, re-framed
 python tools\tests\test_dashboard.py                 # the page parses; every endpoint it reads has the right shape
 python tools\tests\test_relay_stress.py              # both directions under concurrent load: no torn frames,
                                                      # monotonic event log, ring cursor skips nothing

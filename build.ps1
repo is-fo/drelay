@@ -146,7 +146,8 @@ if (-not $SkipTests) {
         Write-Step 'running the offline checks...'
         $testClasspath = "$classes;$testClasses"
         foreach ($main in 'networking.PrimitiveTests', 'networking.FrameTests',
-                          'networking.ClientPacketsTests', 'networking.InjectionTests') {
+                          'networking.ClientPacketsTests', 'networking.InjectionTests',
+                          'networking.UpdateScanTests') {
             & java -cp $testClasspath $main
             if ($LASTEXITCODE -ne 0) { Write-Bad "$main failed"; exit 1 }
         }

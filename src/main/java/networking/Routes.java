@@ -86,6 +86,8 @@ final class Routes {
         String webHost;
         /** Passed through verbatim: the relay owns these keys and the dashboard edits them live. */
         Json autoNexus;
+        /** Passed through verbatim for the same reason: the relay owns these, the launcher does not. */
+        Json strip;
     }
 
     /** What a refresh changed, so the launcher can report it in one line. */
@@ -193,6 +195,10 @@ final class Routes {
         // autoNexus is passed through untouched: the relay owns those keys and the launcher has no
         // business rewriting settings the dashboard can change live.
         document.autoNexus = values.get("autoNexus");
+        // Same treatment for the server->client rewrite settings. Dropping them here would be a
+        // silent behaviour change on the next start: the launcher regenerates this file every run,
+        // so a key it does not carry is a key the operator's edit loses.
+        document.strip = values.get("strip");
         if (values.get("routes") instanceof JArr routes) {
             for (Json entry : routes.values()) {
                 if (!(entry instanceof JObj routeObject)) {
@@ -433,6 +439,7 @@ final class Routes {
         out.append("    \"port\": ").append(defaultInt(document.webPort, 8765)).append("\n");
         out.append("  },\n");
         out.append("  \"autoNexus\": ").append(renderJson(document.autoNexus, 2)).append(",\n");
+        out.append("  \"strip\": ").append(renderJson(document.strip, 2)).append(",\n");
         out.append("  \"routes\": [\n");
         for (int i = 0; i < document.routes.size(); i++) {
             Route route = document.routes.get(i);

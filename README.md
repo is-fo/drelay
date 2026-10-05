@@ -118,6 +118,7 @@ Any `-Ddrelay.*` property reaches the relay, so settings can be changed for one 
 java -jar drelay.jar -Ddrelay.web.port=0                  # no dashboard
 java -jar drelay.jar -Ddrelay.log.dir=D:\drelay-logs      # logs elsewhere
 java -jar drelay.jar -Ddrelay.nexus.enabled=true -Ddrelay.nexus.dryRun=true
+java -jar drelay.jar -Ddrelay.strip.confused=true         # remove the Confused debuff from this client
 ```
 
 ### Updates
@@ -128,10 +129,10 @@ check. `--check-update` reports without installing.
 
 ### Configuration
 
-`relay-routes.json` holds the routes, the log and dashboard settings, and the auto-nexus rule. Its
-`_comment` block documents every key in place. The addresses for the `Game` and `Queue` routes are
-refreshed from the game's own API and from DNS on every start; an address may be pinned by removing
-its `refresh` key.
+`relay-routes.json` holds the routes, the log and dashboard settings, the auto-nexus rule, and the
+server→client `strip` block. Its `_comment` block documents every key in place. The addresses for the
+`Game` and `Queue` routes are refreshed from the game's own API and from DNS on every start; an
+address may be pinned by removing its `refresh` key.
 
 The launcher keeps three files straight, and only the middle one is what the relay actually reads:
 
@@ -164,6 +165,11 @@ run when switched on: [docs/AUTONEXUS-GUIDE.md](docs/AUTONEXUS-GUIDE.md) is the 
 [docs/AUTONEXUS.md](docs/AUTONEXUS.md) is how it works. It is reactive — it reads the server's own
 health packet, it does not predict damage.
 
+The `strip` block is the one setting that changes bytes the server sent: it removes a status effect
+(`Confused` by default) from this client's status lists, because that effect is applied client-side
+and never expires on a timer. Off by default; [docs/INJECTION.md](docs/INJECTION.md) §5 has the wire
+format, the reason a shortened duration does nothing, and what it refuses to rewrite.
+
 ---
 
 ## How it works
@@ -188,8 +194,8 @@ Modules:
 
 | Package | Role |
 |---|---|
-| `networking` | `Launcher` (entry point), `Relay` (listeners and forwarding), `Session`, `AutoNexus` |
-| `networking.packets` | packet codecs and the registry, plus the injection primitive |
+| `networking` | `Launcher` (entry point), `Relay` (listeners and forwarding), `Session`, `AutoNexus`, `PlayerLocator` |
+| `networking.packets` | packet codecs and the registry, the injection primitive, `UpdateScan` (the `GmUpdate` walk), `ConfusedStrip` |
 | `networking.log` | the structured event log |
 | `networking.web` | the dashboard |
 | `networking.util` | JSON writing, preferences, field decoding |
@@ -217,12 +223,14 @@ java -cp "target\classes;target\test-classes" networking.PrimitiveTests      # p
 java -cp "target\classes;target\test-classes" networking.FrameTests          # framing, both byte orders
 java -cp "target\classes;target\test-classes" networking.ClientPacketsTests  # the client clock field
 java -cp "target\classes;target\test-classes" networking.InjectionTests      # injected bytes, gates, write lock
+java -cp "target\classes;target\test-classes" networking.UpdateScanTests     # the GmUpdate walk, the strip, the player locator
 
 python tools\tests\test_relay.py                   # framing, byte-exact both directions
 python tools\tests\test_relay_little_endian.py     # both length orders end to end
 python tools\tests\test_relay_stress.py            # both directions under concurrent load
 python tools\tests\test_reconnect_log.py           # a GmReconnect retarget is decoded and learned
 python tools\tests\test_auto_nexus.py              # the auto-nexus chain against a fake game server
+python tools\tests\test_strip_confused.py          # a server->client rewrite, against a fake game server
 python tools\tests\test_dashboard.py               # the page parses; the endpoints have the right shape
 python tools\tests\test_relay_live.py              # the relay in front of the real server
 python tools\verify_packet_ids.py                  # packet ids against the client's own enums

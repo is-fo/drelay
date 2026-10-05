@@ -56,7 +56,19 @@
     "        it starts in dry run even when switched on. Every key here is also settable as",
     "        -Ddrelay.nexus.<key> and live from the dashboard, and every change is recorded in the",
     "        event log. See docs/INJECTION.md for why this is reactive rather than a damage",
-    "        predictor, and for what to check on a first live run."
+    "        predictor, and for what to check on a first live run.",
+    "strip : server->client rewrites. OFF by default, and the only setting here that changes bytes",
+    "        the server sent rather than adding bytes of the relay's own. `confused` removes",
+    "        StatusEffect 11 from the local player's StatsType.StatusEffects list, which is the only",
+    "        channel that effect ever arrives on; the client applies it purely locally and never",
+    "        expires it on a timer, so shortening the duration does nothing and removing the entry is",
+    "        the only thing that works. `effect` is the ordinal to remove (11 = Confused), and",
+    "        `minVotes` is how many health readings an object must match before the relay believes it",
+    "        is the local player - raising it makes a mis-identification less likely and makes the",
+    "        feature slower to arm. Also settable as -Ddrelay.strip.confused / .effect / .minVotes.",
+    "        This is a gameplay change, not an observability one: see docs/INJECTION.md.",
+    "        NOTE: the client's own copy of the list is replaced wholesale by every list the server",
+    "        sends, so this must strip every occurrence, and the server will keep sending them."
   ],
   "listenHost": "0.0.0.0",
   "upstreamBindPort": 0,
@@ -78,6 +90,11 @@
     "rearmPercent": 0,
     "useCastChannel": false,
     "castMillis": 2000
+  },
+  "strip": {
+    "confused": false,
+    "effect": 11,
+    "minVotes": 3
   },
   "routes": [
     {

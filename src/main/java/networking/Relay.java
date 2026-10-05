@@ -179,6 +179,22 @@ public final class Relay {
         // the log as session notes so a later analysis knows which settings produced a run.
 
         final AutoNexus.Config nexus = new AutoNexus.Config();
+
+        // --- server->client rewrites --------------------------------------------------------
+        //
+        // Off by default, and the only setting here that changes bytes the server sent rather than
+        // adding bytes of our own. It exists because one status effect (Confused) is applied purely
+        // client-side: the server states it, the client obeys it, and nothing in the client expires
+        // it locally. Removing the entry is therefore the only way to not be affected by it, and it
+        // is a gameplay change, not an observability one - hence a separate switch that a run has to
+        // ask for. See ConfusedStrip for the wire format and the measurements behind it.
+
+        /** Remove {@code StatusEffect.Confused} from the local player's status lists. */
+        boolean stripConfused;
+        /** Which {@code StatusEffect} ordinal to remove. */
+        int stripEffect = networking.packets.ConfusedStrip.CONFUSED;
+        /** Health continuations an object needs before it is believed to be the local player. */
+        int stripMinVotes = 3;
     }
 
     /** Serializes upstream dials when {@link Config#upstreamBindPort} is pinned. */
@@ -380,6 +396,18 @@ public final class Relay {
         if (nexus instanceof JObj nexusObj) {
             applyNexusConfig(cfg.nexus, nexusObj.values());
         }
+        Json strip = obj.get("strip");
+        if (strip instanceof JObj stripObj) {
+            cfg.stripConfused = stripObj.bool("confused", cfg.stripConfused);
+            Json effect = stripObj.get("effect");
+            if (effect != null && effect.asInt() >= 0) {
+                cfg.stripEffect = effect.asInt();
+            }
+            Json minVotes = stripObj.get("minVotes");
+            if (minVotes != null && minVotes.asInt() > 0) {
+                cfg.stripMinVotes = minVotes.asInt();
+            }
+        }
 
         // System properties and environment variables win over the file: a launcher script knows
         // things the checked-in JSON does not, and this is the only way to flip the master switch
@@ -389,6 +417,9 @@ public final class Relay {
         cfg.logMaxBytes = Prefs.longValue("drelay.log.maxBytes", "DRELAY_LOG_MAX_BYTES", cfg.logMaxBytes);
         cfg.webHost = Prefs.string("drelay.web.host", "DRELAY_WEB_HOST", cfg.webHost);
         cfg.webPort = Prefs.integer("drelay.web.port", "DRELAY_WEB_PORT", cfg.webPort);
+        cfg.stripConfused = Prefs.flag("drelay.strip.confused", "DRELAY_STRIP_CONFUSED", cfg.stripConfused);
+        cfg.stripEffect = Prefs.integer("drelay.strip.effect", "DRELAY_STRIP_EFFECT", cfg.stripEffect);
+        cfg.stripMinVotes = Prefs.integer("drelay.strip.minVotes", "DRELAY_STRIP_MIN_VOTES", cfg.stripMinVotes);
 
         Map<String, Object> nexusOverrides = new java.util.LinkedHashMap<>();
         putIfSet(nexusOverrides, "enabled", System.getProperty("drelay.nexus.enabled"), System.getenv("DRELAY_NEXUS_ENABLED"));
@@ -499,6 +530,13 @@ public final class Relay {
                 cfg.nexus.dryRun ? "dry run (writes nothing)" : "LIVE (injects Escape)",
                 cfg.nexus.maxPerWorld,
                 cfg.nexus.minIntervalMillis));
+        // Printed unconditionally: "off" has to be as visible as "on", because the whole feature is
+        // silent when it cannot name the local player and a run that never rewrote anything looks
+        // exactly like a run where the debuff never arrived.
+        IO.println(cfg.stripConfused
+                ? "  strip: removing StatusEffect %d from the local player's status lists (needs %d matching health readings)"
+                        .formatted(cfg.stripEffect, cfg.stripMinVotes)
+                : "  strip: disabled (server->client payloads are forwarded verbatim)");
         if (cfg.logDirectory != null) {
             IO.println("  event log: %s".formatted(Path.of(cfg.logDirectory, "events-" + log.runId() + ".jsonl").toAbsolutePath()));
         }
@@ -945,7 +983,8 @@ public final class Relay {
             var framing = new SessionState(route.endianness());
 
             session = new Session(id, tag, route.name(), route.isQueue(), route.listenPort(),
-                    clientAddr, host + ":" + port, registry.log(), nexus);
+                    clientAddr, host + ":" + port, registry.log(), nexus,
+                    new PlayerLocator(cfg.stripMinVotes));
             session.upstreamWriter(serverOut);
             registry.register(session);
             session.onConnected();
@@ -1034,6 +1073,14 @@ public final class Relay {
                     }
                 }
 
+                byte[] rewritten = (cfg.stripConfused && Event.DIR_S2C.equals(dir))
+                        ? rewriteServerPacket(world, route.name(), payload, cfg, registry)
+                        : null;
+                if (rewritten != null) {
+                    payload = rewritten;
+                    payloadLength = rewritten.length;
+                }
+
                 // The same monitor the injection path takes. Both directions of a session therefore
                 // serialize on their own writer, which is what keeps a length prefix and its payload
                 // contiguous and an injected message from landing inside a forwarded one.
@@ -1049,6 +1096,75 @@ public final class Relay {
             registry.log().emitNote(world.tag(), dir + " closed (peer hung up)", null);
         } catch (Exception e) {
             registry.log().emitError(world.tag(), dir + " stream error: " + explain(e));
+        }
+    }
+
+    /**
+     * The one place this relay changes bytes the server sent.
+     *
+     * <p>Called after the packet has been logged, so the packet event in {@code events-*.jsonl} still
+     * carries what the server actually said and the rewrite is a separate, attributable event. It is
+     * also the last thing that happens before the frame is written, because dropping a status entry
+     * shortens the payload: the 4-byte length prefix has to agree with the new length or every later
+     * packet in the session desynchronises. {@code pump} re-frames the returned array with this
+     * session's detected byte order, so the rewritten frame is framed exactly like the one it
+     * replaces.
+     *
+     * <p>Everything here is off unless a run asked for it ({@code cfg.stripConfused}), and nothing
+     * here can end a session: a payload it does not understand, a player it cannot name, or any
+     * exception at all leaves the original bytes forwardable, which is what the caller falls back to.
+     *
+     * @return the replacement payload, or {@code null} to forward the original unchanged
+     */
+    private static byte[] rewriteServerPacket(Session world, String routeName, byte[] payload,
+                                              Config cfg, SessionRegistry registry) {
+        if ("Queue".equalsIgnoreCase(routeName) || payload.length < 2) {
+            return null;
+        }
+        // The id is the payload's first field, little-endian; anything that is not a GmUpdate has no
+        // status list to find.
+        if ((payload[0] & 0xFF) != (networking.packets.UpdateScan.UPDATE_ID & 0xFF)
+                || (payload[1] & 0xFF) != 0) {
+            return null;
+        }
+        try {
+            world.player.observe(payload, System.currentTimeMillis());
+            // Reported once per world: the whole feature is silent when it cannot name the local
+            // player, and a silent no-op is exactly what a first live run has to be able to tell
+            // apart from "the debuff never arrived".
+            int resolved = world.player.takeNewlyResolved();
+            if (resolved > 0) {
+                registry.log().emitNote(world.tag(),
+                        "local player object resolved to %d: %s".formatted(
+                                resolved, world.player.explain()), null);
+            }
+            int playerId = world.player.playerId();
+            if (playerId < 0) {
+                return null;
+            }
+            networking.packets.ConfusedStrip.Result stripped =
+                    networking.packets.ConfusedStrip.strip(payload, playerId, cfg.stripEffect);
+            if (stripped == null) {
+                return null;
+            }
+            registry.log().emit(Event.builder(Event.KIND_NOTE)
+                    .session(world.tag())
+                    .note("stripped %d status effect(s) %d from object %d: %d -> %d bytes"
+                            .formatted(stripped.removed(), cfg.stripEffect, playerId,
+                                    payload.length, stripped.payload().length))
+                    .put("stripped", stripped.removed())
+                    .put("lists", stripped.lists())
+                    .put("effect", cfg.stripEffect)
+                    .put("objectId", playerId)
+                    .put("bytesBefore", payload.length)
+                    .put("bytesAfter", stripped.payload().length)
+                    .put("hexBefore", EventLog.hex(payload))
+                    .put("hexAfter", EventLog.hex(stripped.payload())));
+            return stripped.payload();
+        } catch (Exception e) {
+            registry.log().emitError(world.tag(),
+                    "server->client strip failed (forwarding the original): " + explain(e));
+            return null;
         }
     }
 

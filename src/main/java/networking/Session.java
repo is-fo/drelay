@@ -148,8 +148,18 @@ public final class Session {
     /** The escape/nexus bookkeeping; see {@link AutoNexus}. */
     public final AutoNexus nexus;
 
+    /**
+     * Which object in this session's {@code GmUpdate} stream is the local player.
+     *
+     * <p>Owned by the session because its answers are only valid inside one world: a {@code MapInfo}
+     * renumbers every object, and {@link #onWorldEntry} throws the previous world's tally away. A
+     * server→client rewriter needs this id to know whose status list it is allowed to touch, and
+     * {@link PlayerLocator} explains why the id has to be derived rather than read.
+     */
+    public final PlayerLocator player;
+
     public Session(long id, String tag, String routeName, boolean queue, int listenPort, String clientAddress,
-                   String destination, EventLog log, AutoNexus nexus) {
+                   String destination, EventLog log, AutoNexus nexus, PlayerLocator player) {
         this.id = id;
         this.tag = tag;
         this.routeName = routeName;
@@ -159,8 +169,23 @@ public final class Session {
         this.destination = destination;
         this.log = log;
         this.nexus = nexus;
+        this.player = player;
         this.startedWallMillis = System.currentTimeMillis();
         this.startedMonoMillis = networking.log.LogClock.monoMillis();
+    }
+
+    /**
+     * A session whose player locator can never answer.
+     *
+     * <p>For callers with no server→client game traffic to learn from: the offline checks, and any
+     * future use of a session that is not a game connection. The threshold is unreachable by
+     * construction, so {@link PlayerLocator#playerId()} returns {@code -1} forever and a rewriter
+     * that depends on it does nothing - which is the correct behaviour here, not a degraded one.
+     */
+    public Session(long id, String tag, String routeName, boolean queue, int listenPort, String clientAddress,
+                   String destination, EventLog log, AutoNexus nexus) {
+        this(id, tag, routeName, queue, listenPort, clientAddress, destination, log, nexus,
+                new PlayerLocator(Integer.MAX_VALUE));
     }
 
     public String tag() {
@@ -402,6 +427,10 @@ public final class Session {
             safeArea = false;
             casting = false;
         }
+        // A world entry renumbers every object, so the previous world's answer to "which one is me"
+        // is not stale - it is a different character's id in this world. Cleared before the event is
+        // emitted so the log line and the state agree.
+        player.onWorldEntry();
         event.put("phase", Phase.IN_WORLD.name())
                 .put("injectionReady", true)
                 .put("note", "world entered; injection armed, world state cleared")
@@ -424,6 +453,9 @@ public final class Session {
             healthSamples++;
             healthSnapshot = new HealthSnapshot(lastHealthWallMillis, max, health, shield, barrier);
         }
+        // The one packet that is unambiguously about this client's own character. Every other way of
+        // naming the local player is either absent or too late; see PlayerLocator.
+        player.onHealth(health, System.currentTimeMillis());
         event.putAll(decoded)
                 .put("hpPercent", hpPercent())
                 .put("effectivePercent", effectivePercent());
