@@ -3,13 +3,14 @@ out/
 !**/src/main/**/out/
 !**/src/test/**/out/
 .kotlin
+.idea/
 
 ### Eclipse ###
 .apt_generated
 .classpath
 .factorypath
 .project
-.settings
+.settings/
 .springBeans
 .sts4-cache
 bin/
@@ -28,5 +29,34 @@ bin/
 
 ### Mac OS ###
 .DS_Store
-# Project exclude paths
+
+### Build output ###
 /target/
+/dist/
+*.class
+
+### Local runtime state ###
+# The relay's own working directory: per-run event logs, the generated route table, the install
+# manifest, the dashboard's port hint and the claims a running relay learned. All regenerable.
+/work/
+/logs/
+
+# Written next to the jar by the launcher. Both are artifacts: relay-routes.json is extracted from
+# the bundled template, and drelay.jar is the build output of build.ps1 or Maven. (The template
+# itself lives in src/main/resources/, which these root-anchored rules do not match.)
+/relay-routes.json
+/drelay.jar
+/drelay-*.jar
+/drelay-update.log
+
+### Local tool installs and scratch analysis (regenerable, never published) ###
+/.tools/
+/.dnscan/
+
+### Game binaries and decompiled client source (third-party; not ours to publish) ###
+/binaries/
+/decomp/
+*.dll
+*.exe
+*.nupkg
+*.zip

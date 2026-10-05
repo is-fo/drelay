@@ -1,0 +1,20 @@
+# Line endings are pinned, not left to each machine's core.autocrlf.
+#
+# This matters beyond tidiness: the launcher ships relay-routes.json and the two PowerShell helpers
+# inside the jar and records a SHA-256 of each one in work/install-manifest.txt. If a checkout on
+# Windows rewrote those files to CRLF while the released jar carried LF, the same release would hash
+# differently on two machines, and the "has the user edited this file?" check would start answering
+# wrongly - the failure mode being a silently overwritten route table.
+#
+# LF everywhere. PowerShell, javac and the JVM all read LF on Windows without complaint, and the
+# pinned ending means the jar built from a Windows checkout is byte-identical to the one built in CI.
+* text=auto eol=lf
+
+# Binary formats that must never be touched.
+*.jar   binary
+*.jks   binary
+*.png   binary
+*.ico   binary
+*.zip   binary
+*.dll   binary
+*.exe   binary
