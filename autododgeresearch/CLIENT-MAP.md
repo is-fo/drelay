@@ -3341,22 +3341,37 @@ private bool HitCharacter()
 
 ## Appendix B: open-question shortlist, in experiment order
 
-If only five things get measured, measure these, in this order:
+**Already done** (do not redo): the constant pools are decrypted and the armour coefficient and
+movement-speed questions are closed (Sec 3.7, Sec 6.2, Sec 9.4); the server-trusts-the-client
+question is answered on live traffic (Sec 10.1).
 
-1. ~~**Dump the constant array** (10.2(a)).~~ **DONE** by a sibling agent: the four pools are
-   decrypted and verified against eight known packet ids (`work/_pool.bin`, `work/_pooldecode.py`,
-   `autododgeresearch/tools/poolresolve.py`). The armour coefficients and the movement law are now
-   exact (Sec 3.7, Sec 6.2, Sec 9.4). What remains from this bucket is only the handful of values not
-   yet looked up: the boomerang divisor, `hehe(16)` (the radius halving), `hehe(110)`, `hehe(119)`,
-   `hehe(45)`, `hehe(752)`, and the `StatusEffect` id -> name map. Re-run `poolresolve.py` restricted
-   to those indices.
-2. **Drop one `GmHit`** and watch `GmHealthUpdate` (10.1). Decides the entire architecture.
-3. **Log `LogicElapsedSec` / `ElapsedSec` / `Total` for 600 frames** (10.8). Confirms the dt semantics
-   the movement gate depends on, and settles the Sec 1.4 anomaly.
-4. **Count projectile-bearing layers** (10.6). Decides whether the per-frame scan is O(projectiles) or
-   O(all objects).
-5. **Confirm `Radius == 0.5 * Size * Affix.ProjectileSize * QualitySize`** (10.7). This is half the
-   collision predicate.
+Ranked list of what is actually still open:
+
+1. **The inverse of 10.1 - does the server *also* simulate?** Patch `Client.SendPacket` to drop
+   exactly one outbound `GmHit` (`PlayerProj = false`) and confirm no HP fall follows within ~2 s.
+   This is the only remaining architectural question, and it decides whether hit-report suppression is
+   a viable actuation primitive at all.
+2. **Which layer live projectiles occupy** (10.6). Count `World.Objects` entries `is Projectile` versus
+   `World.GameObjectLayer.Children` / `FlatGroundLayer.Children` at a frame tick. Decides whether the
+   per-frame threat scan is O(projectiles) or O(all objects) - i.e. whether the hook's budget is fine
+   or the whole design needs a spatial index.
+3. **AoE / bomb damage** (10.16). Currently *not read at all*: `AoeBomb.cs`, `Objects/Aoes*`,
+   `Entity.HitBy(AoeData)` (`Entity.cs:2203`). Bombs detonate on a timer rather than by collision, so
+   the collision-based threat model in Sec 3.4 misses a whole damage channel. **This is the largest
+   actual coverage hole in this document.**
+4. **`WallBouncePath`** (10.11). Without it, bouncing projectiles are not predictable. Read
+   `work/decomp/DarzaCore.Data/WallBouncePath.cs` and reproduce `Projectile.StepWallBounce`
+   (`Projectile.cs:1822`).
+5. **The LCG and the boomerang divisor** (10.4, 10.5). Both are prediction-*accuracy* items: the LCG
+   seeds spawn offsets and the `Wavy` phase, and the boomerang divisor sets the turnaround range.
+   Partly static (`poolresolve.py` for the divisor, read `LinearCongruentialGenerator.cs` for the LCG).
+6. **Confirm the radius halving** (10.7). One `poolresolve.py` call, or one live read of
+   `Projectile.Radius / Desc.Size`.
+7. **The remaining literal indices** (10.2b) - the escape timings, `hehe(110)`, `hehe(119)`,
+   `hehe(45)`, `hehe(752)`, and the `StatusEffect` id -> name map. All static, all cheap.
+8. **What actually times attack cadence** (10.8), now that `LogicElapsedSec` is known to be a residual.
+9. **Units-per-tile** (Sec 4.3 residual) - only needed if a budget is quoted in pixels; the prediction
+   itself should stay in tiles.
 
 ## Appendix C: files in this deliverable
 
@@ -3365,7 +3380,7 @@ If only five things get measured, measure these, in this order:
 | `autododgeresearch/CLIENT-MAP.md` | this document |
 | `autododgeresearch/tools/g.py` | bounded grep-with-context helper used to locate every targeted region of `World.cs` and the other large files. Usage: `python g.py <file> <regex> [--ctx N] [--max M] [--range A B] [--sig] [--lit]` |
 | `autododgeresearch/tools/il_constants.py` | resolves obfuscated literal *values* from `il/client-5.8.2.il`. Usage: `python il_constants.py <il_file> <index> [--after K]` or `python il_constants.py <il_file> --find "<substring>" --window N` |
-| `autododgeresearch/il/client-5.8.2.il` | 89 MB `ilspycmd -il` dump of Darwin's Dominion 5.8.2, produced by a sibling agent in this workspace. **This is the file that lets a constant be read without decrypting the pool**, because the IL shows the instruction sequence around each `hehe(int32)` call. |
+| `autododgeresearch/il/client-5.8.2.il` | 89 MB `ilspycmd -il` dump of Darza's Dominion 5.8.2, produced by a sibling agent in this workspace. **This is the file that lets a constant be read without decrypting the pool**, because the IL shows the instruction sequence around each `hehe(int32)` call. |
 | `autododgeresearch/tools/poolresolve.py`, `work/_pool.bin`, `work/_pooldecode.py` | pre-existing (sibling/parent work): the decrypted constant pools and the resolver that maps a call site to its pool. Cited in Sec 9.4. |
 | `autododgeresearch/tools/_projhit_raw.txt`, `_numbers.txt`, `_rtt_raw.txt`, `_cadence_raw.txt`, `_deaths_raw.txt` | live captured-traffic measurement outputs produced by sibling agents. Cited as **[live]** in Sec 3.5 and Sec 10.1. |
 
