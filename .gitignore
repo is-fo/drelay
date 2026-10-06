@@ -60,3 +60,17 @@ bin/
 *.exe
 *.nupkg
 *.zip
+
+### Generated research inputs ###
+# The full IL dump of the game assembly is an 85 MB artifact regenerated from the installed
+# build with ilspycmd; it is third-party content and is never published. The small tools and the
+# raw measurement outputs beside it ARE tracked, because they are the evidence behind the reports.
+/autododgeresearch/il/
+__pycache__/
+*.pyc
+
+### Subagent scratch directories ###
+# Research agents download reference sources (e.g. JNA jars and sources) into a scratch
+# directory. It is regenerable and never published; the distilled findings live in
+# autododgeresearch/.
+/.research/

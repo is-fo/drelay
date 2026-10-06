@@ -1,0 +1,2710 @@
+==============================================================================
+SOURCE A: work\replay.txt
+==============================================================================
+record kinds: {'H': 17870, 'W': 67, 'U': 26278}
+sessions: {'Game#2': 21, 'Game_Slave#3': 1178, 'Game#4': 183, 'Game_Slave#5': 950, 'Game#6': 93, 'Game_Slave#7': 7597, 'Game#8': 11, 'Game_Slave#9': 1407, 'Game#10': 2918, 'Game_Slave#11': 4327, 'Game#12': 23, 'Game_Slave#13': 7578, 'Game#15': 43, 'Game_Slave#16': 250, 'Game#17': 13, 'Game_Slave#18': 3866, 'Game#19': 589, 'Game_Slave#20': 3133, 'Game#21': 148, 'Game_Slave#22': 74, 'Game#23': 55, 'Game_Slave#24': 1712, 'Game#25': 20, 'Game_Slave#26': 4894, 'Game#27': 207, 'Game_Slave#28': 1411, 'Game#29': 15, 'Game_Slave#30': 793, 'Game#31': 706}
+sanity: first health reading per session = Game#10:526, Game#12:528, Game#15:538, Game#17:538, Game#19:9999, Game#2:375, Game#21:685, Game#23:685, Game#25:153, Game#27:445, Game#29:484, Game#31:9999
+
+-- session Game#10: 852 readings 1339635..1745330 (405695 ms span), 1 world marks
+   inter-arrival (all, incl. world changes)  (n=851)
+    min    0.0 ms
+    p10    148.0 ms
+    p25    150.0 ms
+    median 151.0 ms
+    p75    200.0 ms
+    p90    299.0 ms
+    p99    10049.5 ms
+    max    44850.0 ms
+    mean   476.7 ms
+    stdev  2289.9 ms
+   inter-arrival (within one world)  (n=851)
+    min    0.0 ms
+    p10    148.0 ms
+    p25    150.0 ms
+    median 151.0 ms
+    p75    200.0 ms
+    p90    299.0 ms
+    p99    10049.5 ms
+    max    44850.0 ms
+    mean   476.7 ms
+    stdev  2289.9 ms
+   drops: 4; largest single-reading drop 70 HP = 11.55% of max 606
+     from reading @1596913 ms hp=606 -> @1596913 ms hp=536 (gap 0 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#11: 2305 readings 1755701..2164015 (408314 ms span), 5 world marks
+   inter-arrival (all, incl. world changes)  (n=2304)
+    min    0.0 ms
+    p10    1.0 ms
+    p25    48.0 ms
+    median 52.0 ms
+    p75    98.0 ms
+    p90    104.0 ms
+    p99    1578.5 ms
+    max    68026.0 ms
+    mean   177.2 ms
+    stdev  1747.7 ms
+   inter-arrival (within one world)  (n=2300)
+    min    0.0 ms
+    p10    1.0 ms
+    p25    48.0 ms
+    median 52.0 ms
+    p75    98.0 ms
+    p90    104.0 ms
+    p99    689.0 ms
+    max    17938.0 ms
+    mean   134.6 ms
+    stdev  810.2 ms
+   drops: 133; largest single-reading drop 140 HP = 23.03% of max 608
+     from reading @1923796 ms hp=528 -> @1991822 ms hp=388 (gap 68026 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#13: 2296 readings 2170525..3197535 (1027010 ms span), 5 world marks
+   inter-arrival (all, incl. world changes)  (n=2295)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    249.0 ms
+    p99    8824.9 ms
+    max    165591.0 ms
+    mean   447.5 ms
+    stdev  5050.1 ms
+   inter-arrival (within one world)  (n=2292)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    249.0 ms
+    p99    7676.6 ms
+    max    84750.0 ms
+    mean   333.4 ms
+    stdev  3088.6 ms
+   drops: 51; largest single-reading drop 234 HP = 36.68% of max 638
+     from reading @2400724 ms hp=528 -> @2400724 ms hp=294 (gap 0 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#16: 150 readings 12564437..12584936 (20499 ms span), 1 world marks
+   inter-arrival (all, incl. world changes)  (n=149)
+    min    2.0 ms
+    p10    9.2 ms
+    p25    48.0 ms
+    median 50.0 ms
+    p75    55.0 ms
+    p90    100.0 ms
+    p99    106.1 ms
+    max    12204.0 ms
+    mean   137.6 ms
+    stdev  992.2 ms
+   inter-arrival (within one world)  (n=149)
+    min    2.0 ms
+    p10    9.2 ms
+    p25    48.0 ms
+    median 50.0 ms
+    p75    55.0 ms
+    p90    100.0 ms
+    p99    106.1 ms
+    max    12204.0 ms
+    mean   137.6 ms
+    stdev  992.2 ms
+   drops: 24; largest single-reading drop 20 HP = 3.72% of max 538
+     from reading @12564437 ms hp=538 -> @12576641 ms hp=518 (gap 12204 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#18: 2007 readings 12589388..12960426 (371038 ms span), 4 world marks
+   inter-arrival (all, incl. world changes)  (n=2006)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    99.0 ms
+    p90    101.0 ms
+    p99    1287.0 ms
+    max    38552.0 ms
+    mean   185.0 ms
+    stdev  1515.5 ms
+   inter-arrival (within one world)  (n=2003)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    99.0 ms
+    p90    101.0 ms
+    p99    753.9 ms
+    max    28449.0 ms
+    mean   145.5 ms
+    stdev  1030.0 ms
+   drops: 44; largest single-reading drop 193 HP = 1.93% of max 9999
+     from reading @12914775 ms hp=538 -> @12914775 ms hp=345 (gap 0 ms)
+   readings at hp<=0: 1
+
+-- session Game_Slave#20: 1838 readings 13084499..13344956 (260457 ms span), 2 world marks
+   inter-arrival (all, incl. world changes)  (n=1837)
+    min    0.0 ms
+    p10    43.0 ms
+    p25    48.0 ms
+    median 50.0 ms
+    p75    53.0 ms
+    p90    101.0 ms
+    p99    3340.6 ms
+    max    22559.0 ms
+    mean   141.8 ms
+    stdev  883.0 ms
+   inter-arrival (within one world)  (n=1835)
+    min    0.0 ms
+    p10    43.0 ms
+    p25    48.0 ms
+    median 50.0 ms
+    p75    53.0 ms
+    p90    101.0 ms
+    p99    2846.6 ms
+    max    22559.0 ms
+    mean   136.4 ms
+    stdev  854.8 ms
+   drops: 69; largest single-reading drop 175 HP = 20.35% of max 860
+     from reading @13308037 ms hp=860 -> @13308037 ms hp=685 (gap 0 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#22: 38 readings 13376246..13383947 (7701 ms span), 1 world marks
+   inter-arrival (all, incl. world changes)  (n=37)
+    min    69.0 ms
+    p10    98.0 ms
+    p25    99.0 ms
+    median 148.0 ms
+    p75    150.0 ms
+    p90    162.2 ms
+    p99    2033.4 ms
+    max    2951.0 ms
+    mean   208.1 ms
+    stdev  460.3 ms
+   inter-arrival (within one world)  (n=36)
+    min    69.0 ms
+    p10    98.0 ms
+    p25    99.0 ms
+    median 124.5 ms
+    p75    150.0 ms
+    p90    154.5 ms
+    p99    1981.5 ms
+    max    2951.0 ms
+    mean   202.8 ms
+    stdev  465.5 ms
+   readings at hp<=0: 0
+
+-- session Game_Slave#24: 690 readings 13397050..13602290 (205240 ms span), 2 world marks
+   inter-arrival (all, incl. world changes)  (n=689)
+    min    0.0 ms
+    p10    1.0 ms
+    p25    55.0 ms
+    median 145.0 ms
+    p75    150.0 ms
+    p90    153.0 ms
+    p99    5073.1 ms
+    max    43346.0 ms
+    mean   297.9 ms
+    stdev  2083.5 ms
+   inter-arrival (within one world)  (n=687)
+    min    0.0 ms
+    p10    1.0 ms
+    p25    55.0 ms
+    median 145.0 ms
+    p75    150.0 ms
+    p90    153.0 ms
+    p99    3060.4 ms
+    max    43346.0 ms
+    mean   237.8 ms
+    stdev  1757.8 ms
+   drops: 185; largest single-reading drop 9 HP = 5.88% of max 153
+     from reading @13426747 ms hp=132 -> @13450385 ms hp=123 (gap 23638 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#26: 1919 readings 13608195..14205629 (597434 ms span), 5 world marks
+   inter-arrival (all, incl. world changes)  (n=1918)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    98.0 ms
+    median 100.0 ms
+    p75    149.0 ms
+    p90    151.0 ms
+    p99    7286.7 ms
+    max    26149.0 ms
+    mean   311.5 ms
+    stdev  1529.1 ms
+   inter-arrival (within one world)  (n=1914)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    98.0 ms
+    median 100.0 ms
+    p75    149.0 ms
+    p90    151.0 ms
+    p99    5636.7 ms
+    max    26149.0 ms
+    mean   280.5 ms
+    stdev  1354.9 ms
+   drops: 306; largest single-reading drop 100 HP = 22.47% of max 445
+     from reading @14194129 ms hp=445 -> @14205029 ms hp=345 (gap 10900 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#28: 397 readings 14249513..14452808 (203295 ms span), 1 world marks
+   inter-arrival (all, incl. world changes)  (n=396)
+    min    1.0 ms
+    p10    48.0 ms
+    p25    51.0 ms
+    median 98.0 ms
+    p75    101.0 ms
+    p90    103.0 ms
+    p99    10298.8 ms
+    max    99045.0 ms
+    mean   513.4 ms
+    stdev  5265.2 ms
+   inter-arrival (within one world)  (n=396)
+    min    1.0 ms
+    p10    48.0 ms
+    p25    51.0 ms
+    median 98.0 ms
+    p75    101.0 ms
+    p90    103.0 ms
+    p99    10298.8 ms
+    max    99045.0 ms
+    mean   513.4 ms
+    stdev  5265.2 ms
+   drops: 13; largest single-reading drop 132 HP = 27.27% of max 484
+     from reading @14412308 ms hp=484 -> @14423911 ms hp=352 (gap 11603 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#3: 710 readings 48201..143012 (94811 ms span), 2 world marks
+   inter-arrival (all, incl. world changes)  (n=709)
+    min    0.0 ms
+    p10    98.8 ms
+    p25    99.0 ms
+    median 100.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    106.8 ms
+    max    22860.0 ms
+    mean   133.7 ms
+    stdev  868.7 ms
+   inter-arrival (within one world)  (n=708)
+    min    0.0 ms
+    p10    98.7 ms
+    p25    99.0 ms
+    median 100.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    104.0 ms
+    max    4299.0 ms
+    mean   101.6 ms
+    stdev  158.6 ms
+   drops: 15; largest single-reading drop 198 HP = 52.80% of max 375
+     from reading @136012 ms hp=361 -> @136061 ms hp=163 (gap 49 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#30: 314 readings 14457561..14554685 (97124 ms span), 2 world marks
+   inter-arrival (all, incl. world changes)  (n=313)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    50.0 ms
+    median 98.0 ms
+    p75    101.0 ms
+    p90    102.0 ms
+    p99    7035.0 ms
+    max    31002.0 ms
+    mean   310.3 ms
+    stdev  1970.5 ms
+   inter-arrival (within one world)  (n=312)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    50.0 ms
+    median 98.0 ms
+    p75    101.0 ms
+    p90    102.0 ms
+    p99    6041.8 ms
+    max    10206.0 ms
+    mean   211.9 ms
+    stdev  930.9 ms
+   drops: 14; largest single-reading drop 201 HP = 2.01% of max 9999
+     from reading @14553586 ms hp=466 -> @14553634 ms hp=265 (gap 48 ms)
+   readings at hp<=0: 1
+
+-- session Game_Slave#5: 373 readings 181537..298194 (116657 ms span), 2 world marks
+   inter-arrival (all, incl. world changes)  (n=372)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    50.0 ms
+    median 95.5 ms
+    p75    102.0 ms
+    p90    108.9 ms
+    p99    6324.3 ms
+    max    31891.0 ms
+    mean   313.6 ms
+    stdev  2018.8 ms
+   inter-arrival (within one world)  (n=371)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    50.0 ms
+    median 95.0 ms
+    p75    101.5 ms
+    p90    108.0 ms
+    p99    5547.6 ms
+    max    31891.0 ms
+    mean   291.8 ms
+    stdev  1977.2 ms
+   drops: 78; largest single-reading drop 45 HP = 11.36% of max 396
+     from reading @181537 ms hp=375 -> @213428 ms hp=330 (gap 31891 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#7: 3156 readings 318417..1213775 (895358 ms span), 9 world marks
+   inter-arrival (all, incl. world changes)  (n=3155)
+    min    0.0 ms
+    p10    46.0 ms
+    p25    50.0 ms
+    median 54.0 ms
+    p75    100.0 ms
+    p90    102.0 ms
+    p99    3320.3 ms
+    max    163299.0 ms
+    mean   283.8 ms
+    stdev  3681.4 ms
+   inter-arrival (within one world)  (n=3146)
+    min    0.0 ms
+    p10    46.0 ms
+    p25    50.0 ms
+    median 54.0 ms
+    p75    100.0 ms
+    p90    102.0 ms
+    p99    2060.0 ms
+    max    69800.0 ms
+    mean   179.3 ms
+    stdev  1541.4 ms
+   drops: 297; largest single-reading drop 125 HP = 22.28% of max 561
+     from reading @1142624 ms hp=526 -> @1159973 ms hp=401 (gap 17349 ms)
+   readings at hp<=0: 0
+
+-- session Game_Slave#9: 807 readings 1217794..1338839 (121045 ms span), 2 world marks
+   inter-arrival (all, incl. world changes)  (n=806)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 57.0 ms
+    p75    101.0 ms
+    p90    180.5 ms
+    p99    2240.8 ms
+    max    12396.0 ms
+    mean   150.2 ms
+    stdev  649.4 ms
+   inter-arrival (within one world)  (n=805)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 57.0 ms
+    p75    101.0 ms
+    p90    176.4 ms
+    p99    1025.8 ms
+    max    12396.0 ms
+    mean   141.2 ms
+    stdev  598.3 ms
+   drops: 60; largest single-reading drop 125 HP = 23.67% of max 528
+     from reading @1289586 ms hp=524 -> @1289638 ms hp=399 (gap 52 ms)
+   readings at hp<=0: 0
+
+ALL SESSIONS COMBINED, within-world inter-arrival  (n=17805)
+    min    0.0 ms
+    p10    46.0 ms
+    p25    50.0 ms
+    median 58.0 ms
+    p75    101.0 ms
+    p90    151.0 ms
+    p99    3545.4 ms
+    max    99045.0 ms
+    mean   217.7 ms
+    stdev  1801.2 ms
+DROP SIZES as % of max HP (all sessions, all drops)  (n=1293)
+    min    0.1 %
+    p10    0.2 %
+    p25    0.4 %
+    median 0.9 %
+    p75    2.6 %
+    p90    8.0 %
+    p99    22.5 %
+    max    52.8 %
+    mean   2.8 %
+    stdev  4.5 %
+
+  10 largest single-reading drops anywhere in replay.txt:
+     52.80%  Game_Slave#3   136012 hp=361 -> 136061 hp=163 (gap 49 ms)
+     36.68%  Game_Slave#13  2400724 hp=528 -> 2400724 hp=294 (gap 0 ms)
+     27.27%  Game_Slave#28  14450356 hp=406 -> 14450406 hp=274 (gap 50 ms)
+     27.27%  Game_Slave#28  14434655 hp=484 -> 14445956 hp=352 (gap 11301 ms)
+     27.27%  Game_Slave#28  14412308 hp=484 -> 14423911 hp=352 (gap 11603 ms)
+     23.67%  Game_Slave#9   1289586 hp=524 -> 1289638 hp=399 (gap 52 ms)
+     23.51%  Game_Slave#13  2879590 hp=538 -> 2879590 hp=388 (gap 0 ms)
+     23.47%  Game_Slave#3   142812 hp=193 -> 142912 hp=105 (gap 100 ms)
+     23.03%  Game_Slave#11  2163763 hp=306 -> 2163814 hp=166 (gap 51 ms)
+     23.03%  Game_Slave#11  2162806 hp=432 -> 2162858 hp=292 (gap 52 ms)
+
+==============================================================================
+HISTOGRAM: work/replay.txt, within-world HealthUpdate gaps
+==============================================================================
+         0 ms :    848    4.8%
+      1-10 ms :    398    2.2%
+     11-45 ms :    403    2.3%
+     46-55 ms :   7155   40.2%
+     56-70 ms :    268    1.5%
+     71-95 ms :    398    2.2%
+    96-105 ms :   5336   30.0%
+   106-150 ms :   1182    6.6%
+   151-210 ms :    784    4.4%
+   211-400 ms :    659    3.7%
+      >400 ms :    374    2.1%
+  total       : 17805
+
+==============================================================================
+SOURCE B: work/logs/events-*.jsonl  (relay-recorded sessions)
+==============================================================================
+
+--- events-20261004-233831-4300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-233840-1100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234229-200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234230-6500.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234238-6000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234239-5100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234310-2800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234321-1100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234325-2900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234326-8100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234334-6100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234818-6900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234819-2900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234827-8200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234836-3600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234934-1000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234934-3800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234935-8200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234936-3200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-234949-8000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235304-900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235305-1700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235314-1100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235322-6700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235335-800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235440-1500.jsonl : 2915 HealthUpdate readings, 4 injections
+
+  session Game_Slave#11: 194 readings, 1421718..1447034 ms, 1 world entries
+     inter-arrival (all)  (n=193)
+    min    3.0 ms
+    p10    43.4 ms
+    p25    49.0 ms
+    median 54.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    104.0 ms
+    max    12198.0 ms
+    mean   131.2 ms
+    stdev  871.4 ms
+     drops: 31; largest single-reading drop 20 HP = 2.8% of max 707
+       from 1421718 ms hp=707 -> 1433916 ms hp=687 (gap 12198 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#14: 455 readings, 1501068..1577218 ms, 3 world entries
+     inter-arrival (all)  (n=454)
+    min    0.0 ms
+    p10    3.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    102.0 ms
+    p99    1598.0 ms
+    max    15899.0 ms
+    mean   167.7 ms
+    stdev  1037.6 ms
+     inter-arrival (within a world)  (n=452)
+    min    0.0 ms
+    p10    3.0 ms
+    p25    49.0 ms
+    median 50.5 ms
+    p75    100.0 ms
+    p90    101.9 ms
+    p99    325.5 ms
+    max    15899.0 ms
+    mean   144.2 ms
+    stdev  908.9 ms
+     drops: 114; largest single-reading drop 47 HP = 6.6% of max 712
+       from 1537871 ms hp=707 -> 1538271 ms hp=660 (gap 400 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#17: 159 readings, 1756570..1772271 ms, 1 world entries
+     inter-arrival (all)  (n=158)
+    min    3.0 ms
+    p10    5.0 ms
+    p25    48.0 ms
+    median 53.0 ms
+    p75    99.0 ms
+    p90    101.0 ms
+    p99    113.0 ms
+    max    5348.0 ms
+    mean   99.4 ms
+    stdev  420.2 ms
+     drops: 30; largest single-reading drop 20 HP = 2.8% of max 712
+       from 1756570 ms hp=712 -> 1761918 ms hp=692 (gap 5348 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#20: 29 readings, 1808220..1821772 ms, 1 world entries
+     inter-arrival (all)  (n=28)
+    min    4.0 ms
+    p10    5.0 ms
+    p25    47.8 ms
+    median 92.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    8570.2 ms
+    max    11699.0 ms
+    mean   484.0 ms
+    stdev  2158.6 ms
+     inter-arrival (within a world)  (n=27)
+    min    4.0 ms
+    p10    5.0 ms
+    p25    47.5 ms
+    median 87.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    108.4 ms
+    max    111.0 ms
+    mean   68.6 ms
+    stdev  35.2 ms
+     drops: 5; largest single-reading drop 20 HP = 2.8% of max 712
+       from 1820322 ms hp=707 -> 1820369 ms hp=687 (gap 47 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#3: 293 readings, 6899..37170 ms, 1 world entries
+     inter-arrival (all)  (n=292)
+    min    1.0 ms
+    p10    48.0 ms
+    p25    49.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    106.2 ms
+    max    10168.0 ms
+    mean   103.7 ms
+    stdev  590.7 ms
+     inter-arrival (within a world)  (n=291)
+    min    1.0 ms
+    p10    48.0 ms
+    p25    49.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    104.2 ms
+    max    228.0 ms
+    mean   69.1 ms
+    stdev  29.8 ms
+     drops: 44; largest single-reading drop 20 HP = 2.8% of max 707
+       from 6899 ms hp=707 -> 17067 ms hp=687 (gap 10168 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#5: 419 readings, 46501..140351 ms, 1 world entries
+     inter-arrival (all)  (n=418)
+    min    0.0 ms
+    p10    3.7 ms
+    p25    50.0 ms
+    median 98.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    103.8 ms
+    max    55550.0 ms
+    mean   224.5 ms
+    stdev  2742.5 ms
+     drops: 53; largest single-reading drop 20 HP = 2.8% of max 707
+       from 55550 ms hp=701 -> 55650 ms hp=681 (gap 100 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#9: 1357 readings, 1244716..1402971 ms, 1 world entries
+     inter-arrival (all)  (n=1356)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 97.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    114.0 ms
+    max    32150.0 ms
+    mean   116.7 ms
+    stdev  955.3 ms
+     inter-arrival (within a world)  (n=1355)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 97.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    114.0 ms
+    max    32150.0 ms
+    mean   107.5 ms
+    stdev  893.4 ms
+     drops: 71; largest single-reading drop 100 HP = 14.1% of max 707
+       from 1322466 ms hp=807 -> 1322466 ms hp=707 (gap 0 ms)
+     readings at hp<=0 (death): 0
+
+  ALL SESSIONS COMBINED, within-world inter-arrival  (n=2894)
+    min    0.0 ms
+    p10    47.0 ms
+    p25    50.0 ms
+    median 63.5 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    200.0 ms
+    max    55550.0 ms
+    mean   127.0 ms
+    stdev  1285.1 ms
+  INJECT Game_Slave#11 @1447116 ms  Escape  injected Escape (auto-nexus at 32% hp)
+  INJECT Game_Slave#14 @1577317 ms  Escape  injected Escape (auto-nexus at 33% hp)
+  INJECT Game_Slave#17 @1772321 ms  EscapeCastState  injected EscapeCastState (channelled escape, casting=true)
+  INJECT Game_Slave#17 @1774323 ms  Escape  injected Escape (auto-nexus at 34% hp)
+  CheckPing->CheckPingAck session Game#10: n=8
+     RTT (CheckPing->CheckPingAck)  (n=8)
+    min    192.0 ms
+    p10    208.8 ms
+    p25    219.0 ms
+    median 238.0 ms
+    p75    240.8 ms
+    p90    243.9 ms
+    p99    245.8 ms
+    max    246.0 ms
+    mean   229.1 ms
+    stdev  17.3 ms
+  CheckPing->CheckPingAck session Game#13: n=2
+     RTT (CheckPing->CheckPingAck)  (n=2)
+    min    203.0 ms
+    p10    211.1 ms
+    p25    223.2 ms
+    median 243.5 ms
+    p75    263.8 ms
+    p90    275.9 ms
+    p99    283.2 ms
+    max    284.0 ms
+    mean   243.5 ms
+    stdev  40.5 ms
+  CheckPing->CheckPingAck session Game#16: n=2
+     RTT (CheckPing->CheckPingAck)  (n=2)
+    min    281.0 ms
+    p10    287.5 ms
+    p25    297.2 ms
+    median 313.5 ms
+    p75    329.8 ms
+    p90    339.5 ms
+    p99    345.4 ms
+    max    346.0 ms
+    mean   313.5 ms
+    stdev  32.5 ms
+  CheckPing->CheckPingAck session Game#19: n=3
+     RTT (CheckPing->CheckPingAck)  (n=3)
+    min    207.0 ms
+    p10    207.6 ms
+    p25    208.5 ms
+    median 210.0 ms
+    p75    281.0 ms
+    p90    323.6 ms
+    p99    349.2 ms
+    max    352.0 ms
+    mean   256.3 ms
+    stdev  67.7 ms
+  CheckPing->CheckPingAck session Game#2: n=3
+     RTT (CheckPing->CheckPingAck)  (n=3)
+    min    251.0 ms
+    p10    254.2 ms
+    p25    259.0 ms
+    median 267.0 ms
+    p75    286.0 ms
+    p90    297.4 ms
+    p99    304.2 ms
+    max    305.0 ms
+    mean   274.3 ms
+    stdev  22.6 ms
+  CheckPing->CheckPingAck session Game#21: n=29
+     RTT (CheckPing->CheckPingAck)  (n=29)
+    min    185.0 ms
+    p10    188.4 ms
+    p25    198.0 ms
+    median 244.0 ms
+    p75    277.0 ms
+    p90    334.8 ms
+    p99    353.0 ms
+    max    355.0 ms
+    mean   246.6 ms
+    stdev  54.8 ms
+  CheckPing->CheckPingAck session Game#4: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    202.0 ms
+    p10    205.6 ms
+    p25    211.0 ms
+    median 257.0 ms
+    p75    305.2 ms
+    p90    314.7 ms
+    p99    320.4 ms
+    max    321.0 ms
+    mean   259.2 ms
+    stdev  52.0 ms
+  CheckPing->CheckPingAck session Game#6: n=10
+     RTT (CheckPing->CheckPingAck)  (n=10)
+    min    180.0 ms
+    p10    186.3 ms
+    p25    226.0 ms
+    median 235.0 ms
+    p75    243.5 ms
+    p90    274.7 ms
+    p99    369.5 ms
+    max    380.0 ms
+    mean   242.0 ms
+    stdev  51.9 ms
+  CheckPing->CheckPingAck session Game#8: n=3
+     RTT (CheckPing->CheckPingAck)  (n=3)
+    min    196.0 ms
+    p10    202.0 ms
+    p25    211.0 ms
+    median 226.0 ms
+    p75    255.0 ms
+    p90    272.4 ms
+    p99    282.8 ms
+    max    284.0 ms
+    mean   235.3 ms
+    stdev  36.5 ms
+  CheckPing->CheckPingAck session Game_Slave#11: n=12
+     RTT (CheckPing->CheckPingAck)  (n=12)
+    min    42.0 ms
+    p10    44.1 ms
+    p25    45.8 ms
+    median 58.0 ms
+    p75    80.5 ms
+    p90    87.7 ms
+    p99    92.5 ms
+    max    93.0 ms
+    mean   62.6 ms
+    stdev  18.3 ms
+  CheckPing->CheckPingAck session Game_Slave#14: n=38
+     RTT (CheckPing->CheckPingAck)  (n=38)
+    min    40.0 ms
+    p10    47.7 ms
+    p25    52.2 ms
+    median 61.5 ms
+    p75    72.8 ms
+    p90    87.2 ms
+    p99    115.2 ms
+    max    117.0 ms
+    mean   65.6 ms
+    stdev  17.3 ms
+  CheckPing->CheckPingAck session Game_Slave#17: n=8
+     RTT (CheckPing->CheckPingAck)  (n=8)
+    min    56.0 ms
+    p10    60.2 ms
+    p25    63.5 ms
+    median 69.0 ms
+    p75    75.8 ms
+    p90    85.5 ms
+    p99    88.7 ms
+    max    89.0 ms
+    mean   70.8 ms
+    stdev  10.4 ms
+  CheckPing->CheckPingAck session Game_Slave#20: n=7
+     RTT (CheckPing->CheckPingAck)  (n=7)
+    min    35.0 ms
+    p10    38.0 ms
+    p25    42.5 ms
+    median 52.0 ms
+    p75    59.0 ms
+    p90    86.0 ms
+    p99    118.4 ms
+    max    122.0 ms
+    mean   58.9 ms
+    stdev  27.2 ms
+  CheckPing->CheckPingAck session Game_Slave#3: n=15
+     RTT (CheckPing->CheckPingAck)  (n=15)
+    min    187.0 ms
+    p10    191.6 ms
+    p25    199.5 ms
+    median 219.0 ms
+    p75    271.0 ms
+    p90    282.4 ms
+    p99    301.5 ms
+    max    304.0 ms
+    mean   234.4 ms
+    stdev  37.8 ms
+  CheckPing->CheckPingAck session Game_Slave#5: n=47
+     RTT (CheckPing->CheckPingAck)  (n=47)
+    min    34.0 ms
+    p10    47.6 ms
+    p25    56.0 ms
+    median 65.0 ms
+    p75    71.0 ms
+    p90    77.8 ms
+    p99    98.3 ms
+    max    102.0 ms
+    mean   64.6 ms
+    stdev  13.6 ms
+  CheckPing->CheckPingAck session Game_Slave#9: n=79
+     RTT (CheckPing->CheckPingAck)  (n=79)
+    min    36.0 ms
+    p10    42.6 ms
+    p25    53.0 ms
+    median 59.0 ms
+    p75    74.5 ms
+    p90    89.4 ms
+    p99    120.9 ms
+    max    124.0 ms
+    mean   64.7 ms
+    stdev  19.3 ms
+  CheckPing->CheckPingAck RTT, ALL SESSIONS  (n=270)
+    min    34.0 ms
+    p10    46.0 ms
+    p25    56.0 ms
+    median 71.0 ms
+    p75    193.8 ms
+    p90    258.1 ms
+    p99    349.2 ms
+    max    380.0 ms
+    mean   117.6 ms
+    stdev  87.6 ms
+  Ping->Pong session Game#10: n=17
+     RTT (Ping->Pong)  (n=17)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#13: n=3
+     RTT (Ping->Pong)  (n=3)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    0.0 ms
+    p99    0.0 ms
+    max    0.0 ms
+    mean   0.0 ms
+    stdev  0.0 ms
+  Ping->Pong session Game#16: n=3
+     RTT (Ping->Pong)  (n=3)
+    min    0.0 ms
+    p10    0.2 ms
+    p25    0.5 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.7 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#19: n=4
+     RTT (Ping->Pong)  (n=4)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.2 ms
+    p90    0.7 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.2 ms
+    stdev  0.4 ms
+  Ping->Pong session Game#2: n=5
+     RTT (Ping->Pong)  (n=5)
+    min    0.0 ms
+    p10    0.4 ms
+    p25    1.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.8 ms
+    stdev  0.4 ms
+  Ping->Pong session Game#21: n=59
+     RTT (Ping->Pong)  (n=59)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#4: n=8
+     RTT (Ping->Pong)  (n=8)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.6 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#6: n=19
+     RTT (Ping->Pong)  (n=19)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#8: n=5
+     RTT (Ping->Pong)  (n=5)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    0.6 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.2 ms
+    stdev  0.4 ms
+  Ping->Pong session Game_Slave#11: n=25
+     RTT (Ping->Pong)  (n=25)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#14: n=76
+     RTT (Ping->Pong)  (n=76)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#17: n=16
+     RTT (Ping->Pong)  (n=16)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#20: n=14
+     RTT (Ping->Pong)  (n=14)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#3: n=30
+     RTT (Ping->Pong)  (n=30)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.5 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#5: n=94
+     RTT (Ping->Pong)  (n=94)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.1 ms
+    max    2.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#9: n=159
+     RTT (Ping->Pong)  (n=159)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.4 ms
+    max    5.0 ms
+    mean   0.5 ms
+    stdev  0.6 ms
+  Ping->Pong RTT, ALL SESSIONS  (n=537)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    5.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+
+--- events-20261004-235932-3600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235933-8900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235941-300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261004-235950-8700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000336-2300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000337-8400.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000338-5000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000338-7000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000406-4200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000445-4500.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000446-0.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000446-3900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-000455-4000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-012701-2400.jsonl : 2775 HealthUpdate readings, 8 injections
+
+  session Game_Slave#11: 83 readings, 573220..580469 ms, 1 world entries
+     inter-arrival (all)  (n=82)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    1.0 ms
+    median 46.5 ms
+    p75    50.0 ms
+    p90    99.0 ms
+    p99    1012.3 ms
+    max    4049.0 ms
+    mean   88.4 ms
+    stdev  443.6 ms
+     drops: 20; largest single-reading drop 140 HP = 23.0% of max 608
+       from 580370 ms hp=288 -> 580418 ms hp=148 (gap 48 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#13: 142 readings, 601919..618727 ms, 1 world entries
+     inter-arrival (all)  (n=141)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    4.0 ms
+    median 51.0 ms
+    p75    99.0 ms
+    p90    100.0 ms
+    p99    1243.0 ms
+    max    6999.0 ms
+    mean   119.2 ms
+    stdev  605.2 ms
+     drops: 26; largest single-reading drop 20 HP = 3.3% of max 608
+       from 609670 ms hp=587 -> 609717 ms hp=567 (gap 47 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#15: 195 readings, 631969..659919 ms, 1 world entries
+     inter-arrival (all)  (n=194)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 99.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    642.8 ms
+    max    9949.0 ms
+    mean   144.1 ms
+    stdev  728.9 ms
+     drops: 17; largest single-reading drop 85 HP = 14.0% of max 608
+       from 655966 ms hp=608 -> 658519 ms hp=523 (gap 2553 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#17: 31 readings, 669720..688170 ms, 1 world entries
+     inter-arrival (all)  (n=30)
+    min    0.0 ms
+    p10    1.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    99.8 ms
+    p90    100.0 ms
+    p99    11991.8 ms
+    max    16849.0 ms
+    mean   615.0 ms
+    stdev  3014.8 ms
+     drops: 12; largest single-reading drop 56 HP = 9.2% of max 608
+       from 688169 ms hp=216 -> 688169 ms hp=160 (gap 0 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#5: 222 readings, 95601..136650 ms, 1 world entries
+     inter-arrival (all)  (n=221)
+    min    2.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    103.4 ms
+    max    20798.0 ms
+    mean   185.7 ms
+    stdev  1429.6 ms
+     drops: 33; largest single-reading drop 20 HP = 2.8% of max 712
+       from 95601 ms hp=712 -> 116399 ms hp=692 (gap 20798 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#7: 2043 readings, 156415..503317 ms, 4 world entries
+     inter-arrival (all)  (n=2042)
+    min    0.0 ms
+    p10    47.0 ms
+    p25    50.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    825.8 ms
+    max    42201.0 ms
+    mean   169.9 ms
+    stdev  1516.3 ms
+     inter-arrival (within a world)  (n=2038)
+    min    0.0 ms
+    p10    47.0 ms
+    p25    50.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    200.0 ms
+    max    42201.0 ms
+    mean   132.7 ms
+    stdev  1100.9 ms
+     drops: 220; largest single-reading drop 175 HP = 24.6% of max 712
+       from 461267 ms hp=887 -> 461267 ms hp=712 (gap 0 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#9: 48 readings, 558418..566069 ms, 1 world entries
+     inter-arrival (all)  (n=47)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    1.0 ms
+    median 48.0 ms
+    p75    98.0 ms
+    p90    100.0 ms
+    p99    3205.9 ms
+    max    5850.0 ms
+    mean   162.8 ms
+    stdev  839.6 ms
+     inter-arrival (within a world)  (n=46)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    1.0 ms
+    median 24.5 ms
+    p75    98.0 ms
+    p90    100.0 ms
+    p99    101.1 ms
+    max    102.0 ms
+    mean   39.2 ms
+    stdev  42.4 ms
+     drops: 8; largest single-reading drop 100 HP = 16.4% of max 608
+       from 564268 ms hp=608 -> 564269 ms hp=508 (gap 1 ms)
+     readings at hp<=0 (death): 0
+
+  ALL SESSIONS COMBINED, within-world inter-arrival  (n=2752)
+    min    0.0 ms
+    p10    40.2 ms
+    p25    49.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    397.5 ms
+    max    42201.0 ms
+    mean   139.4 ms
+    stdev  1107.2 ms
+  INJECT Game_Slave#11 @580419 ms  Escape  injected Escape (auto-nexus at 24% hp)
+  INJECT Game_Slave#13 @616718 ms  EscapeCastState  injected EscapeCastState (channelled escape, casting=true)
+  INJECT Game_Slave#13 @618719 ms  Escape  injected Escape (auto-nexus at 34% hp)
+  INJECT Game_Slave#15 @659918 ms  Escape  injected Escape (auto-nexus at 25% hp)
+  INJECT Game_Slave#17 @688169 ms  Escape  injected Escape (auto-nexus at 26% hp)
+  INJECT Game_Slave#5 @136550 ms  Escape  injected Escape (auto-nexus at 33% hp)
+  INJECT Game_Slave#7 @503317 ms  Escape  injected Escape (auto-nexus at 32% hp)
+  INJECT Game_Slave#9 @566018 ms  Escape  injected Escape (auto-nexus at 29% hp)
+  CheckPing->CheckPingAck session Game#10: n=3
+     RTT (CheckPing->CheckPingAck)  (n=3)
+    min    219.0 ms
+    p10    219.8 ms
+    p25    221.0 ms
+    median 223.0 ms
+    p75    225.0 ms
+    p90    226.2 ms
+    p99    226.9 ms
+    max    227.0 ms
+    mean   223.0 ms
+    stdev  3.3 ms
+  CheckPing->CheckPingAck session Game#12: n=10
+     RTT (CheckPing->CheckPingAck)  (n=10)
+    min    186.0 ms
+    p10    191.4 ms
+    p25    238.5 ms
+    median 244.5 ms
+    p75    281.8 ms
+    p90    335.5 ms
+    p99    363.8 ms
+    max    367.0 ms
+    mean   259.7 ms
+    stdev  53.7 ms
+  CheckPing->CheckPingAck session Game#14: n=6
+     RTT (CheckPing->CheckPingAck)  (n=6)
+    min    219.0 ms
+    p10    229.0 ms
+    p25    247.8 ms
+    median 277.5 ms
+    p75    281.8 ms
+    p90    283.5 ms
+    p99    284.9 ms
+    max    285.0 ms
+    mean   263.3 ms
+    stdev  25.2 ms
+  CheckPing->CheckPingAck session Game#16: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    180.0 ms
+    p10    181.5 ms
+    p25    183.8 ms
+    median 208.5 ms
+    p75    236.2 ms
+    p90    243.9 ms
+    p99    248.5 ms
+    max    249.0 ms
+    mean   211.5 ms
+    stdev  29.7 ms
+  CheckPing->CheckPingAck session Game#18: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    225.0 ms
+    p10    226.5 ms
+    p25    228.8 ms
+    median 232.0 ms
+    p75    237.8 ms
+    p90    244.5 ms
+    p99    248.6 ms
+    max    249.0 ms
+    mean   234.5 ms
+    stdev  9.0 ms
+  CheckPing->CheckPingAck session Game#2: n=2
+     RTT (CheckPing->CheckPingAck)  (n=2)
+    min    191.0 ms
+    p10    200.2 ms
+    p25    214.0 ms
+    median 237.0 ms
+    p75    260.0 ms
+    p90    273.8 ms
+    p99    282.1 ms
+    max    283.0 ms
+    mean   237.0 ms
+    stdev  46.0 ms
+  CheckPing->CheckPingAck session Game#4: n=20
+     RTT (CheckPing->CheckPingAck)  (n=20)
+    min    185.0 ms
+    p10    186.8 ms
+    p25    195.8 ms
+    median 219.5 ms
+    p75    258.2 ms
+    p90    311.0 ms
+    p99    349.2 ms
+    max    356.0 ms
+    mean   237.8 ms
+    stdev  48.6 ms
+  CheckPing->CheckPingAck session Game#6: n=9
+     RTT (CheckPing->CheckPingAck)  (n=9)
+    min    190.0 ms
+    p10    194.8 ms
+    p25    197.0 ms
+    median 216.0 ms
+    p75    250.0 ms
+    p90    274.2 ms
+    p99    292.9 ms
+    max    295.0 ms
+    mean   228.4 ms
+    stdev  35.0 ms
+  CheckPing->CheckPingAck session Game#8: n=26
+     RTT (CheckPing->CheckPingAck)  (n=26)
+    min    181.0 ms
+    p10    184.5 ms
+    p25    187.2 ms
+    median 198.5 ms
+    p75    209.8 ms
+    p90    217.5 ms
+    p99    225.0 ms
+    max    226.0 ms
+    mean   199.5 ms
+    stdev  13.2 ms
+  CheckPing->CheckPingAck session Game_Slave#11: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    41.0 ms
+    p10    53.6 ms
+    p25    72.5 ms
+    median 85.5 ms
+    p75    88.0 ms
+    p90    88.0 ms
+    p99    88.0 ms
+    max    88.0 ms
+    mean   75.0 ms
+    stdev  19.7 ms
+  CheckPing->CheckPingAck session Game_Slave#13: n=7
+     RTT (CheckPing->CheckPingAck)  (n=7)
+    min    40.0 ms
+    p10    43.6 ms
+    p25    46.5 ms
+    median 50.0 ms
+    p75    61.5 ms
+    p90    77.2 ms
+    p99    84.2 ms
+    max    85.0 ms
+    mean   55.9 ms
+    stdev  15.1 ms
+  CheckPing->CheckPingAck session Game_Slave#15: n=14
+     RTT (CheckPing->CheckPingAck)  (n=14)
+    min    46.0 ms
+    p10    53.9 ms
+    p25    67.2 ms
+    median 82.0 ms
+    p75    106.2 ms
+    p90    110.8 ms
+    p99    112.9 ms
+    max    113.0 ms
+    mean   84.1 ms
+    stdev  22.1 ms
+  CheckPing->CheckPingAck session Game_Slave#17: n=9
+     RTT (CheckPing->CheckPingAck)  (n=9)
+    min    38.0 ms
+    p10    39.6 ms
+    p25    42.0 ms
+    median 46.0 ms
+    p75    50.0 ms
+    p90    54.2 ms
+    p99    69.3 ms
+    max    71.0 ms
+    mean   47.6 ms
+    stdev  9.2 ms
+  CheckPing->CheckPingAck session Game_Slave#3: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    57.0 ms
+    p10    60.0 ms
+    p25    64.5 ms
+    median 68.5 ms
+    p75    78.5 ms
+    p90    93.8 ms
+    p99    103.0 ms
+    max    104.0 ms
+    mean   74.5 ms
+    stdev  17.7 ms
+  CheckPing->CheckPingAck session Game_Slave#5: n=20
+     RTT (CheckPing->CheckPingAck)  (n=20)
+    min    182.0 ms
+    p10    187.4 ms
+    p25    193.8 ms
+    median 203.5 ms
+    p75    232.8 ms
+    p90    247.3 ms
+    p99    256.5 ms
+    max    258.0 ms
+    mean   213.3 ms
+    stdev  24.0 ms
+  CheckPing->CheckPingAck session Game_Slave#7: n=174
+     RTT (CheckPing->CheckPingAck)  (n=174)
+    min    29.0 ms
+    p10    43.3 ms
+    p25    49.0 ms
+    median 59.0 ms
+    p75    71.0 ms
+    p90    81.7 ms
+    p99    115.5 ms
+    max    118.0 ms
+    mean   61.2 ms
+    stdev  16.7 ms
+  CheckPing->CheckPingAck session Game_Slave#9: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    61.0 ms
+    p10    61.6 ms
+    p25    62.5 ms
+    median 69.0 ms
+    p75    75.2 ms
+    p90    75.7 ms
+    p99    76.0 ms
+    max    76.0 ms
+    mean   68.8 ms
+    stdev  6.8 ms
+  CheckPing->CheckPingAck RTT, ALL SESSIONS  (n=320)
+    min    29.0 ms
+    p10    45.0 ms
+    p25    54.0 ms
+    median 72.5 ms
+    p75    192.2 ms
+    p90    238.1 ms
+    p99    318.1 ms
+    max    367.0 ms
+    mean   115.3 ms
+    stdev  80.5 ms
+  Ping->Pong session Game#10: n=6
+     RTT (Ping->Pong)  (n=6)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.8 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#12: n=20
+     RTT (Ping->Pong)  (n=20)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.6 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#14: n=12
+     RTT (Ping->Pong)  (n=12)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    0.0 ms
+    p99    0.9 ms
+    max    1.0 ms
+    mean   0.1 ms
+    stdev  0.3 ms
+  Ping->Pong session Game#16: n=8
+     RTT (Ping->Pong)  (n=8)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#18: n=8
+     RTT (Ping->Pong)  (n=8)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    0.3 ms
+    p99    0.9 ms
+    max    1.0 ms
+    mean   0.1 ms
+    stdev  0.3 ms
+  Ping->Pong session Game#2: n=4
+     RTT (Ping->Pong)  (n=4)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.5 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#4: n=41
+     RTT (Ping->Pong)  (n=41)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.6 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#6: n=18
+     RTT (Ping->Pong)  (n=18)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#8: n=53
+     RTT (Ping->Pong)  (n=53)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#11: n=8
+     RTT (Ping->Pong)  (n=8)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.6 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#13: n=17
+     RTT (Ping->Pong)  (n=17)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    1.0 ms
+    p99    1.8 ms
+    max    2.0 ms
+    mean   0.3 ms
+    stdev  0.6 ms
+  Ping->Pong session Game_Slave#15: n=28
+     RTT (Ping->Pong)  (n=28)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#17: n=18
+     RTT (Ping->Pong)  (n=18)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.8 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.4 ms
+  Ping->Pong session Game_Slave#3: n=7
+     RTT (Ping->Pong)  (n=7)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.5 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#5: n=41
+     RTT (Ping->Pong)  (n=41)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.2 ms
+    stdev  0.4 ms
+  Ping->Pong session Game_Slave#7: n=347
+     RTT (Ping->Pong)  (n=347)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#9: n=8
+     RTT (Ping->Pong)  (n=8)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.2 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.2 ms
+    stdev  0.4 ms
+  Ping->Pong RTT, ALL SESSIONS  (n=644)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    2.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+
+--- events-20261005-014942-2100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-014943-200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-014951-3700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-014952-6500.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-015058-9100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-023129-2000.jsonl : 459 HealthUpdate readings, 6 injections
+
+  session Game_Slave#11: 23 readings, 337034..350833 ms, 1 world entries
+     inter-arrival (all)  (n=22)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 48.5 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    10250.9 ms
+    max    12949.0 ms
+    mean   627.2 ms
+    stdev  2689.2 ms
+     inter-arrival (within a world)  (n=21)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 48.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    100.8 ms
+    max    101.0 ms
+    mean   40.5 ms
+    stdev  42.5 ms
+     drops: 12; largest single-reading drop 61 HP = 0.6% of max 9999
+       from 337034 ms hp=608 -> 349983 ms hp=547 (gap 12949 ms)
+     readings at hp<=0 (death): 1 first at 350636 ms
+
+  session Game_Slave#13: 13 readings, 372385..387284 ms, 1 world entries
+     inter-arrival (all)  (n=12)
+    min    49.0 ms
+    p10    59.9 ms
+    p25    149.0 ms
+    median 150.0 ms
+    p75    151.2 ms
+    p90    196.1 ms
+    p99    11946.3 ms
+    max    13398.0 ms
+    mean   1241.6 ms
+    stdev  3665.5 ms
+     drops: 2; largest single-reading drop 59 HP = 0.6% of max 9999
+       from 372385 ms hp=108 -> 385783 ms hp=49 (gap 13398 ms)
+     readings at hp<=0 (death): 1 first at 387084 ms
+
+  session Game_Slave#3: 114 readings, 28531..48884 ms, 1 world entries
+     inter-arrival (all)  (n=113)
+    min    2.0 ms
+    p10    49.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    101.0 ms
+    max    12900.0 ms
+    mean   180.1 ms
+    stdev  1202.3 ms
+     inter-arrival (within a world)  (n=112)
+    min    2.0 ms
+    p10    49.0 ms
+    p25    49.0 ms
+    median 50.5 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    101.0 ms
+    max    101.0 ms
+    mean   66.5 ms
+    stdev  31.1 ms
+     drops: 25; largest single-reading drop 20 HP = 3.3% of max 608
+       from 28531 ms hp=608 -> 41431 ms hp=588 (gap 12900 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#5: 120 readings, 57932..75031 ms, 1 world entries
+     inter-arrival (all)  (n=119)
+    min    2.0 ms
+    p10    2.8 ms
+    p25    49.0 ms
+    median 97.0 ms
+    p75    99.5 ms
+    p90    100.0 ms
+    p99    101.0 ms
+    max    9099.0 ms
+    mean   143.7 ms
+    stdev  825.1 ms
+     inter-arrival (within a world)  (n=118)
+    min    2.0 ms
+    p10    2.7 ms
+    p25    49.0 ms
+    median 74.0 ms
+    p75    99.0 ms
+    p90    100.0 ms
+    p99    101.0 ms
+    max    101.0 ms
+    mean   67.8 ms
+    stdev  35.1 ms
+     drops: 25; largest single-reading drop 20 HP = 3.3% of max 608
+       from 57932 ms hp=608 -> 67031 ms hp=588 (gap 9099 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#7: 26 readings, 127883..144333 ms, 1 world entries
+     inter-arrival (all)  (n=25)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    100.6 ms
+    p99    11460.7 ms
+    max    15048.0 ms
+    mean   658.0 ms
+    stdev  2937.6 ms
+     drops: 8; largest single-reading drop 61 HP = 10.0% of max 608
+       from 127883 ms hp=608 -> 142931 ms hp=547 (gap 15048 ms)
+     readings at hp<=0 (death): 0
+
+  session Game_Slave#9: 155 readings, 148533..328733 ms, 1 world entries
+     inter-arrival (all)  (n=154)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    50.0 ms
+    median 99.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    102.0 ms
+    max    168700.0 ms
+    mean   1170.1 ms
+    stdev  13544.0 ms
+     inter-arrival (within a world)  (n=153)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    50.0 ms
+    median 99.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    101.5 ms
+    max    102.0 ms
+    mean   75.2 ms
+    stdev  31.5 ms
+     drops: 19; largest single-reading drop 61 HP = 10.0% of max 608
+       from 328084 ms hp=476 -> 328183 ms hp=415 (gap 99 ms)
+     readings at hp<=0 (death): 0
+
+  ALL SESSIONS COMBINED, within-world inter-arrival  (n=441)
+    min    0.0 ms
+    p10    3.0 ms
+    p25    49.0 ms
+    median 97.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    151.0 ms
+    max    15048.0 ms
+    mean   134.1 ms
+    stdev  953.3 ms
+  INJECT Game_Slave#11 @350635 ms  Escape  injected Escape (auto-nexus at 28% hp)
+  INJECT Game_Slave#13 @387235 ms  Escape  injected Escape (auto-nexus at 1% hp)
+  INJECT Game_Slave#3 @48881 ms  Escape  injected Escape (auto-nexus at 32% hp)
+  INJECT Game_Slave#5 @75031 ms  Escape  injected Escape (auto-nexus at 33% hp)
+  INJECT Game_Slave#7 @144333 ms  Escape  injected Escape (auto-nexus at 26% hp)
+  INJECT Game_Slave#9 @328733 ms  Escape  injected Escape (auto-nexus at 32% hp)
+  CheckPing->CheckPingAck session Game#10: n=3
+     RTT (CheckPing->CheckPingAck)  (n=3)
+    min    180.0 ms
+    p10    181.6 ms
+    p25    184.0 ms
+    median 188.0 ms
+    p75    188.0 ms
+    p90    188.0 ms
+    p99    188.0 ms
+    max    188.0 ms
+    mean   185.3 ms
+    stdev  3.8 ms
+  CheckPing->CheckPingAck session Game#12: n=7
+     RTT (CheckPing->CheckPingAck)  (n=7)
+    min    208.0 ms
+    p10    254.8 ms
+    p25    290.0 ms
+    median 301.0 ms
+    p75    305.5 ms
+    p90    314.2 ms
+    p99    321.2 ms
+    max    322.0 ms
+    mean   288.9 ms
+    stdev  34.6 ms
+  CheckPing->CheckPingAck session Game#14: n=1
+     RTT (CheckPing->CheckPingAck)  (n=1)
+    min    374.0 ms
+    p10    374.0 ms
+    p25    374.0 ms
+    median 374.0 ms
+    p75    374.0 ms
+    p90    374.0 ms
+    p99    374.0 ms
+    max    374.0 ms
+    mean   374.0 ms
+    stdev  0.0 ms
+  CheckPing->CheckPingAck session Game#2: n=2
+     RTT (CheckPing->CheckPingAck)  (n=2)
+    min    284.0 ms
+    p10    284.6 ms
+    p25    285.5 ms
+    median 287.0 ms
+    p75    288.5 ms
+    p90    289.4 ms
+    p99    289.9 ms
+    max    290.0 ms
+    mean   287.0 ms
+    stdev  3.0 ms
+  CheckPing->CheckPingAck session Game#4: n=4
+     RTT (CheckPing->CheckPingAck)  (n=4)
+    min    191.0 ms
+    p10    195.5 ms
+    p25    202.2 ms
+    median 269.5 ms
+    p75    334.5 ms
+    p90    337.2 ms
+    p99    338.8 ms
+    max    339.0 ms
+    mean   267.2 ms
+    stdev  69.0 ms
+  CheckPing->CheckPingAck session Game#6: n=26
+     RTT (CheckPing->CheckPingAck)  (n=26)
+    min    176.0 ms
+    p10    190.5 ms
+    p25    205.2 ms
+    median 235.0 ms
+    p75    313.8 ms
+    p90    339.5 ms
+    p99    370.8 ms
+    max    372.0 ms
+    mean   254.9 ms
+    stdev  60.7 ms
+  CheckPing->CheckPingAck session Game#8: n=2
+     RTT (CheckPing->CheckPingAck)  (n=2)
+    min    214.0 ms
+    p10    217.4 ms
+    p25    222.5 ms
+    median 231.0 ms
+    p75    239.5 ms
+    p90    244.6 ms
+    p99    247.7 ms
+    max    248.0 ms
+    mean   231.0 ms
+    stdev  17.0 ms
+  CheckPing->CheckPingAck session Game_Slave#11: n=10
+     RTT (CheckPing->CheckPingAck)  (n=10)
+    min    69.0 ms
+    p10    69.9 ms
+    p25    71.5 ms
+    median 77.5 ms
+    p75    82.8 ms
+    p90    95.7 ms
+    p99    101.4 ms
+    max    102.0 ms
+    mean   80.0 ms
+    stdev  10.4 ms
+  CheckPing->CheckPingAck session Game_Slave#13: n=16
+     RTT (CheckPing->CheckPingAck)  (n=16)
+    min    34.0 ms
+    p10    40.0 ms
+    p25    45.8 ms
+    median 53.5 ms
+    p75    63.8 ms
+    p90    69.5 ms
+    p99    70.8 ms
+    max    71.0 ms
+    mean   53.9 ms
+    stdev  11.5 ms
+  CheckPing->CheckPingAck session Game_Slave#3: n=10
+     RTT (CheckPing->CheckPingAck)  (n=10)
+    min    43.0 ms
+    p10    49.3 ms
+    p25    54.0 ms
+    median 62.5 ms
+    p75    68.2 ms
+    p90    72.6 ms
+    p99    77.5 ms
+    max    78.0 ms
+    mean   61.1 ms
+    stdev  10.3 ms
+  CheckPing->CheckPingAck session Game_Slave#5: n=8
+     RTT (CheckPing->CheckPingAck)  (n=8)
+    min    39.0 ms
+    p10    41.8 ms
+    p25    43.0 ms
+    median 51.0 ms
+    p75    54.0 ms
+    p90    66.9 ms
+    p99    87.7 ms
+    max    90.0 ms
+    mean   53.4 ms
+    stdev  15.0 ms
+  CheckPing->CheckPingAck session Game_Slave#7: n=8
+     RTT (CheckPing->CheckPingAck)  (n=8)
+    min    35.0 ms
+    p10    40.6 ms
+    p25    44.5 ms
+    median 53.5 ms
+    p75    59.0 ms
+    p90    64.1 ms
+    p99    68.5 ms
+    max    69.0 ms
+    mean   52.4 ms
+    stdev  10.3 ms
+  CheckPing->CheckPingAck session Game_Slave#9: n=89
+     RTT (CheckPing->CheckPingAck)  (n=89)
+    min    36.0 ms
+    p10    45.8 ms
+    p25    55.0 ms
+    median 64.0 ms
+    p75    69.0 ms
+    p90    73.0 ms
+    p99    103.0 ms
+    max    103.0 ms
+    mean   62.6 ms
+    stdev  12.0 ms
+  CheckPing->CheckPingAck RTT, ALL SESSIONS  (n=186)
+    min    34.0 ms
+    p10    45.0 ms
+    p25    55.0 ms
+    median 68.0 ms
+    p75    102.8 ms
+    p90    285.0 ms
+    p99    367.8 ms
+    max    374.0 ms
+    mean   109.6 ms
+    stdev  90.6 ms
+  Ping->Pong session Game#10: n=7
+     RTT (Ping->Pong)  (n=7)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.5 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#12: n=13
+     RTT (Ping->Pong)  (n=13)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#14: n=1
+     RTT (Ping->Pong)  (n=1)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.0 ms
+    p90    0.0 ms
+    p99    0.0 ms
+    max    0.0 ms
+    mean   0.0 ms
+    stdev  0.0 ms
+  Ping->Pong session Game#2: n=4
+     RTT (Ping->Pong)  (n=4)
+    min    0.0 ms
+    p10    0.3 ms
+    p25    0.8 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.8 ms
+    stdev  0.4 ms
+  Ping->Pong session Game#4: n=7
+     RTT (Ping->Pong)  (n=7)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.5 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.7 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#6: n=51
+     RTT (Ping->Pong)  (n=51)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong session Game#8: n=3
+     RTT (Ping->Pong)  (n=3)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    0.5 ms
+    p90    0.8 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#11: n=21
+     RTT (Ping->Pong)  (n=21)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#13: n=32
+     RTT (Ping->Pong)  (n=32)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.4 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#3: n=21
+     RTT (Ping->Pong)  (n=21)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.6 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#5: n=17
+     RTT (Ping->Pong)  (n=17)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 1.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.6 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#7: n=17
+     RTT (Ping->Pong)  (n=17)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.3 ms
+    stdev  0.5 ms
+  Ping->Pong session Game_Slave#9: n=180
+     RTT (Ping->Pong)  (n=180)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+  Ping->Pong RTT, ALL SESSIONS  (n=374)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 0.0 ms
+    p75    1.0 ms
+    p90    1.0 ms
+    p99    1.0 ms
+    max    1.0 ms
+    mean   0.5 ms
+    stdev  0.5 ms
+
+--- events-20261005-161535-4300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161536-2900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161545-4100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161553-1100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161821-4300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161822-200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161831-1000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-161839-700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163048-7100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163049-400.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163058-5900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163925-9000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163926-7200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163926-8200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-163927-9600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-165100-4200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-165101-1100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-165109-6000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-165110-6100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-171740-2700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-171741-600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-171741-9900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-171750-9200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-172034-9800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-172035-8200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-172044-2800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261005-172052-500.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-000930-3600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-000931-3800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-000931-5500.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-000946-3600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-001428-2600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-001429-3100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-001430-9800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-001445-9000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-132845-8300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-132846-4700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-132846-700.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-132855-5000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133108-2800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133418-7100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133421-8900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133424-2200.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133427-4300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133430-4600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133433-6000.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133518-7900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133518-8100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133527-7100.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-133535-5600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-144443-3400.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-144449-2400.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-144450-3800.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-144551-9900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-144557-5400.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-144558-2600.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-151022-8900.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-151028-4300.jsonl : 0 HealthUpdate readings, 0 injections
+
+--- events-20261006-151037-6300.jsonl : 0 HealthUpdate readings, 0 injections
+
+==============================================================================
+SOURCE C: work/logs/relay-*.log  (relay transcript, HH:MM:SS.mmm)
+==============================================================================
+
+--- relay-20261004-235440-1500.log
+  Game#10: 1 readings over 0.0 s
+  Game#13: 1 readings over 0.0 s
+  Game#16: 1 readings over 0.0 s
+  Game#19: 1 readings over 0.0 s
+  Game#2: 1 readings over 0.0 s
+  Game#21: 1 readings over 0.0 s
+  Game#4: 1 readings over 0.0 s
+  Game#6: 1 readings over 0.0 s
+  Game#8: 1 readings over 0.0 s
+  Game_Slave#11: 194 readings over 25.3 s
+     inter-arrival (all)  (n=193)
+    min    3.0 ms
+    p10    44.2 ms
+    p25    48.0 ms
+    median 54.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    103.1 ms
+    max    12198.0 ms
+    mean   131.2 ms
+    stdev  871.4 ms
+     31 drops; largest 20 HP = 2.8% of max 707 (1143.147 hp=707 -> 1155.345 hp=687, gap 12198 ms)
+  Game_Slave#14: 455 readings over 76.2 s
+     inter-arrival (all)  (n=454)
+    min    0.0 ms
+    p10    3.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    101.7 ms
+    p99    1597.5 ms
+    max    15899.0 ms
+    mean   167.7 ms
+    stdev  1037.6 ms
+     114 drops; largest 47 HP = 6.6% of max 712 (1259.301 hp=707 -> 1259.700 hp=660, gap 399 ms)
+  Game_Slave#17: 159 readings over 15.7 s
+     inter-arrival (all)  (n=158)
+    min    2.0 ms
+    p10    5.0 ms
+    p25    48.0 ms
+    median 53.0 ms
+    p75    99.0 ms
+    p90    101.0 ms
+    p99    113.0 ms
+    max    5349.0 ms
+    mean   99.4 ms
+    stdev  420.3 ms
+     30 drops; largest 20 HP = 2.8% of max 712 (1477.999 hp=712 -> 1483.348 hp=692, gap 5349 ms)
+  Game_Slave#20: 29 readings over 13.6 s
+     inter-arrival (all)  (n=28)
+    min    4.0 ms
+    p10    5.0 ms
+    p25    48.0 ms
+    median 92.0 ms
+    p75    100.2 ms
+    p90    101.3 ms
+    p99    8570.0 ms
+    max    11699.0 ms
+    mean   484.0 ms
+    stdev  2158.6 ms
+     5 drops; largest 20 HP = 2.8% of max 712 (1541.751 hp=707 -> 1541.799 hp=687, gap 48 ms)
+  Game_Slave#3: 293 readings over 30.3 s
+     inter-arrival (all)  (n=292)
+    min    1.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    107.1 ms
+    max    10168.0 ms
+    mean   103.7 ms
+    stdev  590.7 ms
+     44 drops; largest 20 HP = 2.8% of max 707 (86128.328 hp=707 -> 86138.496 hp=687, gap 10168 ms)
+  Game_Slave#5: 419 readings over 93.9 s
+     inter-arrival (all)  (n=418)
+    min    1.0 ms
+    p10    3.7 ms
+    p25    50.0 ms
+    median 98.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    103.0 ms
+    max    55550.0 ms
+    mean   224.5 ms
+    stdev  2742.5 ms
+     53 drops; largest 20 HP = 2.8% of max 707 (86176.979 hp=701 -> 86177.079 hp=681, gap 100 ms)
+  Game_Slave#9: 1357 readings over 158.3 s
+     inter-arrival (all)  (n=1356)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 97.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    114.0 ms
+    max    32149.0 ms
+    mean   116.7 ms
+    stdev  955.3 ms
+     71 drops; largest 100 HP = 14.1% of max 707 (1043.895 hp=807 -> 1043.895 hp=707, gap 0 ms)
+  ALL SESSIONS, inter-arrival  (n=2899)
+    min    0.0 ms
+    p10    47.0 ms
+    p25    50.0 ms
+    median 64.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    200.0 ms
+    max    55550.0 ms
+    mean   142.5 ms
+    stdev  1350.2 ms
+  Game#4: C->S Escape 2, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @86163.570 payload=9E0001 <- last Escape @86163.290 (+280 ms)
+  Game_Slave#20: C->S Escape 1, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @1543.448 payload=9E0001 <- last Escape @1543.151 (+297 ms)
+  Game_Slave#3: C->S Escape 2, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @86158.786 payload=9E0001 <- last Escape @86158.726 (+60 ms)
+  Game_Slave#5: C->S Escape 1, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @86262.038 payload=9E0001 <- last Escape @86261.748 (+290 ms)
+  Game_Slave#9: C->S Escape 1, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @1124.833 payload=9E0001 <- last Escape @1124.420 (+413 ms)
+
+--- relay-20261005-012701-2400.log
+  Game#10: 1 readings over 0.0 s
+  Game#12: 1 readings over 0.0 s
+  Game#14: 1 readings over 0.0 s
+  Game#16: 1 readings over 0.0 s
+  Game#18: 1 readings over 0.0 s
+  Game#2: 1 readings over 0.0 s
+  Game#4: 1 readings over 0.0 s
+  Game#6: 1 readings over 0.0 s
+  Game#8: 2 readings over 46.4 s
+     inter-arrival (all)  (n=1)
+    min    46362.0 ms
+    p10    46362.0 ms
+    p25    46362.0 ms
+    median 46362.0 ms
+    p75    46362.0 ms
+    p90    46362.0 ms
+    p99    46362.0 ms
+    max    46362.0 ms
+    mean   46362.0 ms
+    stdev  0.0 ms
+     1 drops; largest 104 HP = 14.6% of max 712 (5725.818 hp=712 -> 5772.180 hp=608, gap 46362 ms)
+  Game_Slave#11: 83 readings over 7.2 s
+     inter-arrival (all)  (n=82)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 46.5 ms
+    p75    51.0 ms
+    p90    99.9 ms
+    p99    1013.1 ms
+    max    4049.0 ms
+    mean   88.4 ms
+    stdev  443.6 ms
+     20 drops; largest 140 HP = 23.0% of max 608 (5801.971 hp=288 -> 5802.020 hp=148, gap 49 ms)
+  Game_Slave#13: 142 readings over 16.8 s
+     inter-arrival (all)  (n=141)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    3.0 ms
+    median 51.0 ms
+    p75    99.0 ms
+    p90    100.0 ms
+    p99    1243.4 ms
+    max    6999.0 ms
+    mean   119.2 ms
+    stdev  605.2 ms
+     26 drops; largest 20 HP = 3.3% of max 608 (5831.271 hp=587 -> 5831.319 hp=567, gap 48 ms)
+  Game_Slave#15: 195 readings over 28.0 s
+     inter-arrival (all)  (n=194)
+    min    0.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 99.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    642.7 ms
+    max    9950.0 ms
+    mean   144.1 ms
+    stdev  729.0 ms
+     17 drops; largest 85 HP = 14.0% of max 608 (5877.568 hp=608 -> 5880.120 hp=523, gap 2552 ms)
+  Game_Slave#17: 31 readings over 18.4 s
+     inter-arrival (all)  (n=30)
+    min    0.0 ms
+    p10    1.0 ms
+    p25    48.0 ms
+    median 51.0 ms
+    p75    98.8 ms
+    p90    100.1 ms
+    p99    11992.1 ms
+    max    16849.0 ms
+    mean   615.0 ms
+    stdev  3014.8 ms
+     12 drops; largest 56 HP = 9.2% of max 608 (5909.770 hp=216 -> 5909.770 hp=160, gap 0 ms)
+  Game_Slave#3: 1 readings over 0.0 s
+  Game_Slave#5: 222 readings over 41.1 s
+     inter-arrival (all)  (n=221)
+    min    2.0 ms
+    p10    48.0 ms
+    p25    50.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    102.8 ms
+    max    20799.0 ms
+    mean   185.7 ms
+    stdev  1429.7 ms
+     33 drops; largest 20 HP = 2.8% of max 712 (5317.202 hp=712 -> 5338.001 hp=692, gap 20799 ms)
+  Game_Slave#7: 2043 readings over 346.9 s
+     inter-arrival (all)  (n=2042)
+    min    0.0 ms
+    p10    47.0 ms
+    p25    50.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    826.0 ms
+    max    42202.0 ms
+    mean   169.9 ms
+    stdev  1516.4 ms
+     220 drops; largest 175 HP = 24.6% of max 712 (5682.869 hp=887 -> 5682.869 hp=712, gap 0 ms)
+  Game_Slave#9: 48 readings over 7.7 s
+     inter-arrival (all)  (n=47)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.5 ms
+    median 48.0 ms
+    p75    97.5 ms
+    p90    100.0 ms
+    p99    3206.4 ms
+    max    5850.0 ms
+    mean   162.8 ms
+    stdev  839.6 ms
+     8 drops; largest 100 HP = 16.4% of max 608 (5785.870 hp=608 -> 5785.870 hp=508, gap 0 ms)
+  ALL SESSIONS, inter-arrival  (n=2758)
+    min    0.0 ms
+    p10    41.4 ms
+    p25    49.0 ms
+    median 52.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    1342.5 ms
+    max    46362.0 ms
+    mean   185.8 ms
+    stdev  1677.8 ms
+  Game#8: C->S Escape 1, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @5753.617 payload=9E0001 <- last Escape @5753.355 (+262 ms)
+  Game_Slave#11: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#13: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#15: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#17: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#3: C->S Escape 2, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @5274.676 payload=9E0001 <- last Escape @5274.539 (+137 ms)
+  Game_Slave#5: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#7: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#9: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+
+--- relay-20261005-023129-2000.log
+  Game#10: 1 readings over 0.0 s
+  Game#12: 2 readings over 9.3 s
+     inter-arrival (all)  (n=1)
+    min    9328.0 ms
+    p10    9328.0 ms
+    p25    9328.0 ms
+    median 9328.0 ms
+    p75    9328.0 ms
+    p90    9328.0 ms
+    p99    9328.0 ms
+    max    9328.0 ms
+    mean   9328.0 ms
+    stdev  0.0 ms
+     1 drops; largest 9891 HP = 98.9% of max 9999 (9448.136 hp=9999 -> 9457.464 hp=108, gap 9328 ms)
+  Game#14: 1 readings over 0.0 s
+  Game#2: 1 readings over 0.0 s
+  Game#4: 1 readings over 0.0 s
+  Game#6: 1 readings over 0.0 s
+  Game#8: 1 readings over 0.0 s
+  Game_Slave#11: 23 readings over 13.8 s
+     inter-arrival (all)  (n=22)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    0.0 ms
+    median 49.0 ms
+    p75    99.0 ms
+    p90    100.0 ms
+    p99    10250.9 ms
+    max    12949.0 ms
+    mean   627.2 ms
+    stdev  2689.2 ms
+     12 drops; largest 61 HP = 0.6% of max 9999 (9426.809 hp=608 -> 9439.758 hp=547, gap 12949 ms)
+  Game_Slave#13: 13 readings over 14.9 s
+     inter-arrival (all)  (n=12)
+    min    49.0 ms
+    p10    60.7 ms
+    p25    148.7 ms
+    median 150.0 ms
+    p75    151.0 ms
+    p90    196.0 ms
+    p99    11947.2 ms
+    max    13399.0 ms
+    mean   1241.6 ms
+    stdev  3665.8 ms
+     2 drops; largest 59 HP = 0.6% of max 9999 (9462.159 hp=108 -> 9475.558 hp=49, gap 13399 ms)
+  Game_Slave#3: 114 readings over 20.4 s
+     inter-arrival (all)  (n=113)
+    min    2.0 ms
+    p10    48.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    101.0 ms
+    max    12900.0 ms
+    mean   180.1 ms
+    stdev  1202.3 ms
+     25 drops; largest 20 HP = 3.3% of max 608 (9118.306 hp=608 -> 9131.206 hp=588, gap 12900 ms)
+  Game_Slave#5: 120 readings over 17.1 s
+     inter-arrival (all)  (n=119)
+    min    2.0 ms
+    p10    3.0 ms
+    p25    49.0 ms
+    median 97.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    101.8 ms
+    max    9099.0 ms
+    mean   143.7 ms
+    stdev  825.1 ms
+     25 drops; largest 20 HP = 3.3% of max 608 (9147.707 hp=608 -> 9156.806 hp=588, gap 9099 ms)
+  Game_Slave#7: 26 readings over 16.5 s
+     inter-arrival (all)  (n=25)
+    min    0.0 ms
+    p10    0.0 ms
+    p25    49.0 ms
+    median 51.0 ms
+    p75    100.0 ms
+    p90    100.0 ms
+    p99    11461.5 ms
+    max    15049.0 ms
+    mean   658.0 ms
+    stdev  2937.8 ms
+     8 drops; largest 61 HP = 10.0% of max 608 (9217.657 hp=608 -> 9232.706 hp=547, gap 15049 ms)
+  Game_Slave#9: 155 readings over 180.2 s
+     inter-arrival (all)  (n=154)
+    min    0.0 ms
+    p10    49.0 ms
+    p25    50.0 ms
+    median 99.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    101.5 ms
+    max    168699.0 ms
+    mean   1170.1 ms
+    stdev  13543.9 ms
+     19 drops; largest 61 HP = 10.0% of max 608 (9417.858 hp=476 -> 9417.958 hp=415, gap 100 ms)
+  ALL SESSIONS, inter-arrival  (n=446)
+    min    0.0 ms
+    p10    3.0 ms
+    p25    49.0 ms
+    median 98.0 ms
+    p75    100.0 ms
+    p90    101.0 ms
+    p99    11292.6 ms
+    max    168699.0 ms
+    mean   610.1 ms
+    stdev  8092.2 ms
+  Game_Slave#11: C->S Escape 1, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @9447.501 payload=9E0001 <- last Escape @9447.225 (+276 ms)
+  Game_Slave#13: C->S Escape 1, S->C EscapeAck 1, S->C ForcedEscape 0
+     ack @9494.256 payload=9E0001 <- last Escape @9493.968 (+288 ms)
+  Game_Slave#3: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#5: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#7: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0
+  Game_Slave#9: C->S Escape 0, S->C EscapeAck 1, S->C ForcedEscape 0

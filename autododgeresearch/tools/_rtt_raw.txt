@@ -1,0 +1,347 @@
+==============================================================================
+1. CheckPing -> CheckPingAck  (empty request, direct reply)
+==============================================================================
+
+--- events-20261004-235440-1500.jsonl
+  Game#10         
+    RTT  n=8
+    min 192  p10 209  p25 219  median 238  p75 241  p90 244  max 246  mean 229
+  Game#13         
+    RTT  n=2
+    min 203  p10 211  p25 223  median 244  p75 264  p90 276  max 284  mean 244
+  Game#16         
+    RTT  n=2
+    min 281  p10 288  p25 297  median 314  p75 330  p90 340  max 346  mean 314
+  Game#19         
+    RTT  n=3
+    min 207  p10 208  p25 208  median 210  p75 281  p90 324  max 352  mean 256
+  Game#2          
+    RTT  n=3
+    min 251  p10 254  p25 259  median 267  p75 286  p90 297  max 305  mean 274
+  Game#21         
+    RTT  n=29
+    min 185  p10 188  p25 198  median 244  p75 277  p90 335  max 355  mean 247
+  Game#4          
+    RTT  n=4
+    min 202  p10 206  p25 211  median 257  p75 305  p90 315  max 321  mean 259
+  Game#6          
+    RTT  n=10
+    min 180  p10 186  p25 226  median 235  p75 244  p90 275  max 380  mean 242
+  Game#8          
+    RTT  n=3
+    min 196  p10 202  p25 211  median 226  p75 255  p90 272  max 284  mean 235
+  Game_Slave#11   
+    RTT  n=12
+    min 42  p10 44  p25 46  median 58  p75 80  p90 88  max 93  mean 63
+  Game_Slave#14   
+    RTT  n=38
+    min 40  p10 48  p25 52  median 62  p75 73  p90 87  max 117  mean 66
+  Game_Slave#17   
+    RTT  n=8
+    min 56  p10 60  p25 64  median 69  p75 76  p90 86  max 89  mean 71
+  Game_Slave#20   
+    RTT  n=7
+    min 35  p10 38  p25 42  median 52  p75 59  p90 86  max 122  mean 59
+  Game_Slave#3    
+    RTT  n=15
+    min 187  p10 192  p25 200  median 219  p75 271  p90 282  max 304  mean 234
+  Game_Slave#5    
+    RTT  n=47
+    min 34  p10 48  p25 56  median 65  p75 71  p90 78  max 102  mean 65
+  Game_Slave#9    
+    RTT  n=79
+    min 36  p10 43  p25 53  median 59  p75 74  p90 89  max 124  mean 65
+  ALL SESSIONS in this file  n=270
+    min 34  p10 46  p25 56  median 71  p75 194  p90 258  max 380  mean 118
+
+--- events-20261005-012701-2400.jsonl
+  Game#10         
+    RTT  n=3
+    min 219  p10 220  p25 221  median 223  p75 225  p90 226  max 227  mean 223
+  Game#12         
+    RTT  n=10
+    min 186  p10 191  p25 238  median 244  p75 282  p90 336  max 367  mean 260
+  Game#14         
+    RTT  n=6
+    min 219  p10 229  p25 248  median 278  p75 282  p90 284  max 285  mean 263
+  Game#16         
+    RTT  n=4
+    min 180  p10 182  p25 184  median 208  p75 236  p90 244  max 249  mean 212
+  Game#18         
+    RTT  n=4
+    min 225  p10 226  p25 229  median 232  p75 238  p90 244  max 249  mean 234
+  Game#2          
+    RTT  n=2
+    min 191  p10 200  p25 214  median 237  p75 260  p90 274  max 283  mean 237
+  Game#4          
+    RTT  n=20
+    min 185  p10 187  p25 196  median 220  p75 258  p90 311  max 356  mean 238
+  Game#6          
+    RTT  n=9
+    min 190  p10 195  p25 197  median 216  p75 250  p90 274  max 295  mean 228
+  Game#8          
+    RTT  n=26
+    min 181  p10 184  p25 187  median 198  p75 210  p90 218  max 226  mean 200
+  Game_Slave#11   
+    RTT  n=4
+    min 41  p10 54  p25 72  median 86  p75 88  p90 88  max 88  mean 75
+  Game_Slave#13   
+    RTT  n=7
+    min 40  p10 44  p25 46  median 50  p75 62  p90 77  max 85  mean 56
+  Game_Slave#15   
+    RTT  n=14
+    min 46  p10 54  p25 67  median 82  p75 106  p90 111  max 113  mean 84
+  Game_Slave#17   
+    RTT  n=9
+    min 38  p10 40  p25 42  median 46  p75 50  p90 54  max 71  mean 48
+  Game_Slave#3    
+    RTT  n=4
+    min 57  p10 60  p25 64  median 68  p75 78  p90 94  max 104  mean 74
+  Game_Slave#5    
+    RTT  n=20
+    min 182  p10 187  p25 194  median 204  p75 233  p90 247  max 258  mean 213
+  Game_Slave#7    
+    RTT  n=174
+    min 29  p10 43  p25 49  median 59  p75 71  p90 82  max 118  mean 61
+  Game_Slave#9    
+    RTT  n=4
+    min 61  p10 62  p25 62  median 69  p75 75  p90 76  max 76  mean 69
+  ALL SESSIONS in this file  n=320
+    min 29  p10 45  p25 54  median 72  p75 192  p90 238  max 367  mean 115
+
+--- events-20261005-023129-2000.jsonl
+  Game#10         
+    RTT  n=3
+    min 180  p10 182  p25 184  median 188  p75 188  p90 188  max 188  mean 185
+  Game#12         
+    RTT  n=7
+    min 208  p10 255  p25 290  median 301  p75 306  p90 314  max 322  mean 289
+  Game#14         
+    RTT  n=1
+    min 374  p10 374  p25 374  median 374  p75 374  p90 374  max 374  mean 374
+  Game#2          
+    RTT  n=2
+    min 284  p10 285  p25 286  median 287  p75 288  p90 289  max 290  mean 287
+  Game#4          
+    RTT  n=4
+    min 191  p10 196  p25 202  median 270  p75 334  p90 337  max 339  mean 267
+  Game#6          
+    RTT  n=26
+    min 176  p10 190  p25 205  median 235  p75 314  p90 340  max 372  mean 255
+  Game#8          
+    RTT  n=2
+    min 214  p10 217  p25 222  median 231  p75 240  p90 245  max 248  mean 231
+  Game_Slave#11   
+    RTT  n=10
+    min 69  p10 70  p25 72  median 78  p75 83  p90 96  max 102  mean 80
+  Game_Slave#13   
+    RTT  n=16
+    min 34  p10 40  p25 46  median 54  p75 64  p90 70  max 71  mean 54
+  Game_Slave#3    
+    RTT  n=10
+    min 43  p10 49  p25 54  median 62  p75 68  p90 73  max 78  mean 61
+  Game_Slave#5    
+    RTT  n=8
+    min 39  p10 42  p25 43  median 51  p75 54  p90 67  max 90  mean 53
+  Game_Slave#7    
+    RTT  n=8
+    min 35  p10 41  p25 44  median 54  p75 59  p90 64  max 69  mean 52
+  Game_Slave#9    
+    RTT  n=89
+    min 36  p10 46  p25 55  median 64  p75 69  p90 73  max 103  mean 63
+  ALL SESSIONS in this file  n=186
+    min 34  p10 45  p25 55  median 68  p75 103  p90 285  max 374  mean 110
+
+==============================================================================
+2. Ping -> Pong  (relay observation skew, NOT network RTT)
+==============================================================================
+  events-20261004-235440-1500.jsonl  n=537
+    min 0  p10 0  p25 0  median 0  p75 1  p90 1  max 5  mean 0
+  events-20261005-012701-2400.jsonl  n=644
+    min 0  p10 0  p25 0  median 0  p75 1  p90 1  max 2  mean 0
+  events-20261005-023129-2000.jsonl  n=374
+    min 0  p10 0  p25 0  median 0  p75 1  p90 1  max 1  mean 0
+
+==============================================================================
+3. GmUpdate arrival cadence = the server tick rate on the wire
+==============================================================================
+
+--- events-20261004-235440-1500.jsonl
+  Game#10          n=    83
+    tick gap (all <400 ms)  n=82
+    min 188  p10 199  p25 199  median 200  p75 201  p90 201  max 214  mean 200
+  Game#13          n=    16
+    tick gap (all <400 ms)  n=15
+    min 178  p10 199  p25 199  median 200  p75 200  p90 201  max 202  mean 199
+  Game#16          n=    15
+    tick gap (all <400 ms)  n=14
+    min 197  p10 198  p25 199  median 200  p75 200  p90 201  max 203  mean 200
+  Game#19          n=    20
+    tick gap (all <400 ms)  n=19
+    min 178  p10 198  p25 199  median 200  p75 201  p90 202  max 220  mean 200
+  Game#2           n=    21
+    tick gap (all <400 ms)  n=20
+    min 18  p10 199  p25 200  median 200  p75 201  p90 201  max 201  mean 191
+  Game#21          n=   298
+    tick gap (all <400 ms)  n=297
+    min 174  p10 199  p25 199  median 200  p75 200  p90 201  max 228  mean 200
+  Game#4           n=    31
+    tick gap (all <400 ms)  n=28
+    min 23  p10 193  p25 199  median 200  p75 201  p90 202  max 282  mean 190
+  Game#6           n=    99
+    tick gap (all <400 ms)  n=98
+    min 182  p10 199  p25 200  median 200  p75 200  p90 201  max 219  mean 200
+  Game#8           n=    22
+    tick gap (all <400 ms)  n=21
+    min 153  p10 180  p25 198  median 200  p75 202  p90 228  max 230  mean 200
+  Game_Slave#11    n=   126
+    tick gap (all <400 ms)  n=125
+    min 185  p10 197  p25 199  median 200  p75 201  p90 202  max 217  mean 200
+  Game_Slave#14    n=   375
+    tick gap (all <400 ms)  n=372
+    min 147  p10 198  p25 199  median 200  p75 201  p90 202  max 253  mean 200
+  Game_Slave#17    n=    77
+    tick gap (all <400 ms)  n=76
+    min 185  p10 197  p25 199  median 200  p75 201  p90 203  max 215  mean 200
+  Game_Slave#20    n=    66
+    tick gap (all <400 ms)  n=65
+    min 166  p10 197  p25 199  median 200  p75 201  p90 202  max 213  mean 199
+  Game_Slave#3     n=   149
+    tick gap (all <400 ms)  n=148
+    min 72  p10 198  p25 199  median 200  p75 201  p90 201  max 327  mean 200
+  Game_Slave#5     n=   468
+    tick gap (all <400 ms)  n=467
+    min 165  p10 199  p25 200  median 200  p75 200  p90 201  max 217  mean 200
+  Game_Slave#9     n=   790
+    tick gap (all <400 ms)  n=789
+    min 163  p10 198  p25 199  median 200  p75 201  p90 202  max 224  mean 200
+  ALL  n=2636
+    min 18  p10 198  p25 199  median 200  p75 201  p90 202  max 327  mean 200
+
+--- events-20261005-012701-2400.jsonl
+  Game#10          n=    27
+    tick gap (all <400 ms)  n=26
+    min 197  p10 199  p25 199  median 200  p75 200  p90 201  max 201  mean 200
+  Game#12          n=    97
+    tick gap (all <400 ms)  n=96
+    min 140  p10 199  p25 199  median 200  p75 201  p90 201  max 212  mean 199
+  Game#14          n=    56
+    tick gap (all <400 ms)  n=55
+    min 173  p10 199  p25 199  median 200  p75 200  p90 201  max 227  mean 200
+  Game#16          n=    40
+    tick gap (all <400 ms)  n=39
+    min 198  p10 199  p25 199  median 200  p75 200  p90 201  max 201  mean 200
+  Game#18          n=    39
+    tick gap (all <400 ms)  n=38
+    min 196  p10 199  p25 200  median 200  p75 200  p90 201  max 201  mean 200
+  Game#2           n=    17
+    tick gap (all <400 ms)  n=16
+    min 187  p10 196  p25 199  median 200  p75 201  p90 203  max 204  mean 199
+  Game#4           n=   204
+    tick gap (all <400 ms)  n=203
+    min 126  p10 199  p25 199  median 200  p75 200  p90 201  max 267  mean 200
+  Game#6           n=    91
+    tick gap (all <400 ms)  n=90
+    min 30  p10 199  p25 200  median 200  p75 200  p90 201  max 202  mean 198
+  Game#8           n=   264
+    tick gap (all <400 ms)  n=262
+    min 187  p10 199  p25 200  median 200  p75 200  p90 201  max 393  mean 201
+  Game_Slave#11    n=    35
+    tick gap (all <400 ms)  n=34
+    min 164  p10 199  p25 199  median 200  p75 201  p90 201  max 213  mean 199
+  Game_Slave#13    n=    82
+    tick gap (all <400 ms)  n=80
+    min 0  p10 1  p25 199  median 200  p75 201  p90 202  max 215  mean 177
+  Game_Slave#15    n=   138
+    tick gap (all <400 ms)  n=137
+    min 193  p10 198  p25 200  median 200  p75 201  p90 201  max 203  mean 200
+  Game_Slave#17    n=    91
+    tick gap (all <400 ms)  n=90
+    min 184  p10 198  p25 199  median 200  p75 201  p90 202  max 216  mean 200
+  Game_Slave#3     n=    34
+    tick gap (all <400 ms)  n=33
+    min 187  p10 199  p25 199  median 200  p75 200  p90 201  max 213  mean 200
+  Game_Slave#5     n=   203
+    tick gap (all <400 ms)  n=202
+    min 174  p10 199  p25 199  median 200  p75 201  p90 201  max 227  mean 200
+  Game_Slave#7     n=  1729
+    tick gap (all <400 ms)  n=1726
+    min 140  p10 198  p25 199  median 200  p75 201  p90 202  max 264  mean 200
+  Game_Slave#9     n=    37
+    tick gap (all <400 ms)  n=36
+    min 195  p10 198  p25 200  median 200  p75 200  p90 202  max 202  mean 200
+  ALL  n=3163
+    min 0  p10 198  p25 199  median 200  p75 201  p90 202  max 393  mean 199
+
+--- events-20261005-023129-2000.jsonl
+  Game#10          n=    31
+    tick gap (all <400 ms)  n=30
+    min 169  p10 196  p25 198  median 200  p75 201  p90 205  max 231  mean 200
+  Game#12          n=    62
+    tick gap (all <400 ms)  n=60
+    min 22  p10 199  p25 200  median 200  p75 200  p90 201  max 201  mean 197
+  Game#2           n=    19
+    tick gap (all <400 ms)  n=18
+    min 180  p10 195  p25 199  median 200  p75 201  p90 202  max 219  mean 199
+  Game#4           n=    36
+    tick gap (all <400 ms)  n=35
+    min 191  p10 199  p25 199  median 200  p75 200  p90 201  max 210  mean 200
+  Game#6           n=   254
+    tick gap (all <400 ms)  n=253
+    min 125  p10 199  p25 200  median 200  p75 200  p90 201  max 240  mean 200
+  Game#8           n=    12
+    tick gap (all <400 ms)  n=11
+    min 181  p10 197  p25 198  median 200  p75 200  p90 202  max 220  mean 200
+  Game_Slave#11    n=   100
+    tick gap (all <400 ms)  n=99
+    min 194  p10 199  p25 200  median 200  p75 200  p90 201  max 206  mean 200
+  Game_Slave#13    n=   158
+    tick gap (all <400 ms)  n=157
+    min 168  p10 199  p25 200  median 200  p75 200  p90 201  max 213  mean 200
+  Game_Slave#3     n=   100
+    tick gap (all <400 ms)  n=99
+    min 191  p10 199  p25 200  median 200  p75 200  p90 201  max 201  mean 200
+  Game_Slave#5     n=    84
+    tick gap (all <400 ms)  n=83
+    min 166  p10 199  p25 200  median 200  p75 200  p90 201  max 204  mean 200
+  Game_Slave#7     n=    81
+    tick gap (all <400 ms)  n=80
+    min 194  p10 199  p25 200  median 200  p75 200  p90 201  max 201  mean 200
+  Game_Slave#9     n=   900
+    tick gap (all <400 ms)  n=899
+    min 192  p10 199  p25 200  median 200  p75 200  p90 201  max 208  mean 200
+  ALL  n=1824
+    min 22  p10 199  p25 200  median 200  p75 200  p90 201  max 240  mean 200
+
+==============================================================================
+4. Escape -> EscapeAck as seen entirely at the relay
+==============================================================================
+  events-20261004-235440-1500.jsonl Game#4: Escape 2, EscapeAck 1
+     ack @42140 <- Escape @41861  delta 279 ms
+  events-20261004-235440-1500.jsonl Game_Slave#20: Escape 1, EscapeAck 1
+     ack @1822019 <- Escape @1821721  delta 298 ms
+  events-20261004-235440-1500.jsonl Game_Slave#3: Escape 2, EscapeAck 1
+     ack @37357 <- Escape @37297  delta 60 ms
+  events-20261004-235440-1500.jsonl Game_Slave#5: Escape 1, EscapeAck 1
+     ack @140609 <- Escape @140319  delta 290 ms
+  events-20261004-235440-1500.jsonl Game_Slave#9: Escape 1, EscapeAck 1
+     ack @1403404 <- Escape @1402991  delta 413 ms
+  events-20261005-012701-2400.jsonl Game#8: Escape 1, EscapeAck 1
+     ack @532016 <- Escape @531753  delta 263 ms
+  events-20261005-012701-2400.jsonl Game_Slave#11: Escape 0, EscapeAck 1
+  events-20261005-012701-2400.jsonl Game_Slave#13: Escape 0, EscapeAck 1
+  events-20261005-012701-2400.jsonl Game_Slave#15: Escape 0, EscapeAck 1
+  events-20261005-012701-2400.jsonl Game_Slave#17: Escape 0, EscapeAck 1
+  events-20261005-012701-2400.jsonl Game_Slave#3: Escape 2, EscapeAck 1
+     ack @53074 <- Escape @52937  delta 137 ms
+  events-20261005-012701-2400.jsonl Game_Slave#5: Escape 0, EscapeAck 1
+  events-20261005-012701-2400.jsonl Game_Slave#7: Escape 0, EscapeAck 1
+  events-20261005-012701-2400.jsonl Game_Slave#9: Escape 0, EscapeAck 1
+  events-20261005-023129-2000.jsonl Game_Slave#11: Escape 1, EscapeAck 1
+     ack @357726 <- Escape @357450  delta 276 ms
+  events-20261005-023129-2000.jsonl Game_Slave#13: Escape 1, EscapeAck 1
+     ack @404481 <- Escape @404193  delta 288 ms
+  events-20261005-023129-2000.jsonl Game_Slave#3: Escape 0, EscapeAck 1
+  events-20261005-023129-2000.jsonl Game_Slave#5: Escape 0, EscapeAck 1
+  events-20261005-023129-2000.jsonl Game_Slave#7: Escape 0, EscapeAck 1
+  events-20261005-023129-2000.jsonl Game_Slave#9: Escape 0, EscapeAck 1
