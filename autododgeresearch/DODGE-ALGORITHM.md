@@ -274,11 +274,12 @@ slice, drop to the outer radius only (24 candidates). The admission rules below 
 A candidate is admissible only if all of these hold. Each is cheap, and the cheap ones run first.
 
 1. **in bounds** — the candidate is inside the map;
-2. **walkable** — the destination cell does not block the player. *Source*: the client's own tile
-   data, which the hook already has access to via the world object; the exact accessor is resolved
-   once at startup. If it cannot be resolved, this test degrades to "in bounds" and the hook logs
-   that it is running without terrain awareness, which is a real capability loss rather than a
-   silent one;
+2. **walkable** — the destination cell does not block the player. *Source*: the client's own
+   **collision grid**, `private byte[,] World.<grid>` (`World.cs:4318`), written from
+   `MapElement.Collision` at `World.cs:9677` and fed by `GmTiles`. A square byte array indexed by
+   tile coordinate, so this is a direct read with one resolved offset
+   ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.4). The `Collision` byte is 0 none / 1 solid /
+   2 solid3D;
 3. **path clear** — the swept segment from the player to the candidate does not cross a blocker.
    Endpoint-only checks let a candidate "through" a thin wall, and a step here is a meaningful
    fraction of a tile;
@@ -361,6 +362,12 @@ with initial weights, all to be tuned in the offline harness rather than in a li
 
 ### 5.7 Intent preservation
 
+**This is now a hard requirement rather than a preference**, because AoE and bomb damage are
+deliberately **left to the player** ([RISKS.md](RISKS.md) §2b — accepted scope). If the auto-dodge
+fights the direction the player is steering, it takes away the one tool the player has for the damage
+channel the dodge does not cover. A dodge that is right about bullets and wrong about the player's
+intent makes the operator worse off than no dodge at all.
+
 The player's steering is read from `GameScene.GameInput` (`Moving`, `MoveAngle`, `MoveSpeed`) — the
 same values `World.cs:12690-12692` consumes one line later to compute the movement delta.
 
@@ -369,8 +376,8 @@ override ladder, which is the clearest statement of "how much may intent buy" in
 reference):
 
 1. **no threat and not in a hazard** → change nothing at all;
-2. **immobile** (`speed <= 0`, paralyzed, cutscene) → do not pretend to dodge; report "immobile" and
-   let §7 handle survival;
+2. **immobile** (`speed <= 0` — paralyzed, cutscene, or anything else the speed law zeroes) → do not
+   pretend to dodge; report "immobile" and let §7 handle survival;
 3. **intent heading is safe** → do not override. `intentAlignment` in the score handles this
    automatically, but the explicit early-out keeps the common case free;
 4. **a safe override exists and the threat is not imminent** → prefer the override that stays
@@ -389,6 +396,13 @@ Two rules on top of the ladder, both from documented reference-engine bugs:
   the player into a heading that has become unsafe. Admissibility is re-checked every frame, so this
   falls out of the design — but it is the property to test, because it is the one an over-eager
   hysteresis breaks first.
+
+**The one exception to intent preservation.** Because the player is responsible for AoE, the dodge
+should *not* try to steer them out of an AoE telegraph. Doing so would override the manual dodge and
+could push them into a bullet. The rule is: **the dodge reasons about bullets; AoE is the player's,
+and the dodge's only obligation is to not fight them.** An AoE volume may be a *score* input — a mild
+preference against standing in one — but never an *admission* filter that removes candidates, because
+that is the mechanism by which it would start overriding intent.
 
 ---
 
@@ -573,24 +587,27 @@ exists.
 - **It does not model other players' bodies** unless they are enemies. In a crowded world that is a
   real omission and it is the same class of gap the reference engine's audit documents about its own
   caps.
-- **It cannot dodge what it cannot see.** A damage source with no `Projectile` object — an
-  instant-tick server event, a melee contact that resolves server-side — is invisible to this design
-  and is handled only by §7.
-- **AoE and bomb damage is a known, un-modelled channel, and it is the biggest gap in the plan.**
-  The threat model in §3 is built on `Projectile` objects; `Entity.HitBy(AoeData)` (`Entity.cs:2203`),
-  `AoeBomb.cs` and `Objects/Aoes*` were deliberately not read in this research pass. Bombs detonate on
-  a timer, so a collision-sweep model does not see them at all. This is recorded as a **required
-  pre-Phase-4 task**, not a curiosity: it is another 74 %-class blind spot if left unaddressed, and
-  unlike projectile damage it *is* visible in the packet stream (the AoE telegraph), so a proxy could
-  handle it even where the hook does not.
+- **It cannot dodge what it cannot see.** A damage source with no `Projectile` object is invisible to
+  this design and is handled only by §7.
+- **AoE and bomb damage is deliberately out of scope, by operator decision.** It is left to the player
+  to dodge manually, which is a legitimate trade: it keeps the first version's threat model to one
+  well-understood object type. **But it converts intent preservation into a requirement** — see §5.7
+  — because a dodge that overrides the player's steering has taken away the tool they need for the
+  channel it does not cover. The mechanism that makes the trade safe is the rule that an AoE may be a
+  *score* input but never an *admission* filter.
 - **Wall-bouncing projectiles are not yet predictable** (`WallBouncePath`), and the parametric
   families draw their spawn phase from a per-bullet seeded LCG. Both are handled correctly when the
   game's own `GetPosition` is called (§4.1) and neither is handled by any reimplementation — one more
   reason not to write one.
-- **The escape decision inherits `RequestEscape`'s own gates.** In a safe area it is a no-op, in the
-  world-entry grace window it is instant, and in a totem world it becomes a channel that cancels on
-  movement — the last of which interacts with the dodge and must be tested explicitly
-  ([RISKS.md](RISKS.md) §3d).
+- **Immobile means immobile.** `Paralyzed` (and any other effect the speed law zeroes) must shut the
+  dodge off entirely rather than produce a dodge the player cannot execute. `Slowed` must scale the
+  move budget down with it. Both follow from deriving `b` from the game's own speed law (§9) rather
+  than from a nominal speed, and both are worth an explicit test.
+- **The escape decision inherits `RequestEscape`'s own gates.** In a safe area it is a no-op; in the
+  world-entry grace window it is instant; and **with the `Impermanence` totem** it becomes a channel
+  that cancels on movement, which interacts with the dodge and must be tested explicitly
+  ([RISKS.md](RISKS.md) §3d, [VERIFICATION.md](VERIFICATION.md) §5.1). The ordinary instant path is
+  **not** cancelled by movement.
 
 ---
 

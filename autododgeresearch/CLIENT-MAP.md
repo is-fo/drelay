@@ -2571,6 +2571,13 @@ position, the accumulated `History`, and `Time = World.ClientTime`.
   ```
   So an autododge that sets `GameInput.Moving = true` **will cancel an in-progress nexus cast**, in the
   same frame or the next. This is a real interaction bug to design around.
+
+  **SCOPE CORRECTION (operator-confirmed).** This branch is **not normal escape**. Ordinary escape
+  takes the instant path (the `GmEscape` send at `:13011`) and is **never** cancelled by movement. The
+  channelled path is reached only when the character has the **`Impermanence` totem**, i.e. in a
+  challenge run — the same `Player.Totems.Has(...)` condition the method itself tests at `:13009`. So
+  the hazard is real but conditional, and the hook can read the same condition to know which mode it
+  is in. See [`CLIENT-FINDINGS.md`](CLIENT-FINDINGS.md) §5.3 and [`RISKS.md`](RISKS.md) §3d.
 * While `Player.KnockedUp`, the whole normal movement branch is bypassed in favour of
   `hehe_EB2C_E5A5_EE82_E9C5_EF6A(...)` (`:12683-12686`) - a hook cannot steer during knock-up.
 ---

@@ -75,8 +75,11 @@ argument for the collision-anchored design rather than a threshold at the readin
 
 ### But it does not make the nexus unnecessary in general — and this is the honest part
 
-**74 % of measured HP falls (571 of 775) have no client-side hit claim at all.** For those the server
-is the only witness: point-blank spawns, melee contact, server-resolved damage. No in-process design
+**74 % of measured HP falls (571 of 775) have no client-side hit claim at all.** The client only
+claims hits it resolves itself — and the only claim packets in the assembly are for projectiles,
+sweeps and beams. **AoE and bomb damage produces no claim whatsoever** (`Entity.HitBy(AoeData)`
+contains no `SendPacket`; it resolves on a timer server-side). So for AoE, bomb detonations,
+damage-over-time ticks and point-blank spawns the server is the only witness, and no in-process design
 sees them coming.
 
 So "the auto-nexus would never need to be triggered" is **half right**. A hook makes the nexus
@@ -169,7 +172,7 @@ per-frame cost. If those numbers are bad, the honest move is to stop at Phase 3 
 
 ---
 
-## Three things worth knowing before starting
+## Four things worth knowing before starting
 
 **1. The most valuable artefact is not the dodge.** It is the Phase 2 log that compares every predicted
 collision against every collision the game actually made. A dodge's quality cannot be established by
@@ -177,20 +180,35 @@ unit tests — the reference engine's own audit says *"live gameplay remains unv
 newest code — but the *model's* correctness can be, and that log is the only thing that can tell us
 whether the prediction is right. Build it before the solver.
 
-**2. There is a verified bug waiting in the interaction.** `World.RequestEscape()`'s channelled branch
-cancels on movement:
+**2. There is a verified interaction hazard waiting, scoped to challenge runs.**
+`World.RequestEscape()`'s **channelled** branch cancels on movement:
 
 ```csharp
 // World.cs:13043-13047
 if (GameScene.GameInput.Moving) { CancelEscapeCast(); return; }
 ```
 
-So a dodge that steers **cancels an in-progress nexus cast in the same frame**. Precedence must be
-designed before the dodge is enabled live, not patched after. It is one of the two controllers fighting
-over one player, and it is the reason the reference engine has explicit yield logic in every engine it
-ships.
+A dodge that steers **cancels an in-progress nexus cast in the same frame**. Precedence must be
+designed before the dodge is enabled live, not patched after. **Scope it correctly, though:** that
+branch is reached only with the `Impermanence` totem — ordinary escape is instant and is never
+cancelled by movement. An earlier draft of this research stated that as a general hazard; it is not,
+and the correction is recorded in [CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.3. The practical
+consequence is that a test suite which never equips the totem will pass while the real bug sits
+untouched.
 
-**3. The reference repo was worth reading, but almost none of it should be copied.**
+**3. Three things are deliberately out of scope, and one of them constrains the design.** AoE and bomb
+damage is left to the player; point-blank spawns are treated as a positioning problem rather than a
+reaction problem (and are mostly avoidable); and there is **no melee or contact damage** at all, which
+removes a row rather than adding one.
+
+The AoE decision is the one that costs something, because it makes **intent preservation a
+requirement rather than a preference**: if the dodge fights the direction the player is steering, it
+has taken away the tool they need for the channel it does not cover. The mechanism that keeps the
+trade safe is a single rule — **an AoE volume may affect a candidate's score, but it must never remove
+a candidate** ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.7, [VERIFICATION.md](VERIFICATION.md) §3
+invariant I11).
+
+**4. The reference repo was worth reading, but almost none of it should be copied.**
 [Evergreen-Techworks/realm-engine-client](https://github.com/Evergreen-Techworks/realm-engine-client)
 is a mature dodge engine for a different game, and what transfers is its **reasoning**, not its
 numbers: a two-strike projectile retirement policy, fixed-step trajectory sampling, anchoring on the

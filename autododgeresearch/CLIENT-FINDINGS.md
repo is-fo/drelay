@@ -652,6 +652,112 @@ The frame-loop check that turns the key press into a call is
 `:12842`). Both packets are already modelled and byte-verified on the Java side
 (`docs/INJECTION.md` §1.5), so the hook and the proxy can agree on the wire bytes.
 
+**The cast branch is a challenge-run special case, not normal escape.** This corrects an earlier
+reading of this document, which described the movement cancellation in `RequestEscape` as a general
+interaction hazard. It is not. Operator-confirmed semantics:
+
+- **Normal escape is instant and is never cancelled by moving.** The ordinary player path takes the
+  `:13011` branch and sends the empty `GmEscape` immediately.
+- **The channelled branch is reached only when the character has the `Impermanence` totem** — a
+  challenge/run modifier. Only there does `World.cs:13043-13047` cancel the cast on movement.
+
+So the two-controller hazard is **real but scoped to challenge runs**, and it is the one case where
+a dodge that steers can cancel the escape the same frame it issues it. The design consequence is the
+same precedence rule ([RISKS.md](RISKS.md) §3d), but it is now correctly sized: the hook can assume
+the instant path is the normal one, and only needs the yield logic when the totem is present. The
+client makes that detectable from the same `Player.Totems` check the game itself performs at
+`World.cs:13009`.
+
+**There is no melee or contact damage** (operator-confirmed, and consistent with every damage site
+found in the decompile: the paths are `HitByProjectile`, `HitBy(AoeData)` and `HitBy(int, …)`, all of
+which require a projectile or an AoE). That removes a whole row from the scenario table in
+[TIMING.md](TIMING.md) §6 and it removes the "melee" entry from the non-goals in
+[RISKS.md](RISKS.md) §5.
+
+**Movement-stopping status effects, and the one that ends the dodge entirely.** Two effects change
+the speed the dodge must budget for, and they are not the same case:
+
+| effect | resolved effect on the speed law | what the dodge must do |
+|---|---|---|
+| `Paralyzed` | `TilesPerSecond` **returns 0 immediately** (`PlayerFunctions.cs:461-470`) | **do not attempt to dodge at all.** The player cannot move, so every candidate is a lie. The design's `movementLocked` gate covers this, and it must be driven by the *computed* speed rather than by a separate check, so that any future effect with the same consequence is covered for free |
+| `Slowed` | multiplies by `StatusEffectValues.GetValue(Slowed, tier)` (`PlayerFunctions.cs:510`) | dodge, but with a **proportionally smaller move budget `b`** and a correspondingly shorter reachable radius |
+
+Both fall out of the design correctly **only because the budget is derived from the game's own
+`TilesPerSecond`** ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §9) rather than from a nominal speed:
+the hook computes the speed by calling the game's law with the live status tiers, so a slowed player
+gets a smaller `b` automatically. **A hardcoded nominal speed would produce a dodge that spends
+budget the player does not have**, which is both a wasted dodge and a movement the server can
+reject. This is the concrete reason the speed model must be *called*, not assumed, and it is worth a
+dedicated test: assert that with `Slowed` at each tier the emitted move magnitude scales as the
+game's own speed does.
+
+
+
+---
+
+### 5.4 Terrain: the walkability grid exists and is readable
+
+This closes what was listed as an open capability question (RISKS §3b). The client maintains a
+**real per-tile collision grid**, and it is fed by a packet we can name.
+
+### The packet
+
+```
+GmTiles                                    DarzaGameNet.Packets.Game.GameServer/GmTiles.cs
+  Tiles = new MapElement[r.ReadVarint()]   // count, then per element:
+      Type  = (short)r.ReadVarint()        // a tile-type id
+      DeltaX += r.ReadVarint()             // run-length X delta
+      DeltaY += r.ReadVarint()             // run-length Y delta
+  ...then a separate run-length-encoded collision array:
+      num4 = r.ReadVarint()                // number of RLE entries
+      for j in 0..num4:
+          num6 = r.ReadVarint()
+          num5 += num6 >> 1                // delta-encoded index -- element (num5)
+          Tiles[num5].Collision = ((num6 & 1) != 0) ? 5 : 1
+```
+
+and the element:
+
+```
+public struct MapElement                     DarzaGameNet.Structures/MapElement.cs
+    public const byte CollisionNone   = 0;   // :5
+    public const byte CollisionSolid  = 1;   // :7
+    public const byte CollisionSolid3D= 2;   // :9
+    public short X, Y, Type;
+    public byte Width, Height, Collision;
+```
+
+So `Collision` is a small enum and the RLE encodes a **1-bit** value per index with the low bit
+carrying it — which is why the writer emits `(delta << 1) | (collision == 5 ? 1 : 0)`
+(`GmTiles.cs:94`) and the reader masks `num6 & 1` and takes `num6 >> 1` as the delta.
+
+### The client-side grid the hook should read instead
+
+The packet's delta encoding is not something a native hook wants to maintain. It does not have to:
+
+```
+private byte[,] World.<grid>               World.cs:4318     // a true 2-D byte array, [x, y]
+World.cs:9677   array[result2.X, result2.Y] = result2.Collision;   // the ingest
+World.cs:15887  private (byte Terrain, byte Entity) <query>()      // and a combined query
+```
+
+**This is the best terrain story available anywhere in the project:** a square `byte[,]` indexed
+directly by tile coordinate, holding exactly the collision byte. A native reader needs only
+
+- the field's offset on `World` (resolved at startup like every other offset), and
+- the .NET array layout, which is fixed: element count at `+8`, first element at `+16`, and for a
+  `byte[,]` the stride is 1 byte with the two lengths stored in the array's MethodTable-adjacent
+  bounds.
+
+`Tilemap.GetTile(x, y)?.Type` (`World.cs:9673`) gives the tile *type*, and `DataManager.Data.Tiles`
+maps a type to `TileData`, which carries the `NoWalk` flag (`TileData.cs:52`) — so a hook that
+prefers a type-based model has that route available too. But the collision grid is the direct one and
+is what the game's own movement code consults.
+
+**Consequence for [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.3:** the walkability tests (rules 2
+and 3) are no longer provisional. They read this grid, and the "terrain awareness unavailable"
+degradation is a fallback for a *failed offset resolution*, not for a missing capability.
+
 ---
 
 ## 6. Damage arithmetic, as the client computes it

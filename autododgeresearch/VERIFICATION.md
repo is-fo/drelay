@@ -111,9 +111,17 @@ Each of these is a property that can be checked mechanically, and each names the
 | I6 | temporal clearance is never credited past the point the prediction is trusted | a blind tail scoring as "clear for 600 ms" |
 | I7 | a re-rented `Projectile` never inherits a dead bullet's record | "the dodge reacts to bullets that do not exist" |
 | I8 | the solver's cost stays inside its slice as candidate count scales | the frame budget |
+| I9 | **with the computed speed at or below zero, no move is emitted at all** and the decision reports "immobile" | a dodge the player physically cannot execute — `Paralyzed` zeroes the speed law, and so may any future effect |
+| I10 | the emitted magnitude scales with the game's own speed law across every `Slowed` tier | a nominal-speed dodge that overspends the budget exactly when the player is debuffed, and looks wrong to the server |
+| I11 | **an AoE volume never removes a candidate; it may only affect its score** | the dodge overriding the player's manual AoE dodge, which is the one thing accepted scope depends on it not doing ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.7) |
+| I12 | walkability never rejects a cell the client's collision grid reports as walkable | a stale or wrongly-indexed terrain grid silently fencing the player in |
 
 I3 and I4 are deliberately in tension and must both hold. Testing only I3 produces a dodge that
 commits to a heading that has become lethal; testing only I4 produces one that jitters.
+
+I9 and I10 are the two that a naive harness skips, because both require driving the solver with a
+speed it did not choose. They are exactly the cases where a dodge is most likely to be wrong in a way
+that matters, because they coincide with the player being least able to compensate.
 
 **What L1 cannot tell you:** whether the snapshot is *representative*. A solver can satisfy every
 invariant on synthetic data and behave badly in a real 40-bullet fight. That is what L2 is for.
@@ -218,7 +226,31 @@ Variants, because each exercises a different branch of `RequestEscape` that a si
 | escape while a `MovingTowards` is active | a scripted move can be cancelled by state the hook did not observe (`Player.StopMovingTowards`) |
 | escape in a safe area | `RequestEscape` is a legitimate **no-op** there — the dodge must not mistake that for success |
 | escape inside the world-entry grace window | the instant path is taken rather than the cast |
-| escape in a totem world | the **channelled** path is taken and cancels on the first movement — the variant most likely to be discovered the hard way, because it only happens to characters with a particular run modifier |
+| **escape with the `Impermanence` totem** | the **channelled** path is taken and cancels on the first movement |
+
+The totem variant is the one that matters and the one a naive test misses, because the ordinary
+instant escape **is not** cancelled by movement — an earlier draft of this research got that wrong.
+Only challenge runs take the channelled branch ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.3), so a
+test suite that never equips the totem will pass while the real bug sits untouched.
+
+### 5.2 The movement validation boundary
+
+Because the server's movement check is a **distance-per-game-tick** bound rather than a
+"programmatic vs human" test ([RISKS.md](RISKS.md) §2a), the test is a boundary search rather than a
+pass/fail:
+
+1. drive the player with increasingly large per-tick magnitudes until the server objects;
+2. record the largest magnitude that is still accepted, and the `GmKicked` reason when it is not;
+3. assert the design's budget `b = TilesPerSecond × frameSeconds` sits inside that bound **with
+   margin**, at every `Slowed` tier and on the slowest and fastest tiles.
+
+**The failure this catches is not "the dodge was detected" — it is "the dodge's budget was computed
+with the wrong speed".** That is why the test sweeps `Slowed` tiers: a dodge that uses a nominal
+speed produces a legal move at full speed and an illegal one exactly when the player is debuffed,
+which is precisely when they need the dodge.
+
+An immobility check belongs here too: with `Paralyzed` active, `TilesPerSecond` returns 0, and the
+hook must emit **no move at all** and report "immobile" rather than a dodge the player cannot execute.
 
 ---
 

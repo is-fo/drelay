@@ -41,8 +41,8 @@ What follows from that:
 | **5** | a bad read crashes the game | medium | crash, lost run | GC and pooling hazards are real (`HOOK-ARCHITECTURE.md` §5) |
 | **6** | the dodge fights the escape | **high if unhandled — verified** | an in-progress nexus cast is cancelled, in the same frame | `World.cs:13043-13047` |
 | **7** | prediction disagrees with the game's collision | unknown until measured | the dodge is confidently wrong | no measurement exists yet; Phase 2 exists to produce one |
-| **8** | terrain awareness unavailable | medium | dodge aims through walls | the walkability accessor is unresolved |
-| **8b** | **AoE / bomb damage is not modelled at all** | **certain — it is not built yet** | a whole damage channel stays un-dodged; the plan's threat model covers `Projectile` only | `Entity.HitBy(AoeData)`, `AoeBomb` and `Objects/Aoes*` were not read in this pass; bombs detonate on a timer, so a collision sweep cannot see them |
+| **8** | terrain awareness unavailable | **low — resolved** | dodge aims through walls | **the client maintains a real collision grid**: `private byte[,] World.<grid>` (`World.cs:4318`), written from `MapElement.Collision` at `World.cs:9677`, fed by `GmTiles`. A `byte[,]` indexed by tile coordinate is readable from native code with one resolved offset. See [CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.4 |
+| **8b** | **AoE / bomb damage is not modelled, by decision** | **accepted scope** | a whole damage channel is left to the player | operator decision: AoE is left to **manual** dodging, which is acceptable **provided the auto-dodge respects the player's intended direction** so it does not fight the manual dodge. That makes intent-preservation a requirement rather than a preference — see [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.7 |
 | **9** | the runtime's assumptions break | low today | whole approach needs rework | tiered compilation is off and verified; a future patch could flip it |
 | **10** | the tool gets blamed for a game bug | medium | time lost, trust lost | unavoidable; mitigation is logging |
 
@@ -66,18 +66,31 @@ apply its own speed law and collision, and emit its own timestamped move records
 (`World.cs:12690-12692`, `:12710`, `:12714`, `:12780-12783`). That should be legitimate by
 construction.
 
-But *should* is not *is*, and the client's own code shows what the server can check against:
-`GmMove` carries `History` + `Position` + `Time`, and `CLIENT-MAP.md` §6.5 notes that a per-step jump
-larger than one resolved constant *"will look like a speed hack"*. The distance constants are now
-recoverable (`tools/poolresolve.py`), so at least the question is well posed.
+> **Operator input, which substantially de-risks this.** The server **does** validate movement, but
+> the validation is a **distance-per-tick** check: a move is rejected when it travels *too far in a
+> game tick*, not merely because a program authored it. That is exactly the constraint this design
+> already respects — the per-frame move budget `b` is derived from the game's own
+> `TilesPerSecond × frameSeconds` ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.2), so every candidate
+> is a move the client could legally have produced. **The remaining risk is therefore not "will
+> programmatic movement be detected" but "can the hook compute the legal per-tick distance
+> correctly"** — and that is measurable offline, which changes the risk from architectural to
+> arithmetic.
 
-**The decisive mitigation is cheap and should be done first: test it from the proxy, with no hook at
-all.** `drelay` is already the man in the middle. Injecting a plausible `Move` and watching for
-`GmKicked` (id 185, whose reason string the relay already decodes — `docs/INJECTION.md` §5.5) answers
-the question in an afternoon, before a line of C++ is written.
+What that reframing makes load-bearing:
 
-**If it fails**: Phase 4 is cancelled and Phases 0–3 stand alone. That is a real possibility and the
-plan is deliberately shaped so that the outcome is still a success.
+| must be right | why | how to check |
+|---|---|---|
+| the frame/tick delta used to size `b` | too large a `b` produces a rejected move, not a slow one | the client publishes the real delta as `Time.ElapsedSec`; **not** `LogicElapsedSec`, which is a residual ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §1.5) |
+| the speed, including `Slowed` tiers and the `grounded`/tile multiplier | a nominal speed overspends the budget exactly when the player is debuffed | call `PlayerFunctions.TilesPerSecond` with the live tiers, never assume |
+| that the escape interaction does not double-spend | the client's own movement *and* the hook's steering in one frame is the classic two-controller bug | [RISKS.md](RISKS.md) §3d and the two-controller test ([VERIFICATION.md](VERIFICATION.md) §5.1) |
+
+**The cheap confirmation is still worth an afternoon:** the proxy is already the man in the middle, so
+injecting a deliberately oversized `Move` and watching for `GmKicked` (id 185, whose reason string the
+relay already decodes — `docs/INJECTION.md` §5.5) turns "the server validates" into a measured
+threshold rather than a known fact.
+
+**If it fails anyway**: Phase 4 is cancelled and Phases 0–3 stand alone. The plan is deliberately
+shaped so that the outcome is still a success.
 
 ### 2b. Most damage does not pass through client code
 
@@ -93,11 +106,12 @@ know**:
 | slow projectile with a visible approach | **yes, comfortably** |
 | fast projectile, predicted on a previous frame | **yes — 55–98 ms of extra warning** |
 | fast projectile, acted on only at the collision | marginally, one frame |
-| telegraphed AoE with a non-zero delay | **yes** — and note the packet stream already carries the telegraph, so this is the one row a proxy could also do |
+| telegraphed AoE with a non-zero delay | **out of scope by decision** — left to the player, and the dodge must not fight them |
+| AoE or bomb detonation (no client claim at all) | **no** — `Entity.HitBy(AoeData)` sends no packet; it resolves on a timer server-side |
 | first tick of a beam/DoT | partly |
-| point-blank spawn | **no** — the collision is t = 0 |
-| melee/contact | **no** — no client involvement |
+| point-blank spawn | **no** — the collision is t = 0, though operator guidance is that good positioning makes these mostly avoidable |
 | every subsequent DoT tick | **no** |
+| **melee / contact** | **does not exist** (operator-confirmed, and consistent with every damage site in the decompile requiring a projectile or an AoE) |
 | server-resolved damage | **no** — by definition |
 
 **The mitigation is honesty in the reporting, not a mechanism.** The Phase 2/3 trial must account for
@@ -160,15 +174,19 @@ removes both hazards from the hot path by construction.
 **Concede**: a `.NET` runtime update could change object-layout details. Mitigation: measure every
 offset at startup on every launch rather than baking it in, and abort if a resolve looks implausible.
 
-### 3b. Terrain awareness
+### 3b. Terrain awareness — resolved, with one fallback
 
-The dodge's swept-path admission tests need to know what blocks the player. The client has that
-information; whether it is reachable as a callable from the hook is unresolved.
+**This is no longer an open capability question.** The client maintains a per-tile collision grid —
+`private byte[,] World.<grid>` at `World.cs:4318`, written from `MapElement.Collision` at
+`World.cs:9677` — and it is fed by the `GmTiles` packet, whose `MapElement.Collision` byte is a
+0/1/2 enum (none / solid / solid3D). A square `byte[,]` indexed directly by tile coordinate is
+straightforward native reading: one resolved field offset plus the fixed .NET array layout.
+[CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.4 has the packet structure and the layout.
 
-**Mitigation**: make it a startup capability probe with three outcomes — resolved, unresolved, and
-resolution-failed. If unresolved, the dodge degrades to bounds-only and **logs the capability loss at
-startup**, so an operator knows the dodge is running blind rather than discovering it when the player
-walks into a wall.
+**Mitigation, and it is now only a fallback:** the offset resolution pass reports whether the grid
+resolved. If it did not, the dodge degrades to bounds-only **and logs the capability loss at
+startup**, so an operator knows it is running blind rather than discovering it when the player walks
+into a wall. That is a fallback for a failed resolution, not for a missing capability.
 
 ### 3c. The prediction model being wrong
 
@@ -184,7 +202,7 @@ nexus rather than building a dodge on a model that does not match reality.
 invariants rather than dodge quality. The honest goal is a model whose disagreements are all
 explicable, plus an escape floor underneath it.
 
-### 3d. The dodge fighting the escape — verified interaction bug
+### 3d. The dodge fighting the escape — verified, and scoped to challenge runs
 
 **Located, and it is not hypothetical.** `World.RequestEscape()`'s channelled branch cancels on
 movement:
@@ -198,12 +216,22 @@ So a dodge that sets `GameInput.Moving = true` **cancels an in-progress nexus ca
 or the next. This is the classic two-controllers-one-player problem, and it is the reason the
 reference engine has explicit WASD-yield logic in every one of its engines.
 
+**But scope it correctly, because an earlier draft of this document overstated it.** That branch is
+**not normal escape**. Normal escape is instant and is never cancelled by movement; the channelled
+path is reached **only when the character has the `Impermanence` totem**, i.e. in a challenge run
+([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.3). So the hazard is real but conditional, and the
+`Player.Totems` check the game itself performs at `World.cs:13009` is the same condition the hook can
+read to know which mode it is in.
+
 **Mitigation, and it must be designed before the dodge is enabled live** — not patched afterwards:
 
 1. the escape is **authoritative**: once the hook has decided to escape, the dodge stops emitting for
-   the duration of the escape (the cast branch's own cancellation is the signal);
+   the duration of the escape;
 2. the dodge's state machine observes the client's cast flag and yields, rather than racing it;
-3. the interaction is an explicit test (see §4).
+3. the hook knows which mode it is in, from the same totem check the client uses — and while the
+   instant path is the normal one, the *rule* should not assume that, because the failure mode when
+   it is wrong is a cancelled run-saving escape;
+4. the interaction is an explicit test ([VERIFICATION.md](VERIFICATION.md) §5.1).
 
 Two further interactions in the same family, both from `CLIENT-MAP.md` §6.5:
 
@@ -212,6 +240,18 @@ Two further interactions in the same family, both from `CLIENT-MAP.md` §6.5:
 - **`Player.StopMovingTowards()` is called from the dead/spirit gate and on arrival**, so a scripted
   move can be cancelled by state the hook did not observe. If the `MovingTowards` mechanism is chosen,
   the hook must treat "the move stopped" as information, not as a bug.
+
+### 3e. Movement-stopping and movement-reducing effects
+
+`Paralyzed` makes `TilesPerSecond` return **0**, and `Slowed` multiplies it by a tier-dependent
+factor. Both are handled correctly **only because the move budget is derived from the game's own
+speed law rather than a nominal speed** ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.3). A hardcoded
+speed would overspend the budget exactly when the player is debuffed, producing both a wasted dodge
+and a move large enough to look wrong to the server.
+
+**Mitigation:** the `movementLocked` gate is driven by the *computed* speed (`<= 0` ⇒ do not dodge at
+all, report "immobile" rather than a fake dodge), and the harness asserts that the emitted move
+magnitude scales with the speed law across `Slowed` tiers.
 
 ---
 
@@ -226,11 +266,12 @@ test deserves isolation because it is the only one that can catch a whole class 
 
 Its variants: escape during knock-up; escape while a `MovingTowards` is active; escape in a safe area
 (where `RequestEscape` is a legitimate no-op and the dodge must not mistake it for success); escape
-inside the world-entry grace window (where the instant path is taken); and escape in a totem world
-(where the channelled path is taken and cancels on the first movement).
+inside the world-entry grace window (where the instant path is taken); and **escape with the
+`Impermanence` totem** (where the channelled path is taken and cancels on the first movement).
 
-That last variant is the one most likely to be discovered the hard way, because it only happens to
-characters with a particular run modifier.
+That last variant is the one most likely to be discovered the hard way. It only happens to characters
+with a particular run modifier — which is exactly why a test that runs without it will pass and tell
+you nothing.
 
 ---
 
@@ -240,8 +281,13 @@ Stated plainly so that no one reads more into the design than is there:
 
 - **It cannot make every hit survivable.** 74 % of measured falls never touch client code
   (§2b). No in-process design changes that.
-- **It cannot dodge a point-blank spawn or a contact hit.** There is no earlier frame in which the
-  information exists.
+- **It deliberately does not cover AoE or bombs.** Left to the player, with the dodge's obligation
+  being to respect their steering ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.7).
+- **It cannot dodge a point-blank spawn.** There is no earlier frame in which the information exists.
+  Operator guidance is that these are **mostly avoidable in practice** — a point-blank spawn requires
+  the enemy to be inside the player's hit radius already, which good positioning prevents — so the
+  dodge's job here is not to react but to avoid ending up there. There is **no melee or contact
+  damage**, so a point-blank projectile is the only case in this class rather than one of two.
 - **It cannot stop damage already being ticked.** Once the server is applying a beam or DoT, the
   escape must traverse one network leg plus tick quantisation to change a decision already in
   progress.

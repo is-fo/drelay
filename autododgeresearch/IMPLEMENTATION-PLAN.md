@@ -24,10 +24,13 @@ is that whole interval plus one frame — **not** the escape round trip, which b
 
 **What is not true.** "Never needing to be triggered" implies preventing damage generally. That is
 not achievable, and the measurement says why: **74 % of measured HP falls (571 of 775) have no
-client-side hit claim at all.** For those the server is the only witness, no client-side hook can see
-them coming, and no amount of in-process code changes that. The hook helps exactly where the client
-is the first to know — projectiles with a client-visible approach — and does nothing at all for
-point-blank spawns, melee contact and server-resolved damage.
+client-side hit claim at all.** The client only ever claims hits it resolves as its own collision —
+and the only claim packets in the whole assembly are `GmHit` (projectiles), `GmAllyHit`,
+`GmSweepHit`/`GmPlayerSweepHits` (sweeps) and `GmLaserHit`/`GmPlayerLaserHit` (beams). Damage from
+**AoE and bombs produces no claim at all** (`Entity.HitBy(AoeData)`, `Entity.cs:2203`, contains no
+`SendPacket`), because it resolves on a timer server-side. So the hook helps exactly where the client
+is the first to know — projectiles with a client-visible approach — and does nothing for AoE, bomb
+detonations, damage-over-time ticks, or point-blank spawns.
 
 **So the plan is shaped to deliver the reliable half first.** A *predictive nexus* (Phase 3) is
 worth most of the benefit, is far less risky than movement injection, and answers the reported
@@ -336,18 +339,26 @@ existing settings are, because "a typo would otherwise look like a setting that 
 proves the shape works — but the **movement question**, which is the one thing in this whole design
 with no precedent in the reference and no measurement in the captures.
 
-### Phase 4 prerequisite — close the AoE gap
+### Phase 4 prerequisite — scope decisions, already taken
 
-**This is a task, not a risk item, and it must be done before the solver is written.** The threat model
-in [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §3 is built entirely on `Projectile` objects. **AoE and
-bomb damage is a separate channel that was not read in this research pass**: `Entity.HitBy(AoeData)`
-(`Entity.cs:2203`), `AoeBomb.cs` and `Objects/Aoes*`. Bombs detonate on a timer, so a collision sweep
-does not see them at all, which makes this another 74 %-class blind spot if it is left unaddressed.
+Two decisions remove work from this phase, and both are recorded because they change what "done"
+means:
 
-Read it, and note the one thing that makes it *easier* than projectiles: the AoE telegraph **is** in the
-packet stream (`GmAoes`/`GmAoes2` carry `Target`, `Value`, `Radius`, `Delay` — `work/report-handlers.md`
-§C.3), so this is the one damage channel a packet-only proxy could also handle. The hook's advantage
-here is live tile/occupancy state, not earlier knowledge.
+1. **AoE and bomb damage is out of scope by operator decision.** It is left to the player to dodge
+   manually. That closes the coverage gap this plan previously treated as a required task — but it
+   **promotes intent preservation to a requirement** ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.7):
+   a dodge that overrides the player's steering takes away the tool they need for the channel it does
+   not cover. An AoE volume may be a *score* input; it must never be an *admission* filter.
+2. **Terrain is available, not hypothetical.** The client's own collision grid is
+   `private byte[,] World.<grid>` (`World.cs:4318`), fed by `GmTiles` and written at `World.cs:9677`.
+   Admission rules 2 and 3 read it directly ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.4), so the
+   "running blind" degradation is a fallback for a failed offset resolution rather than an expected
+   state.
+
+**Movement validation is also reframed.** The server does validate movement, but the check is
+**distance per game tick** — so the design's per-frame budget, derived from the game's own
+`TilesPerSecond × frameSeconds`, is the constraint that matters, and it is an arithmetic question
+rather than an architectural one ([RISKS.md](RISKS.md) §2a).
 
 ### Spike 4.1 — can we move at all? (do this before writing a solver)
 
@@ -368,6 +379,9 @@ it is the cheapest possible way to learn whether the server validates movement. 
 
 **Success criterion**: the player moves under hook control for a sustained period, the server does
 not kick, no snap-backs, and the dodge device's own movement accounting (`Player.TPS`) stays sane.
+Because the validation is a distance-per-tick check, the spike should deliberately probe the
+**boundary**: find the largest per-tick magnitude that is still accepted, and confirm the design's
+budget sits inside it with margin.
 
 **If this fails**: Phase 4 does not happen. Steel yourself for that outcome before starting, because
 it is a real possibility and the honest response is to stop rather than to escalate to more invasive
