@@ -74,3 +74,5 @@ __pycache__/
 # directory. It is regenerable and never published; the distilled findings live in
 # autododgeresearch/.
 /.research/
+### Commit-message scratch ###
+/autododgeresearch/.commitmsg
