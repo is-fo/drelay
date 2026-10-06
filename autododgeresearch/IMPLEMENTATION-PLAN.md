@@ -6,7 +6,8 @@ The supporting research is [CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) (the client,
 [TIMING.md](TIMING.md) (the measured window), [CLIENT-MAP.md](CLIENT-MAP.md) (the exhaustive
 reverse-engineering map), [HOOK-ARCHITECTURE.md](HOOK-ARCHITECTURE.md) (how the hook is installed),
 [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) (what it computes), [JAVA-BRIDGE.md](JAVA-BRIDGE.md) (how it
-reports) and [RISKS.md](RISKS.md).
+reports), [VERIFICATION.md](VERIFICATION.md) (how each phase is proved, and how it can fail) and
+[RISKS.md](RISKS.md).
 
 ---
 
@@ -423,6 +424,11 @@ optional if it is done at all:
 The reference engine's audit is candid that *"live gameplay remains unverified"* for much of its
 newest code, which is a warning worth heeding: a dodge's quality cannot be established by unit tests.
 But a dodge's *correctness properties* can, and offline tests are the only cheap place to iterate.
+
+**The procedure that runs these — in what order, with what a pass licenses, and with the
+falsification test that must pass before the model may be trusted — is
+[VERIFICATION.md](VERIFICATION.md).** The table below is the index of what exists; that document is
+how to run it.
 
 | # | test | phase | what it catches |
 |---|---|---|---|
