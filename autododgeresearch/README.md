@@ -9,6 +9,27 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 
 ---
 
+## What "proactive" means here, precisely
+
+The word does a lot of work in this project, so it is worth pinning down before anything else, because
+the honest answer is narrower than it sounds.
+
+**Reactive** is the current rule: it reads the server's `GmHealthUpdate`, which reports damage *after*
+the server has applied it, and escapes. Its decision point is downstream of the damage.
+
+**Proactive** here means exactly one thing: the decision point moves **upstream of the damage**, to the
+instant the client itself resolves a hit — which is measurably one server round trip *before* the
+server applies it. It does **not** mean the damage is prevented. The hook's two tools are, in order:
+**move out of the way** (dodge), and **leave before it lands** (preventive escape). Both are actions
+taken *before* the damage, which is what makes them proactive; neither makes damage impossible.
+
+And the scope of the improvement is bounded by measurement, not by hope: **74 % of measured HP falls
+have no client-side hit claim at all**, so for most damage there is no earlier decision point to move
+to. The hook is proactive wherever the client is the first to know, and helpless wherever the server
+is. [RISKS.md](RISKS.md) §2b and §5 list those cases individually.
+
+---
+
 ## The answer in one page
 
 ### The frustration was real, and the reason is now measured
