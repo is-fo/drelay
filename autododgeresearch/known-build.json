@@ -1,0 +1,46 @@
+{
+  "_comment": "The build the autododge research was verified against. This is a RECORD, not a policy: Fingerprint.ps1 compares the installed game against these values and refuses on mismatch. Regenerate after every game or runtime update, and record what changed.",
+  "recorded": "2026-10-07",
+  "recordedFrom": "E:\\SteamLibrary\\steamapps\\common\\Darza's Dominion",
+
+  "game": {
+    "version": "5.8.2",
+    "steamAppId": 1895130,
+    "note": "Two apphosts ship with DIFFERENT builds of the game assembly. The root exe is the SharpDX/DirectX one (includes Microsoft.WindowsDesktop.App); OpenGL\\DarzasDominion.exe is the MonoGame one and carries its own runtime copy. Only the root one has been analysed."
+  },
+
+  "assembly": {
+    "file": "DarzasDominion.dll",
+    "size": 50216960,
+    "sizeOpenGlVariant": 50831360,
+    "sha256": "B34181534DAE0114970446985E40755F9559F15711DF9461167BABA1FD88CEF8",
+    "sha256OpenGlVariant": "8158393955A9D07E67B0BA04EDC326201C31025DBB327F02DA54B913ACCA984C",
+    "mustBeIlOnly": true,
+    "comImageFlags": "0x00000001",
+    "managedNativeHeaderRva": 0,
+    "note": "ILONLY must be set and ManagedNativeHeader must be 0. If the assembly ever ships ReadyToRun, a compileMethod hook stops seeing its methods and the whole hook design needs rework. The SHA-256 is checked because size alone does not detect an edit that preserves length -- a mutation test proved that gap: flipping one byte of the assembly left the size check passing."
+  },
+
+  "runtime": {
+    "tfm": "net9.0",
+    "version": "9.0.20",
+    "coreclrBuild": "9.0.2026.41315",
+    "tieredCompilation": false,
+    "note": "TieredCompilation MUST be false. It is the single assumption the hook design rests on: with it off, each method is JIT-compiled once and a detour is permanent. A future patch flipping it to true invalidates the approach unless DOTNET_TieredCompilation=0 is forced in the launcher environment."
+  },
+
+  "jit": {
+    "vtableCodeSlotCount": 4,
+    "compileMethodSlot": 0,
+    "getVersionIdentifierSlot": 2,
+    "note": "Verified by disassembly of the shipped clrjit.dll. getVersionIdentifier is at slot 2 on .NET 5+; the widely-copied community JIT-hook libraries hardcode slot 4, which was correct only up to .NET Core 3.1. compileMethod has always been slot 0. Read slot 2 and validate the returned GUID rather than trusting any hardcoded index."
+  },
+
+  "targetMethods": {
+    "_comment": "The four primary detour targets, by IL hash (to be filled by tools/il_index.py, Phase 0). Absent until the table is generated; Fingerprint.ps1 reports this as a known gap rather than a failure.",
+    "frameTick": null,
+    "spawn": null,
+    "collision": null,
+    "escape": null
+  }
+}

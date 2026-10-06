@@ -213,21 +213,20 @@ Everything is reproducible. Nothing here is hand-waved from a blog post.
 
 | tool | does |
 |---|---|
+| **[`tools/Fingerprint.ps1`](tools/Fingerprint.ps1)** | **the Phase 0 gate, and the first thing to run before any session.** Nine-plus static checks — tiered compilation, IL-only status, the assembly's size *and SHA-256*, the `clrjit` vtable's code-slot count, both runtime DLL versions — and a non-zero exit on any mismatch. It resolves `getJit` from the export directory itself, so it needs no other tooling. Mutation-tested: a same-size byte flip in the assembly makes it fail loudly. Its expected values live in [`known-build.json`](known-build.json) |
 | [`tools/Test-JitVtable.ps1`](tools/Test-JitVtable.ps1) | locates `clrjit!getJit`, resolves `&g_CILJit`, and dumps the `ICorJitCompiler` vtable. **This is Phase 0's most important instrument** — it proves the four-slot layout and which slot holds `compileMethod` on the exact runtime build |
 | [`tools/Test-ReadyToRun.ps1`](tools/Test-ReadyToRun.ps1) | reads the COR20 `ManagedNativeHeader` and reports IL-only vs ReadyToRun. Verified on this install: `DarzasDominion.dll` and `MonoGame.Framework.dll` are **IL-only**; `System.Private.CoreLib.dll` **is R2R** |
 | [`tools/Get-PeExports.ps1`](tools/Get-PeExports.ps1) | PE export lister; used to confirm `coreclr.dll` exports `GetCLRRuntimeHost` and `g_dacTable`, i.e. that in-process DAC reads are on the table |
 | [`tools/poolresolve.py`](tools/poolresolve.py) | resolves `hehe(N)` constant lookups in the IL to real values, by pairing each index with the return type of the call that consumes it. This is what recovered the movement law and the damage law |
+| [`tools/il_constants.py`](tools/il_constants.py) | resolves obfuscated literal *values* straight out of the IL dump |
+| [`tools/g.py`](tools/g.py) | bounded grep-with-context, written because `World.cs` is 24,381 lines and cannot be read whole |
 | [`pe_probe.py`](../work/pe_probe.py) | PE/CLI/R2R probe — proves the assembly is pure IL with no ReadyToRun block |
 | [`md_probe.py`](../work/md_probe.py) | .NET metadata table census — 23,743 methods, 25,105 fields |
 | [`_pooldecode.py`](../work/_pooldecode.py) | decrypts the obfuscator's constant pool (1035 ints / 16 longs / 787 floats / 229 doubles), verified against eight independently-known packet ids |
 
-Run the three PowerShell probes as the first step of any re-verification:
-
 ```powershell
-$g = "E:\SteamLibrary\steamapps\common\Darza's Dominion"
-.\autododgeresearch\tools\Test-JitVtable.ps1  -Path "$g\clrjit.dll"
-.\autododgeresearch\tools\Test-ReadyToRun.ps1 -Path "$g\DarzasDominion.dll"
-.\autododgeresearch\tools\Get-PeExports.ps1   -Path "$g\coreclr.dll"
+# the one command to run before any session
+.\autododgeresearch\tools\Fingerprint.ps1
 ```
 
 
