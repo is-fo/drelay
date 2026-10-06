@@ -8,15 +8,25 @@ against `DarzasDominion.exe`. It answers, with `file:line` citations, *where* th
 `DarzasDominion.dll` (pure IL, .NET 9 self-contained, `TieredCompilation: false`, no ReadyToRun,
 23 743 methods, no observed anti-cheat). Quoted line numbers are into the decompiled `.cs` files.
 
-> **UPDATE — three of this document's gaps have since been closed.** §10.2 ("the five opaque armour
-> coefficients"), §10.3 ("the movement constants") and §10.7 ("`hehe(16) == 0.5f`") were all resolved
-> mechanically by decoding the obfuscator's constant pool and resolving each IL call site's return
-> type. The method and the resolved values are in
-> [`CLIENT-FINDINGS.md`](CLIENT-FINDINGS.md) §2.9–§2.10, and the tool is
-> [`tools/poolresolve.py`](tools/poolresolve.py). In particular the movement law is
-> `3.5 + 5.0·(speed/75)` (not `4.0 + 5.6·(speed/75)`) and the armour law is
-> `max(d·(0.7 − 0.007·min(armor,100)), 15·d/(25·armour/max(d,1) + 15))`. **§10.1 remains open and is the
-> single most valuable experiment in this document** — see `IMPLEMENTATION-PLAN.md` Phase 0.
+> **STATUS BANNER (kept current).** Three findings that were open while this document was first
+> drafted are now settled, and this document has been updated in place rather than left stale:
+>
+> | gap | status | where |
+> |---|---|---|
+> | §10.2 the five armour coefficients | **CLOSED** — `0.7 / 0.007 / 100.0 / 15.0 / 25.0` | §3.7, §9.4, and [`CLIENT-FINDINGS.md`](CLIENT-FINDINGS.md) §2.9 |
+> | §10.3 the movement constants | **CLOSED** — `tilesPerSecond = (3.5 + 5.0·(SPD+10)/75) · slow · speedy`, i.e. **3.5 / 8.5 tiles/s at SPD 0 / 75** | §6.2, §9.4 |
+> | §10.1 whether the server trusts the client's hit report | **ANSWERED [live]** — yes, with a **median 56 ms / p90 99 ms** reconciliation lag onto a **~50/100 ms** health cadence | §3.5, §10.1 |
+>
+> The mechanism for the first two is decoding the obfuscator's **four** constant pools and resolving
+> each IL call site's return type; see [`tools/poolresolve.py`](tools/poolresolve.py) and
+> §9.4. **`hehe(N)` is pool-scoped, not global** — that correction is important and is explained in
+> §9.4.
+>
+> **What is still genuinely open** (and is the short list worth acting on): the *inverse* half of
+> §10.1 (does the server also simulate?); §10.6 (which layer live projectiles occupy — decides scan
+> cost); §10.4 / §10.5 (boomerang half-range and the LCG, both prediction-accuracy); §10.11
+> (`WallBouncePath` — bouncing projectiles are not yet predictable); and the AoE/bomb damage channel,
+> which this document explicitly did **not** cover (§10.16). Appendix B ranks them.
 
 **How to read the quotes.** The decompiler flattened control flow into state machines
 (`switch (num ^ literal) { case ... }`) with `goto` labels, and folded every literal into a constant-pool
@@ -27,7 +37,10 @@ lookup `_E311_EE2E_F8F8_E14F_E1D6.hehe_F244_F670_F803_F5DD_EB9E(N)`. Two consequ
 2. **Every literal is opaque.** `hehe(N)` values are read from an encrypted manifest resource at type
    initialisation and are not present in the source (see `Sec 9.4`). So a line like
    `SpeedWaveFreq != hehe(7)` means "!= *the zero constant*", which is inferable from usage but not
-   readable. Where a literal's *value* matters I say so explicitly and mark it.
+   readable. Where a literal's *value* matters I say so explicitly and mark it. (This paragraph
+   describes the *first* draft of this document; several of those values have since been read out of
+   the decrypted pools and the IL dump - see the status banner above and Sec 9.4. The paragraphs that
+   still say "UNKNOWN" are the ones that are still genuinely unknown, and Appendix B ranks them.)
 
 Anything the decompile does not settle is written `UNKNOWN - needs live measurement`, never guessed.
 
@@ -44,7 +57,8 @@ Anything the decompile does not settle is written `UNKNOWN - needs live measurem
 | 7 | The escape path |
 | 8 | Candidate hook list (ranked) |
 | 9 | What is obfuscated and what is not |
-| 10 | Gaps: what a hook still needs measured |
+| 10 | Gaps: what a hook still needs measured (Appendix B ranks them) |
+| A/B/C | Recovered `LateUpdate` control flow; open-question shortlist; file inventory |
 
 **Tooling.** Two helper scripts in `autododgeresearch/tools/` were written for this document:
 
@@ -55,7 +69,7 @@ Anything the decompile does not settle is written `UNKNOWN - needs live measurem
   `autododgeresearch/il/client-5.8.2.il` (89 MB, produced by another agent in this workspace).
   The decompiled C# folds every literal into `hehe(int32 index)` and shows only the index; the IL shows
   the instruction sequence around the call, which is where the value is usable. This is the single most
-  effective way to *read* a constant without decrypting the resource (see Sec 9.4.1).
+  effective way to *read* a constant, whether or not the pool has been decrypted (see Sec 9.4).
 
 **Cross-source note.** This workspace also contains live-measurement artifacts produced by sibling
 agents in `autododgeresearch/tools/` (`_numbers.txt`, `_projhit_raw.txt`, `_rtt_raw.txt`,
@@ -171,7 +185,9 @@ CurrentScene?.LateUpdate();
 
 `hehe(70)` is 1000 (it is the divisor applied to milliseconds everywhere: `_startTime = (int)
 DarzaWindow.Time.LogicTotal;` in `Projectile.cs:670` and `time.LogicTotal` is milliseconds).
-`hehe(119)` is the dt clamp (a maximum frame delta in ms; value unresolved).### 1.3 `Scene.UpdateScene` - the per-scene backbone, and where the world ticks
+`hehe(119)` is the dt clamp (a maximum frame delta in ms; value unresolved).
+
+### 1.3 `Scene.UpdateScene` - the per-scene backbone, and where the world ticks
 
 ```csharp
 // work/decomp/DarzasDominion.Nodes/Scene.cs:830
@@ -1085,10 +1101,14 @@ own current position and time (`World.cs:10989-10994`, quoted in 2.4). `GmProjec
 **What this means for autododge/auto-nexus:** the HP *change* is computed locally by
 `World.Player.HitBy(this)` (`Projectile.cs:1576`) and then reconciled against the server's absolute
 values by `GmHealthUpdate`. So a hook can (a) intercept the hit before it is applied, (b) suppress it,
-and (c) still be corrected by the server on the next `HealthUpdate`. Whether the server *also*
-re-decides the hit from its own simulation (rather than trusting the client's `GmHit`) is
-`UNKNOWN - needs live measurement` - and it is the single most important open question for safety.
-The experiment is in Sec 10.1.
+and (c) still be corrected by the server on the next `HealthUpdate`.
+
+**This has since been measured on live traffic - see Sec 10.1 [live].** In short: the outbound
+`GmHit` (`PlayerProj = false`, i.e. "I was hit") is followed by an HP fall in 105 of 160 analysable
+cases, with a **median 56 ms / p90 99 ms** lag to the reflecting `GmHealthUpdate`, and the health
+channel is cadenced at **~50 ms / ~100 ms**. So the client's report demonstrably drives the server.
+Whether the server *also* independently simulates (and would apply damage we never reported) is the
+one reduced question still open; the experiment is at the end of Sec 10.1.
 ### 3.6 `ProjDesc` and the motion formulas
 
 `ProjDesc` is `work/decomp/DarzaCore.Data/ProjDesc.cs`, 1463 decompiled lines. Subclasses:
@@ -3105,24 +3125,43 @@ frame. If projectiles all land in one `GameObjectLayer`, the enumeration is much
 `World.GameObjectLayer.Children` / `World.FlatGroundLayer.Children` entries `is Projectile`. Also dump
 the `AddObject` decision (`World.cs:14331-14382`) per type in a live session.
 
-### 10.7 Medium: `hehe(16) == 0.5f` (the radius halving)
+### 10.7 Low: `hehe(16)`, the radius halving - statically resolvable, not yet looked up
 
-**Why it matters.** It is half of the collision predicate's radius term.
+**This is one `poolresolve.py` call, not a live experiment** (a sibling agent's status note claims it
+is closed; I have not seen the value, so I record it as *resolvable but unread* rather than asserting
+it).
 
-**Experiment.** Read `Projectile.Radius` and `Projectile.Desc.Size` for a known projectile in the live
-process; the ratio is `hehe(16) * Affix.ProjectileSize * QualitySize`. Read `World.Player.Radius` too.
-Also 10.2(a).
+**Why it matters.** It is half of the collision predicate's radius term. The chain is:
+`GameObject.UpdateRadius` does `Radius = ObjSize * hehe(16)` (`GameObject.cs:1570`), and
+`Projectile.UpdateRadius` overrides it with `Radius = (float)Desc.Size * hehe(1)` before applying
+`Affix.ProjectileSize` and `QualitySize` (`Projectile.cs:1864-1873`). For the two to be consistent,
+`hehe(16)` must be `0.5` in the float pool.
 
-### 10.8 Medium: `LogicElapsedSec` semantics
+**Experiment (static).** `python tools/poolresolve.py` restricted to the `GameObject.cs:1570` call
+site. **Confirmation (live, 1 minute):** read `Projectile.Radius` and `Projectile.Desc.Size` for a
+known projectile; the ratio is `hehe(16) * Affix.ProjectileSize * QualitySize`. Also read
+`World.Player.Radius`.
 
-**Why it matters.** It gates the movement call (`World.cs:9565`) and drives attack timers
-(`Player.cs:4835,4841,4845`, `Entity.cs:824,845`). A hook that writes `GameInput` must land before the
-gate, which is one call inside `World.Update`; knowing the real dt is needed to time a dodge.
+### 10.8 Medium: what actually times attack cadence, if not `LogicElapsedSec`
 
-**Experiment.** Log `Time.Total`, `Time.Elapsed`, `Time.ElapsedSec`, `Time.LogicTotal` and
-`Time.LogicElapsedSec` for 600 consecutive frames. Confirm `LogicElapsedSec` is a positive per-frame dt
-(not 0), and whether `LogicElapsedSec == ElapsedSec` at all times (which would mean `LogicStopwatch`
-and the frame clock are the same clock). This also settles the Sec 1.4 anomaly.
+The `LogicElapsedSec` arithmetic is now **settled** (Sec 1.4, read from the real IL): it is
+`(Stopwatch.ElapsedMilliseconds_now - Time.LogicTotal) / 1000` where `Time.LogicTotal` was written
+moments earlier in the same frame, so it is a residual ~0, and the movement gate passes only because
+the sentinel it is compared against (`hehe(5)` at `World.cs:9565`) is negative.
+
+**That raises a real, still-open question:** several timers decrement by this residual -
+`Entity.cs:824` (`_attackDelay`), `Entity.cs:845` (`_moveDelay`), `Player.cs:4835` (a timer),
+`Player.cs:4841` (`_laserAttackDelay`), `Player.cs:4845` (`_sweepAttackDelay`). A residual decrement
+would never expire, yet attacks *do* respect cooldowns in game.
+
+**Why it matters.** If a hook wants to know when the next shot is allowed (e.g. to time a
+shoot-then-dodge), it needs the real gate.
+
+**Experiment.** Log `Time.LogicElapsedSec` alongside `Entity._attackDelay` values across a real
+attack cycle and see whether the dictionary entries actually fall, and by how much. If they do not,
+the gate is `ProjDesc.RateOfFire` plus the server's `GmProcCooldown` (`work/decomp/.../GmProcCooldown.cs`)
+rather than a client-side timer. **Also worth checking (cheap, static): read `hehe(5)` and `hehe(7)`
+from the decrypted *double* pool** (Sec 10.2b) - that confirms the sentinel and closes half of this.
 
 ### 10.9 Medium: warm vs cold packet classification
 
@@ -3184,13 +3223,16 @@ Several switches alter what the client does, so a hook must read them: `Prefs.pr
 `entity.MarkNearEnemyProjectile(total)` - a **secondary consumer of projectile positions** that can
 misbehave if positions are wrong. The full `Prefs` surface was not enumerated.
 
-### 10.15 Low: `hehe(110)` (deferred-spawn TTL) and `hehe(119)` (dt clamp)
+### 10.15 Low: `hehe(110)`, `hehe(119)` and the escape timings - all resolvable statically
 
-`World.cs:11706` drops deferred projectile spawns older than `hehe(110)` ms; if the hook wants to
+`World.cs:11706` drops deferred projectile spawns older than `hehe(110)` ms; if a hook wants to
 predict "a spawn is coming", that TTL is the window. `hehe(119)` caps the frame dt
-(`DarzaWindow.cs:1775`), which bounds how far a projectile can move in one frame. Both fall out of
-10.2(a). The `RequestEscape` cooldown (`hehe(69)` at `World.cs:12995`) and cast duration (`hehe(21)` at
-`:13020`) are in the same category and matter for auto-nexus timing.
+(`DarzaWindow.cs:1775`), bounding how far a projectile can move in one frame. `hehe(69)` is the escape
+cooldown seconds (`World.cs:12995`) and `hehe(21)` the cast duration (`World.cs:13020`).
+
+**All four are single `poolresolve.py` lookups** (Sec 10.2b) - no live measurement required. Only
+`hehe(119)` ideally wants confirmation against a real frame-delta histogram, because it bounds the
+prediction horizon.
 
 ### 10.16 Explicitly not investigated in this pass
 
@@ -3322,5 +3364,11 @@ If only five things get measured, measure these, in this order:
 |---|---|
 | `autododgeresearch/CLIENT-MAP.md` | this document |
 | `autododgeresearch/tools/g.py` | bounded grep-with-context helper used to locate every targeted region of `World.cs` and the other large files. Usage: `python g.py <file> <regex> [--ctx N] [--max M] [--range A B] [--sig] [--lit]` |
+| `autododgeresearch/tools/il_constants.py` | resolves obfuscated literal *values* from `il/client-5.8.2.il`. Usage: `python il_constants.py <il_file> <index> [--after K]` or `python il_constants.py <il_file> --find "<substring>" --window N` |
+| `autododgeresearch/il/client-5.8.2.il` | 89 MB `ilspycmd -il` dump of Darwin's Dominion 5.8.2, produced by a sibling agent in this workspace. **This is the file that lets a constant be read without decrypting the pool**, because the IL shows the instruction sequence around each `hehe(int32)` call. |
+| `autododgeresearch/tools/poolresolve.py`, `work/_pool.bin`, `work/_pooldecode.py` | pre-existing (sibling/parent work): the decrypted constant pools and the resolver that maps a call site to its pool. Cited in Sec 9.4. |
+| `autododgeresearch/tools/_projhit_raw.txt`, `_numbers.txt`, `_rtt_raw.txt`, `_cadence_raw.txt`, `_deaths_raw.txt` | live captured-traffic measurement outputs produced by sibling agents. Cited as **[live]** in Sec 3.5 and Sec 10.1. |
 
-No file other than these two was created or modified.
+`CLIENT-MAP.md` and the two scripts under `tools/` are the only files this task created. Everything
+else in `autododgeresearch/` listed above was produced by other agents working in the same workspace;
+it is cited, not owned.

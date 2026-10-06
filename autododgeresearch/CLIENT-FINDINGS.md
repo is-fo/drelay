@@ -114,12 +114,47 @@ a full frame of budget in which to act on it.
 `Client.DrainColdQueue()` (`DarzasDominion.Darza.Networking/Client.cs:502`) drains a static queue
 and dispatches by an opcode enum (`:546-554`). This is the same boundary the existing `drelay`
 proxy reasons about from outside: packets arrive on a network thread and are **applied on the main
-thread here**. Wait — nothing about the hook needs this, but it does explain why the hook sees
-post-packet state at step 6 and not earlier.
+thread here**. Nothing about the hook needs this, but it does explain why the hook sees post-packet
+state at step 6 and not earlier.
 
 `World.Shared` is declared `public static World Shared;` at `DarzasDominion.Darza.Game/World.cs:4216`.
 It is the single static root, and resolving its address once gives the hook access to the entire
 live object graph (§4).
+
+### 1.5 Where each hook sits in the frame, precisely
+
+Worth stating because it bounds the design's latency and because it is easy to get wrong:
+
+```
+DarzaWindow.Update(float)                            <- HOOK #1 (frame tick) runs HERE, at the top
+  ...
+  CurrentScene.UpdateScene(Time)                     DarzaWindow.cs:1841
+    └─ World.Update(ClientTime)                      World.cs:9473
+         Node.Update(time)                            World.cs:9552   <- children run
+           ├─ layer / projectile nodes                <- HOOK #3 (collision) fires inside here
+           └─ ...                                     <- HOOK #2 (spawn) fires inside here
+         the player movement / attack / escape fn     World.cs:9561-9568
+         the packet drain block                       World.cs:9650+
+```
+
+Two consequences, and both are properties of the design rather than accidents:
+
+1. **The frame hook runs at the start of the frame, before the world tick.** The planner therefore
+   always sees a *completed* previous frame — the freshest self-consistent state there is — and has a
+   whole frame of budget to act. That costs one frame of latency, which the budget in
+   [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §7 already accounts for, and it is the right trade:
+   planning against half-updated state would be worse than planning one frame old.
+2. **The spawn and collision hooks fire inside the world tick**, i.e. *after* this frame's frame-hook
+   call. Their events are therefore consumed by **next** frame's decision. That is the same
+   one-frame latency seen from the other side, and it is why the collision hook still buys ~55 ms:
+   the frame it costs is ~10–17 ms against a 55.5 ms median advantage.
+
+> **Do not use `Time.LogicElapsedSec` for hook timing.** The frame computes it as
+> `(Stopwatch.ElapsedMilliseconds − Time.LogicTotal) / 1000` where `Time.LogicTotal` was assigned a
+> few statements earlier in the same method (`DarzaWindow.cs:1783`, `:1787`), making it a residual
+> near zero rather than a frame delta. `Time.ElapsedSec` is the frame delta. The hook measures its
+> own frame interval regardless (frame counter plus a monotonic clock), so it depends on neither —
+> but the anomaly is recorded because it is exactly the value a hook author would reach for.
 
 ---
 

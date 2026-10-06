@@ -14,8 +14,8 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 ### The frustration was real, and the reason is now measured
 
 The current auto-nexus reads the server's `GmHealthUpdate` and escapes when HP is low. That packet is
-a **notification of damage already applied**, not a warning — so the rule is structurally one quantum
-late, and no amount of proxy logic changes that. Measured over the recorded sessions:
+a **notification of damage already applied**, not a warning — so the rule can never act before the
+damage, and no amount of proxy logic changes that. Measured over the recorded sessions:
 
 | quantity | value |
 |---|---|
