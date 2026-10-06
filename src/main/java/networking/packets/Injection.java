@@ -217,6 +217,8 @@ public final class Injection {
             fields.add("success", ack.success ? 1 : 0);
         } else if (packet instanceof networking.packets.gmpackets.ForcedEscapePacket forced) {
             fields.add("message", forced.message);
+        } else if (packet instanceof networking.packets.gmpackets.KickedPacket kicked) {
+            fields.add("reason", kicked.reason);
         } else if (packet instanceof networking.packets.gmpackets.ReconnectPacket reconnect) {
             fields.add("host", reconnect.host)
                     .add("port", reconnect.port)

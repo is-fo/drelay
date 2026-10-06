@@ -428,10 +428,16 @@ enums and verified name-by-name against the decompiled source by
 framing, so `PacketRegistry` keeps the registries separate and the relay picks one per route
 (`Route.isQueue()`).
 
-**Verified codecs:** `HealthUpdate` (70), `Escape` (66) on the game side; `Hello` (1),
-`Position` (2), `Join` (3), `Error` (4) on the queue side. Everything without a codec is
-forwarded byte-for-byte, which is deliberate: re-encoding through a mis-modelled packet silently
-corrupts a session.
+**Verified codecs:** on the game side `HealthUpdate` (70), `Escape` (66), `Reconnect` (36),
+`EscapeAck` (158), `ForcedEscape` (184), `Kicked` (185), `EscapeCastState` (290) and `SafeAreaState`
+(291); on the queue side `Hello` (1), `Position` (2), `Join` (3) and `Error` (4). Everything without a
+codec is forwarded byte-for-byte, which is deliberate: re-encoding through a mis-modelled packet
+silently corrupts a session.
+
+`Kicked` is decoded for the log rather than for a rule: it carries the server's own string16 reason
+for ending the session, which the relay records as `data.reason` on the packet event and as
+`kickedReason` on the session-close event. It is the fastest explanation of a failed server→client
+rewrite ([INJECTION.md](INJECTION.md) §5.5).
 
 `networking.PrimitiveTests` is the gate:
 

@@ -161,7 +161,9 @@ setting that simply had no effect.
 The page polls `/api/state` once a second and rebuilds these controls from the reply, but **not while
 one of them has focus** - so a value you are typing is never overwritten mid-keystroke. Nothing is sent
 until you press **apply**, which POSTs the whole set to `/api/nexus`; every change is recorded as a
-`note` event containing the request, what was applied, and the resulting config.
+`note` event containing the request, what was applied, and the resulting config. The same call writes
+the block back into the route table the relay was started with, so the value survives a restart, and
+the response says whether that write succeeded - the panel prints it under the controls.
 
 | control | key | what it does | what it does **not** do |
 |---|---|---|---|
@@ -181,6 +183,7 @@ Read-only parts of the panel:
 | element | meaning |
 |---|---|
 | header pill `AUTO-NEXUS LIVE` / `auto-nexus dry run` / `auto-nexus off` | derived: `enabled && !dryRun` is LIVE. Note it says LIVE for `enabled=true, dryRun=false` even when `thresholdPercent=0`, which can never fire. |
+| header pill `strip off` / `strip 11` | the status-effect strip's armed ordinals, a different module with its own panel and its own saved block ([INJECTION.md](INJECTION.md) §5). |
 | header pill `injection armed` / `injection disarmed` | `Session.injectionReady()` for the primary session - the world gate, i.e. whether `Hello` + `MapInfo` have both been seen. This, not `enabled`, is why nothing happens in the lobby. |
 | header pill session tag | the primary session is **the newest session id**, not necessarily the one you are playing. |
 | character hp panel | the newest reading: raw `%`, effective `%`, how old it is, plus shield, barrier, sample count, world name, safe area and cast state. The bar turns red at or below the threshold - but it compares the **raw** percentage, so with `hp+shield+barrier` on, the bar can be red while the rule declines, or vice versa. |

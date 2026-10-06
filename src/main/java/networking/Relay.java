@@ -182,19 +182,19 @@ public final class Relay {
 
         // --- server->client rewrites --------------------------------------------------------
         //
-        // Off by default, and the only setting here that changes bytes the server sent rather than
-        // adding bytes of our own. It exists because one status effect (Confused) is applied purely
-        // client-side: the server states it, the client obeys it, and nothing in the client expires
-        // it locally. Removing the entry is therefore the only way to not be affected by it, and it
-        // is a gameplay change, not an observability one - hence a separate switch that a run has to
-        // ask for. See ConfusedStrip for the wire format and the measurements behind it.
+        // On by default with Confused and Hallucinating armed, and the only settings here that change
+        // bytes the server sent rather than adding bytes of our own. It exists because some status
+        // effects are applied purely client-side: the server states them, the client obeys them, and
+        // nothing in the client expires them locally. Removing the entry is therefore the only way to
+        // not be affected by them, and it is a gameplay change, not an observability one - hence a
+        // module with its own dashboard panel, its own persistence and its own log lines. Only the
+        // effects that no client-side law feeds back to the wire are armed; see
+        // StatusStrip for the wire format and the measurements behind it, and docs/INJECTION.md 5.
+        //
+        // The auto-nexus config is read from the route table and then the dashboard owns it; the
+        // strip config is the same contract (see Strip.Config), so the two are wired identically.
 
-        /** Remove {@code StatusEffect.Confused} from the local player's status lists. */
-        boolean stripConfused;
-        /** Which {@code StatusEffect} ordinal to remove. */
-        int stripEffect = networking.packets.ConfusedStrip.CONFUSED;
-        /** Health continuations an object needs before it is believed to be the local player. */
-        int stripMinVotes = 3;
+        final Strip.Config strip = new Strip.Config();
     }
 
     /** Serializes upstream dials when {@link Config#upstreamBindPort} is pinned. */
@@ -398,15 +398,7 @@ public final class Relay {
         }
         Json strip = obj.get("strip");
         if (strip instanceof JObj stripObj) {
-            cfg.stripConfused = stripObj.bool("confused", cfg.stripConfused);
-            Json effect = stripObj.get("effect");
-            if (effect != null && effect.asInt() >= 0) {
-                cfg.stripEffect = effect.asInt();
-            }
-            Json minVotes = stripObj.get("minVotes");
-            if (minVotes != null && minVotes.asInt() > 0) {
-                cfg.stripMinVotes = minVotes.asInt();
-            }
+            applyStripConfig(cfg.strip, stripObj.values());
         }
 
         // System properties and environment variables win over the file: a launcher script knows
@@ -417,9 +409,23 @@ public final class Relay {
         cfg.logMaxBytes = Prefs.longValue("drelay.log.maxBytes", "DRELAY_LOG_MAX_BYTES", cfg.logMaxBytes);
         cfg.webHost = Prefs.string("drelay.web.host", "DRELAY_WEB_HOST", cfg.webHost);
         cfg.webPort = Prefs.integer("drelay.web.port", "DRELAY_WEB_PORT", cfg.webPort);
-        cfg.stripConfused = Prefs.flag("drelay.strip.confused", "DRELAY_STRIP_CONFUSED", cfg.stripConfused);
-        cfg.stripEffect = Prefs.integer("drelay.strip.effect", "DRELAY_STRIP_EFFECT", cfg.stripEffect);
-        cfg.stripMinVotes = Prefs.integer("drelay.strip.minVotes", "DRELAY_STRIP_MIN_VOTES", cfg.stripMinVotes);
+
+        // The strip is read from the route table first and then from properties, with the same
+        // precedence as everything else: system property, then environment variable, then the file.
+        // `effects` and `effect` replace the armed set; the named switches arm or disarm one effect,
+        // which is what makes -Ddrelay.strip.confused=false work even though Confused is the default.
+        Map<String, Object> stripOverrides = new java.util.LinkedHashMap<>();
+        putIfSet(stripOverrides, "enabled", System.getProperty("drelay.strip.enabled"), System.getenv("DRELAY_STRIP_ENABLED"));
+        putIfSet(stripOverrides, "effects", System.getProperty("drelay.strip.effects"), System.getenv("DRELAY_STRIP_EFFECTS"));
+        putIfSet(stripOverrides, "effect", System.getProperty("drelay.strip.effect"), System.getenv("DRELAY_STRIP_EFFECT"));
+        putIfSet(stripOverrides, "confused", System.getProperty("drelay.strip.confused"), System.getenv("DRELAY_STRIP_CONFUSED"));
+        putIfSet(stripOverrides, "paralyzed", System.getProperty("drelay.strip.paralyzed"), System.getenv("DRELAY_STRIP_PARALYZED"));
+        putIfSet(stripOverrides, "slowed", System.getProperty("drelay.strip.slowed"), System.getenv("DRELAY_STRIP_SLOWED"));
+        putIfSet(stripOverrides, "hallucinating", System.getProperty("drelay.strip.hallucinating"), System.getenv("DRELAY_STRIP_HALLUCINATING"));
+        putIfSet(stripOverrides, "minVotes", System.getProperty("drelay.strip.minVotes"), System.getenv("DRELAY_STRIP_MIN_VOTES"));
+        if (!stripOverrides.isEmpty()) {
+            IO.println("  strip from properties: " + String.join(", ", cfg.strip.apply(stripOverrides)));
+        }
 
         Map<String, Object> nexusOverrides = new java.util.LinkedHashMap<>();
         putIfSet(nexusOverrides, "enabled", System.getProperty("drelay.nexus.enabled"), System.getenv("DRELAY_NEXUS_ENABLED"));
@@ -474,7 +480,41 @@ public final class Relay {
             }
         });
         java.util.List<String> applied = target.apply(plain);
-        IO.println("  auto-nexus from config: " + String.join(", ", applied));
+        if (!applied.isEmpty()) {
+            IO.println("  auto-nexus from config: " + String.join(", ", applied));
+        }
+    }
+
+    /**
+     * Copies the route table's {@code strip} block onto the live config; unknown keys are reported.
+     *
+     * <p>Scalars keep their JSON type - a boolean stays a boolean - but `effects` may be a list, and it
+     * has to arrive as one: flattening it to a string here is how the old single-effect form would
+     * quietly become "arm nothing".
+     */
+    private static void applyStripConfig(Strip.Config target, Map<String, Json> values) {
+        Map<String, Object> plain = new java.util.LinkedHashMap<>();
+        values.forEach((key, value) -> {
+            if (value instanceof JNum number) {
+                plain.put(key, number.value());
+            } else if (value instanceof JArr array) {
+                java.util.List<Object> items = new java.util.ArrayList<>();
+                for (Json item : array.values()) {
+                    if (item instanceof JNum number) {
+                        items.add(number.value());
+                    } else if (item.asString() != null) {
+                        items.add(item.asString());
+                    }
+                }
+                plain.put(key, items);
+            } else if (value.asString() != null) {
+                plain.put(key, value.asString());
+            }
+        });
+        java.util.List<String> applied = target.apply(plain);
+        if (!applied.isEmpty()) {
+            IO.println("  strip from config: " + String.join(", ", applied));
+        }
     }
 
     /** Records an override only when either source actually supplied one. */
@@ -520,8 +560,12 @@ public final class Relay {
                 cfg.ringCapacity,
                 cfg.logMaxBytes);
         AutoNexus nexus = new AutoNexus(cfg.nexus, log);
+        Strip strip = new Strip(cfg.strip, log);
         SessionRegistry registry = new SessionRegistry(log, nexus);
-        WebDashboard dashboard = new WebDashboard(registry, log, nexus, cfg.webHost, cfg.webPort);
+        // The dashboard is given the path this run was started with, so a setting changed in the page
+        // is written back to the file the relay read - that is what makes it survive a restart.
+        WebDashboard dashboard = new WebDashboard(registry, log, nexus, strip, cfg.webHost, cfg.webPort,
+                configPath);
         dashboard.start();
 
         IO.println("  auto-nexus: %s, threshold %d%%, %s, max %d per world, min interval %d ms".formatted(
@@ -533,10 +577,7 @@ public final class Relay {
         // Printed unconditionally: "off" has to be as visible as "on", because the whole feature is
         // silent when it cannot name the local player and a run that never rewrote anything looks
         // exactly like a run where the debuff never arrived.
-        IO.println(cfg.stripConfused
-                ? "  strip: removing StatusEffect %d from the local player's status lists (needs %d matching health readings)"
-                        .formatted(cfg.stripEffect, cfg.stripMinVotes)
-                : "  strip: disabled (server->client payloads are forwarded verbatim)");
+        IO.println(strip.describe());
         if (cfg.logDirectory != null) {
             IO.println("  event log: %s".formatted(Path.of(cfg.logDirectory, "events-" + log.runId() + ".jsonl").toAbsolutePath()));
         }
@@ -559,7 +600,7 @@ public final class Relay {
         }
 
         for (Route route : cfg.routes) {
-            Thread.startVirtualThread(() -> listen(route, cfg, registry, nexus));
+            Thread.startVirtualThread(() -> listen(route, cfg, registry, nexus, strip));
         }
 
         // A server can name a new destination at any time (GmReconnect), and that address has to be
@@ -927,12 +968,13 @@ public final class Relay {
         }
     }
 
-    private static void listen(Route route, Config cfg, SessionRegistry registry, AutoNexus nexus) {
+    private static void listen(Route route, Config cfg, SessionRegistry registry, AutoNexus nexus,
+                               Strip strip) {
         try (var serverSocket = new ServerSocket(route.listenPort(), 50, InetAddress.getByName(cfg.listenHost))) {
             IO.println("[%s] listening on %s:%d".formatted(route.name(), cfg.listenHost, route.listenPort()));
             while (true) {
                 Socket client = serverSocket.accept();
-                Thread.startVirtualThread(() -> handleSession(client, route, cfg, registry, nexus));
+                Thread.startVirtualThread(() -> handleSession(client, route, cfg, registry, nexus, strip));
             }
         } catch (IOException e) {
             System.err.println("[%s] listener failed: %s".formatted(route.name(), e.getMessage()));
@@ -940,7 +982,7 @@ public final class Relay {
     }
 
     private static void handleSession(Socket client, Route route, Config cfg, SessionRegistry registry,
-                                      AutoNexus nexus) {
+                                      AutoNexus nexus, Strip strip) {
         long id = registry.nextSessionId();
         String tag = "%s#%d".formatted(route.name(), id);
 
@@ -984,7 +1026,7 @@ public final class Relay {
 
             session = new Session(id, tag, route.name(), route.isQueue(), route.listenPort(),
                     clientAddr, host + ":" + port, registry.log(), nexus,
-                    new PlayerLocator(cfg.stripMinVotes));
+                    new PlayerLocator(cfg.strip.minVotes()));
             session.upstreamWriter(serverOut);
             registry.register(session);
             session.onConnected();
@@ -993,9 +1035,11 @@ public final class Relay {
             // state stays separate because it is about bytes, not about the world.
             var boundSession = session;
             var upstream = Thread.startVirtualThread(
-                    () -> pump(clientIn, serverOut, boundSession, Event.DIR_C2S, route, framing, cfg, registry));
+                    () -> pump(clientIn, serverOut, boundSession, Event.DIR_C2S, route, framing, cfg, strip,
+                            registry));
             var downstream = Thread.startVirtualThread(
-                    () -> pump(serverIn, clientOut, boundSession, Event.DIR_S2C, route, framing, cfg, registry));
+                    () -> pump(serverIn, clientOut, boundSession, Event.DIR_S2C, route, framing, cfg, strip,
+                            registry));
 
             upstream.join();
             downstream.join();
@@ -1028,7 +1072,7 @@ public final class Relay {
      * guess is visible in the log rather than having to be inferred.
      */
     private static void pump(GameReader in, GameWriter out, Session world, String dir, Route route,
-                             SessionState framing, Config cfg, SessionRegistry registry) {
+                             SessionState framing, Config cfg, Strip strip, SessionRegistry registry) {
         boolean firstFrame = true;
         try {
             while (true) {
@@ -1073,8 +1117,8 @@ public final class Relay {
                     }
                 }
 
-                byte[] rewritten = (cfg.stripConfused && Event.DIR_S2C.equals(dir))
-                        ? rewriteServerPacket(world, route.name(), payload, cfg, registry)
+                byte[] rewritten = (strip.config().active() && Event.DIR_S2C.equals(dir))
+                        ? rewriteServerPacket(world, route.name(), payload, strip, registry)
                         : null;
                 if (rewritten != null) {
                     payload = rewritten;
@@ -1110,14 +1154,19 @@ public final class Relay {
      * session's detected byte order, so the rewritten frame is framed exactly like the one it
      * replaces.
      *
-     * <p>Everything here is off unless a run asked for it ({@code cfg.stripConfused}), and nothing
-     * here can end a session: a payload it does not understand, a player it cannot name, or any
-     * exception at all leaves the original bytes forwardable, which is what the caller falls back to.
+     * <p>Everything here is inert unless the strip module has something armed
+     * ({@code strip.config().active()}), and nothing here can end a session: a payload it does not
+     * understand, a player it cannot name, or any exception at all leaves the original bytes
+     * forwardable, which is what the caller falls back to.
+     *
+     * <p>The byte work itself belongs to {@link networking.packets.StatusStrip} and the module that
+     * owns the settings and the counters is {@link Strip}; what stays here is the part that is about
+     * this session: naming the local player object and refusing to act while it is unknown.
      *
      * @return the replacement payload, or {@code null} to forward the original unchanged
      */
     private static byte[] rewriteServerPacket(Session world, String routeName, byte[] payload,
-                                              Config cfg, SessionRegistry registry) {
+                                              Strip strip, SessionRegistry registry) {
         if ("Queue".equalsIgnoreCase(routeName) || payload.length < 2) {
             return null;
         }
@@ -1142,25 +1191,7 @@ public final class Relay {
             if (playerId < 0) {
                 return null;
             }
-            networking.packets.ConfusedStrip.Result stripped =
-                    networking.packets.ConfusedStrip.strip(payload, playerId, cfg.stripEffect);
-            if (stripped == null) {
-                return null;
-            }
-            registry.log().emit(Event.builder(Event.KIND_NOTE)
-                    .session(world.tag())
-                    .note("stripped %d status effect(s) %d from object %d: %d -> %d bytes"
-                            .formatted(stripped.removed(), cfg.stripEffect, playerId,
-                                    payload.length, stripped.payload().length))
-                    .put("stripped", stripped.removed())
-                    .put("lists", stripped.lists())
-                    .put("effect", cfg.stripEffect)
-                    .put("objectId", playerId)
-                    .put("bytesBefore", payload.length)
-                    .put("bytesAfter", stripped.payload().length)
-                    .put("hexBefore", EventLog.hex(payload))
-                    .put("hexAfter", EventLog.hex(stripped.payload())));
-            return stripped.payload();
+            return strip.rewrite(world, payload, playerId);
         } catch (Exception e) {
             registry.log().emitError(world.tag(),
                     "server->client strip failed (forwarding the original): " + explain(e));

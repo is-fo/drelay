@@ -3,8 +3,10 @@ package networking.web;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import networking.AutoNexus;
+import networking.ConfigWriter;
 import networking.Session;
 import networking.SessionRegistry;
+import networking.Strip;
 import networking.log.Event;
 import networking.log.EventLog;
 import networking.log.LogClock;
@@ -48,32 +50,47 @@ import java.util.concurrent.Executors;
  *
  * <table>
  *   <tr><td>{@code GET /}</td><td>the page</td></tr>
- *   <tr><td>{@code GET /api/state}</td><td>sessions, health, nexus state, counters, filters</td></tr>
+ *   <tr><td>{@code GET /api/state}</td><td>sessions, health, nexus state, strip state, counters, filters</td></tr>
  *   <tr><td>{@code GET /api/events?after=N&limit=M}</td><td>events newer than sequence N, filtered, newest last</td></tr>
  *   <tr><td>{@code GET /api/events?raw=1}</td><td>unfiltered, for the "everything" toggle</td></tr>
  *   <tr><td>{@code POST /api/nexus}</td><td>sparse overrides, e.g. {@code {"enabled":true,"threshold_percent":40}}</td></tr>
+ *   <tr><td>{@code GET|POST /api/strip}</td><td>the status-effect strip's settings, e.g. {@code {"enabled":true,"effects":[6,7,11]}}</td></tr>
  *   <tr><td>{@code POST /api/filters}</td><td>replaces the filter list</td></tr>
  *   <tr><td>{@code GET /api/packets}</td><td>packet ids and names, for building a filter</td></tr>
  * </table>
+ *
+ * <h2>Settings are written back to the route table</h2>
+ *
+ * <p>The auto-nexus rule and the strip are settings a user settles on rather than toggles once, so a
+ * successful {@code POST} to either endpoint is also written into the route table the relay was
+ * started with ({@link ConfigWriter}). The response says whether that write happened, because "the
+ * change is live but will not survive a restart" is a state the page has to be able to show. A failed
+ * write is reported and never fatal: the live config has already been changed, and a read-only install
+ * must not turn a tuning change into a session failure.
  */
 public final class WebDashboard {
 
     private final SessionRegistry registry;
     private final EventLog log;
     private final AutoNexus nexus;
+    private final Strip strip;
     private final int requestedPort;
     private final String host;
+    private final Path configPath;
 
     private volatile HttpServer server;
     private volatile int boundPort = -1;
     private volatile String startError;
 
-    public WebDashboard(SessionRegistry registry, EventLog log, AutoNexus nexus, String host, int port) {
+    public WebDashboard(SessionRegistry registry, EventLog log, AutoNexus nexus, Strip strip, String host,
+                        int port, Path configPath) {
         this.registry = registry;
         this.log = log;
         this.nexus = nexus;
+        this.strip = strip;
         this.host = host;
         this.requestedPort = port;
+        this.configPath = configPath;
     }
 
     /** Starts the server; never throws, because observability must not be able to break a session. */
@@ -191,6 +208,7 @@ public final class WebDashboard {
                 case "/api/state" -> respondJson(exchange, 200, stateJson());
                 case "/api/events" -> respondJson(exchange, 200, eventsJson(exchange));
                 case "/api/nexus" -> nexusEndpoint(exchange);
+                case "/api/strip" -> stripEndpoint(exchange);
                 case "/api/filters" -> filtersEndpoint(exchange);
                 case "/api/packets" -> respondJson(exchange, 200, packetsJson());
                 case "/api/log" -> respondJson(exchange, 200, logJson(exchange));
@@ -255,6 +273,7 @@ public final class WebDashboard {
         fields.add(Json.of("primary", freshest == null ? null : freshest.tag()));
         fields.add(Json.of("health", freshest == null ? null : freshest.healthJson()));
         fields.add(Json.of("nexus", nexus.toMap()));
+        fields.add(Json.of("strip", strip.toMap()));
         fields.add(Json.of("counters", registry.counters()));
         fields.add(Json.of("filters", filtersMap()));
         fields.add(Json.of("log", logFields()));
@@ -375,7 +394,62 @@ public final class WebDashboard {
                         .add("config", nexus.config().toMap()));
         respondJson(exchange, 200, Json.object(
                 Json.of("applied", applied),
-                Json.of("config", nexus.config().toMap())));
+                Json.of("config", nexus.config().toMap()),
+                Json.of("persistence", persistSettings())));
+    }
+
+    /**
+     * The status-effect strip's settings, as the dashboard module sees them.
+     *
+     * <p>{@code GET} exists so the page can reload the module without a full state poll; the state
+     * endpoint already carries the same view, which is what the panel renders on every tick.
+     */
+    private void stripEndpoint(HttpExchange exchange) throws IOException {
+        if ("GET".equals(exchange.getRequestMethod())) {
+            respondJson(exchange, 200, Json.value(strip.toMap()));
+            return;
+        }
+        if (!"POST".equals(exchange.getRequestMethod())) {
+            respondJson(exchange, 405, Json.object(Json.of("error", "GET or POST /api/strip")));
+            return;
+        }
+        Map<String, Object> body = readJsonObject(exchange);
+        List<String> applied = strip.config().apply(body);
+        // Logged before the write, so the session's record names the change even when the file cannot
+        // be written (a read-only install, a deleted directory).
+        log.emitNote("relay", "status-effect strip changed from the dashboard",
+                Fields.of().add("request", body).add("applied", applied)
+                        .add("config", strip.config().toMap()));
+        respondJson(exchange, 200, Json.object(
+                Json.of("applied", applied),
+                Json.of("config", strip.config().toMap()),
+                Json.of("persistence", persistSettings())));
+    }
+
+    /**
+     * Writes both live-editable settings blocks into the route table this run was started with.
+     *
+     * <p>Both, not just the one that changed: they are the two keys the relay owns, and writing them
+     * together means the file always agrees with the running relay rather than with whichever endpoint
+     * was called last. Only these two top-level keys are replaced - the routes, the comment block and
+     * the addresses the launcher resolved are passed through untouched.
+     *
+     * <p>A failure is reported in the response rather than thrown: the setting is already live, and
+     * "could not save" is information for the operator, not a reason to fail the request.
+     */
+    private Map<String, Object> persistSettings() {
+        Map<String, Object> blocks = new LinkedHashMap<>();
+        blocks.put("autoNexus", nexus.config().toMap());
+        blocks.put("strip", strip.config().toMap());
+        String target = configPath == null ? null : configPath.toAbsolutePath().toString();
+        try {
+            ConfigWriter.update(configPath, blocks);
+            return Fields.of().add("saved", true).add("file", target);
+        } catch (Exception e) {
+            log.emitNote("relay", "could not save the settings to the route table: " + e.getMessage(),
+                    Fields.of().add("file", target).add("blocks", blocks.keySet()));
+            return Fields.of().add("saved", false).add("file", target).add("error", String.valueOf(e));
+        }
     }
 
     private void filtersEndpoint(HttpExchange exchange) throws IOException {
@@ -416,11 +490,43 @@ public final class WebDashboard {
             filters.add(LogFilter.parse(
                     string(entry.get("name")),
                     !Boolean.FALSE.equals(entry.get("enabled")),
-                    string(entry.get("kinds")),
-                    string(entry.get("packets")),
-                    string(entry.get("sessions"))));
+                    filterText(entry.get("kinds")),
+                    filterText(entry.get("packets")),
+                    filterText(entry.get("sessions"))));
         }
         return filters.isEmpty() ? null : filters;
+    }
+
+    /**
+     * One filter field as the space-separated text {@link LogFilter#parse} expects.
+     *
+     * <p>The page keeps its filter list as JSON and posts it back as JSON, so these fields arrive as
+     * arrays - and the endpoint used to hand an array to {@code String.valueOf}, which produced
+     * {@code "[HealthUpdate, Update]"}. {@link LogFilter#parse} then split that on its separators and
+     * kept the brackets as part of the first and last names, so every round trip added a layer:
+     * {@code []} became {@code [[]]}, then {@code [[[]]]}. The names stopped matching anything, which
+     * looked like a filter that had simply stopped working. Both shapes are accepted here - an array
+     * from the page, a string from a hand-written {@code curl} - so the page cannot poison its own
+     * filter list.
+     */
+    public static String filterText(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof List<?> list) {
+            StringBuilder out = new StringBuilder();
+            for (Object item : list) {
+                if (item == null) {
+                    continue;
+                }
+                if (out.length() > 0) {
+                    out.append(' ');
+                }
+                out.append(item);
+            }
+            return out.toString();
+        }
+        return String.valueOf(value);
     }
 
     private Map<String, Object> filtersMap() {

@@ -34,10 +34,11 @@ jobs:
         run: mvn --batch-mode --no-transfer-progress clean package
 
       # The checks are standalone main classes, not a JUnit suite, so Surefire does not run them:
-      # they are invoked explicitly here, exactly as build.ps1 does locally.
+      # they are invoked explicitly here, exactly as build.ps1 does locally. Keep this list in step
+      # with build.ps1 - a check that only runs on Windows is a check CI does not have.
       - name: Run the offline checks
         run: |
-          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests; do
+          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests UpdateScanTests SettingsTests; do
             echo "== networking.$check"
             java -cp "target/classes:target/test-classes" "networking.$check"
           done

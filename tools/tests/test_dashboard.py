@@ -58,9 +58,15 @@ def main() -> int:
 
     config = ROOT / "work" / "dashboard-routes.json"
     config.write_text(json.dumps({
+        "_comment": [
+            "written by tools/tests/test_dashboard.py",
+            "the relay now writes settings back into this file, so the test keeps a comment block",
+            "and an unknown key here to prove neither is lost by a settings write"
+        ],
         "listenHost": "127.0.0.1",
         "logDirectory": str(ROOT / "work" / "logs" / "dashboard-test"),
         "web": {"host": "127.0.0.1", "port": web_port},
+        "somethingFromTheFuture": {"keep": [1, 2]},
         "routes": [{
             "name": "Game",
             "listenPort": relay_port,
@@ -88,7 +94,8 @@ def main() -> int:
         if status != 200:
             failures.append("GET / returned %s" % status)
         for marker in ("drelay observability", "id=\"hp\"", "id=\"events\"", "id=\"filters\"",
-                       "id=\"nxApply\"", "/api/state", "/api/events"):
+                       "id=\"nxApply\"", "id=\"stApply\"", "id=\"stEffects\"", "id=\"stripPill\"",
+                       "/api/state", "/api/events", "/api/nexus", "/api/strip"):
             if marker not in page:
                 failures.append("the page is missing %r" % marker)
         print("   %d bytes, all expected elements present" % len(page))
@@ -109,7 +116,8 @@ def main() -> int:
         print("== the endpoints the script reads")
         status, raw = get(base + "/api/state")
         state = json.loads(raw)
-        for key in ("health", "nexus", "counters", "filters", "log", "web", "sessions", "primary"):
+        for key in ("health", "nexus", "strip", "counters", "filters", "log", "web", "sessions",
+                    "primary"):
             if key not in state:
                 failures.append("/api/state has no %r" % key)
         if not isinstance(state.get("nexus", {}).get("config"), dict):
@@ -120,7 +128,30 @@ def main() -> int:
             failures.append("/api/state's counters is not an object (double-encoded?)")
         if state["web"].get("port") != web_port:
             failures.append("the dashboard reports port %r, expected %d" % (state["web"].get("port"), web_port))
-        print("   /api/state: nexus.config is an object, port=%s" % state["web"].get("port"))
+        # The strip ships on by default with Confused and Hallucinating armed: a page that showed it as
+        # off, or a relay that reported an empty armed set, would be the difference between a protected
+        # run and a run where the debuff simply never arrived. Order is asserted because the startup
+        # line and the panel pill both render the set in iteration order.
+        strip_state = state.get("strip", {})
+        if not isinstance(strip_state.get("config"), dict):
+            failures.append("/api/state's strip.config is not an object: %r" % strip_state)
+        elif strip_state["config"].get("effects") != [11, 16]:
+            failures.append("the strip is not on by default with Confused and Hallucinating armed: %r"
+                            % strip_state["config"])
+        elif not strip_state.get("active"):
+            failures.append("the strip reports itself inactive while it is armed: %r" % strip_state)
+        elif [entry.get("name") for entry in strip_state.get("named", [])] != \
+                ["confused", "paralyzed", "slowed", "hallucinating"]:
+            failures.append("the strip's named effect list changed: %r" % strip_state.get("named"))
+        elif [entry.get("armed") for entry in strip_state.get("named", [])] != \
+                [True, False, False, True]:
+            failures.append("the wrong default effects are armed: %r" % strip_state.get("named"))
+        elif any(entry.get("armed") for entry in strip_state.get("named", [])
+                 if entry.get("name") in ("paralyzed", "slowed")):
+            failures.append("an effect in the movement law is armed by default: %r"
+                            % strip_state.get("named"))
+        print("   /api/state: nexus.config is an object, strip armed with %s, port=%s"
+              % (strip_state.get("config", {}).get("effects"), state["web"].get("port")))
 
         status, raw = get(base + "/api/events?after=0&limit=10")
         events = json.loads(raw)
@@ -163,6 +194,26 @@ def main() -> int:
         else:
             print("   filters replaced: %s" % [f["name"] for f in updated["filters"]])
 
+        # The bracket regression. The page keeps its filters as JSON and posts them back as JSON, so
+        # the endpoint receives arrays; it used to stringify them, and every save then added a layer
+        # of brackets to every packet name ("[]" -> "[[]]" -> "[[[]]]") until nothing matched.
+        # Two round trips must be a no-op, in content and in type.
+        posted = [{"name": "hp only", "enabled": True, "kinds": ["health", "nexus"],
+                   "packets": ["HealthUpdate", "MapInfo"], "sessions": []}]
+        for round_trip in (1, 2):
+            status, updated = post(base + "/api/filters", {"filters": posted})
+            entry = (updated.get("filters") or [{}])[0]
+            if entry.get("packets") != ["HealthUpdate", "MapInfo"]:
+                failures.append("filter packets changed on round trip %d: %r"
+                                % (round_trip, entry.get("packets")))
+            if entry.get("kinds") != ["health", "nexus"]:
+                failures.append("filter kinds changed on round trip %d: %r"
+                                % (round_trip, entry.get("kinds")))
+            if any("[" in name or "]" in name for name in entry.get("packets") or []):
+                failures.append("a bracket survived into a packet name on round trip %d: %r"
+                                % (round_trip, entry.get("packets")))
+        print("   an array-valued filter list survives two round trips unchanged")
+
         status, applied = post(base + "/api/nexus", {"threshold_percent": "55", "enabled": "true",
                                                      "dry_run": "true", "nonsense": 1})
         config_seen = applied.get("config", {})
@@ -179,6 +230,60 @@ def main() -> int:
         after = json.loads(raw)["nexus"]["config"]
         if after.get("thresholdPercent") != 55:
             failures.append("the new threshold did not persist into /api/state: %r" % after)
+
+        print("== settings are written back to the route table")
+        persistence = applied.get("persistence", {})
+        if not persistence.get("saved"):
+            failures.append("posting to /api/nexus did not save the route table: %r" % persistence)
+        elif str(config) not in str(persistence.get("file")):
+            failures.append("the settings were saved to %r, expected %s"
+                            % (persistence.get("file"), config))
+        saved = json.loads(config.read_text(encoding="utf-8"))
+        if saved.get("autoNexus", {}).get("thresholdPercent") != 55:
+            failures.append("the route table does not carry the new threshold: %r" % saved.get("autoNexus"))
+        # Everything the writer was not asked to change has to still be there: a settings write that
+        # dropped a comment block, a route or an unknown key would corrupt the file the relay starts from.
+        if len(saved.get("_comment", [])) != 3:
+            failures.append("the settings write lost the comment block: %r" % saved.get("_comment"))
+        if saved.get("somethingFromTheFuture") != {"keep": [1, 2]}:
+            failures.append("the settings write lost an unknown key: %r" % saved.get("somethingFromTheFuture"))
+        if (saved.get("web") or {}).get("port") != web_port:
+            failures.append("the settings write changed the web port: %r" % saved.get("web"))
+        if len(saved.get("routes") or []) != 1:
+            failures.append("the settings write lost the routes: %r" % saved.get("routes"))
+        print("   auto-nexus saved to %s with the comment, routes and unknown keys intact"
+              % persistence.get("file"))
+
+        print("== the strip module's endpoint")
+        status, raw = get(base + "/api/strip")
+        strip_view = json.loads(raw)
+        if strip_view.get("config", {}).get("effects") != [11, 16]:
+            failures.append("GET /api/strip does not report the default armed set: %r" % strip_view)
+        status, applied = post(base + "/api/strip", {"enabled": True, "effects": [6, 7, 11],
+                                                     "min_votes": 4})
+        strip_config = applied.get("config", {})
+        if sorted(strip_config.get("effects") or []) != [6, 7, 11]:
+            failures.append("posting an effect set did not take effect: %r" % strip_config)
+        if strip_config.get("minVotes") != 4:
+            failures.append("posting min_votes did not take effect: %r" % strip_config)
+        saved = json.loads(config.read_text(encoding="utf-8"))
+        if sorted(saved.get("strip", {}).get("effects") or []) != [6, 7, 11]:
+            failures.append("the route table does not carry the armed effects: %r" % saved.get("strip"))
+        if saved.get("strip", {}).get("minVotes") != 4:
+            failures.append("the route table does not carry minVotes: %r" % saved.get("strip"))
+        # Disarming everything is a state the page offers, and it has to persist as an empty list
+        # rather than as a missing key the next start would read as "use the default".
+        status, applied = post(base + "/api/strip", {"enabled": True, "effects": []})
+        saved = json.loads(config.read_text(encoding="utf-8"))
+        if saved.get("strip", {}).get("effects") != []:
+            failures.append("disarming every effect did not persist as an empty list: %r"
+                            % saved.get("strip"))
+        if applied.get("config", {}).get("enabled") is not True:
+            failures.append("the strip's master switch changed while disarming effects: %r"
+                            % applied.get("config"))
+        # Back to the default so a later step sees what a fresh install would.
+        post(base + "/api/strip", {"enabled": True, "effects": [11, 16], "min_votes": 3})
+        print("   strip settings applied and saved: 6,7,11 with minVotes 4, then disarmed")
 
         print("== the log endpoints")
         status, raw = get(base + "/api/log?lines=5")

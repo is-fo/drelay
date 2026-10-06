@@ -2,10 +2,14 @@ package networking.packets;
 
 import java.io.ByteArrayOutputStream;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
 
 /**
- * Removes one status effect from the server→client {@code GmUpdate} stream.
+ * Removes status effects from the server→client {@code GmUpdate} stream.
  *
  * <h2>What this is for</h2>
  *
@@ -16,6 +20,11 @@ import java.util.List;
  * controls" - arrives hundreds of times inside a stat-78 list. Each entry is nine bytes:
  *
  * <pre>{@code [int32 Effect][uint8 Tier][float32 Duration]}</pre>
+ *
+ * <p>The ordinals are the enum's declaration order, which is not obfuscated, so more than one effect
+ * can be named by number: 6 is {@code Paralyzed}, 7 is {@code Slowed}, 16 is
+ * {@code Hallucinating}. {@link #NAMED} carries the four the dashboard offers; the relay accepts any
+ * ordinal.
  *
  * <h2>Why removal and not a shortened duration</h2>
  *
@@ -37,12 +46,71 @@ import java.util.List;
  * payload. The caller must also re-run the walk on the result before trusting it - see {@link #strip},
  * which does that itself and refuses to return anything it could not re-read.
  */
-public final class ConfusedStrip {
+public final class StatusStrip {
+
+    /** {@code DarzaCore.Data.StatusEffect.Paralyzed}. */
+    public static final int PARALYZED = 6;
+
+    /** {@code DarzaCore.Data.StatusEffect.Slowed}. */
+    public static final int SLOWED = 7;
 
     /** {@code DarzaCore.Data.StatusEffect.Confused}. */
     public static final int CONFUSED = 11;
 
-    private ConfusedStrip() {
+    /**
+     * {@code DarzaCore.Data.StatusEffect.Hallucinating}.
+     *
+     * <p>The one effect in the client whose entire consequence is cosmetic, and the only one verified
+     * safe to remove: it is read only by {@code World.SetHallucinating} →
+     * {@code GameObject.ToggleHallucinating}, which swaps the sprite set. It is not part of the
+     * movement law, the input remap, the attack rate or any packet the client sends, so unlike Slowed
+     * and Cutscene there is nothing on the wire for the server to re-simulate against a stripped
+     * entry. That has been confirmed, so it is armed by default alongside Confused.
+     */
+    public static final int HALLUCINATING = 16;
+
+    /**
+     * {@code DarzaCore.Data.StatusEffect.Barrier}.
+     *
+     * <p>Not offered by the dashboard (it is a benefit, not a debuff) but named because it is the
+     * effect the test fixture carries alongside the two being removed, and a bare {@code 32} in a test
+     * asserting "the unarmed entry survived" is exactly the kind of magic number that stops being
+     * true without anyone noticing.
+     */
+    public static final int BARRIER = 32;
+
+    /**
+     * The effects the dashboard offers by name, in the order it lists them.
+     *
+     * <p>Confused is first because it is the one this feature was built for, and it and Hallucinating
+     * are the two armed by default; Paralyzed and Slowed are the two other debuffs the capture shows
+     * arriving on the local player, both of which sit in the movement law and are therefore off until
+     * asked for. The map is the single place a name and an ordinal are tied together, so the
+     * dashboard, the log line and the config file cannot disagree.
+     */
+    public static final Map<String, Integer> NAMED = named();
+
+    /** Built in a fixed order: the dashboard renders these in the order it reads them. */
+    private static Map<String, Integer> named() {
+        var out = new LinkedHashMap<String, Integer>();
+        out.put("confused", CONFUSED);
+        out.put("paralyzed", PARALYZED);
+        out.put("slowed", SLOWED);
+        out.put("hallucinating", HALLUCINATING);
+        return java.util.Collections.unmodifiableMap(out);
+    }
+
+    private StatusStrip() {
+    }
+
+    /** The display name for an ordinal, or {@code "effect N"} when the dashboard has no name for it. */
+    public static String name(int effect) {
+        for (Map.Entry<String, Integer> entry : NAMED.entrySet()) {
+            if (entry.getValue() == effect) {
+                return entry.getKey();
+            }
+        }
+        return "effect " + effect;
     }
 
     /**
@@ -64,12 +132,18 @@ public final class ConfusedStrip {
      * @param payload the rewritten game packet payload
      * @param removed how many status entries were dropped
      * @param lists how many stat-78 lists were shortened
+     * @param removedEffects which ordinals were actually dropped, sorted
      */
-    public record Result(byte[] payload, int removed, int lists) {
+    public record Result(byte[] payload, int removed, int lists, List<Integer> removedEffects) {
+    }
+
+    /** Drops one effect; the single-effect form the tests and a hand-run use. */
+    public static Result strip(byte[] payload, int playerId, int effect) {
+        return strip(payload, playerId, Set.of(effect));
     }
 
     /**
-     * Drops {@code effect} from every status list belonging to {@code playerId}.
+     * Drops every effect in {@code effects} from every status list belonging to {@code playerId}.
      *
      * <p>Only the local player's own list is touched. Every other object in the packet keeps its
      * effects: a boss that confuses a whole party would otherwise have the debuff removed from
@@ -77,12 +151,12 @@ public final class ConfusedStrip {
      *
      * @param payload a complete game packet payload, {@code [2-byte LE id][body]}
      * @param playerId the local player's object id, or {@code -1} when it is not known yet
-     * @param effect the {@code StatusEffect} ordinal to remove
+     * @param effects the {@code StatusEffect} ordinals to remove
      * @return the replacement, or {@code null} when there is nothing to change, the payload is not an
      *     {@code Update}, the player is unknown, or the walk did not decode exactly
      */
-    public static Result strip(byte[] payload, int playerId, int effect) {
-        if (payload == null || playerId < 0 || payload.length < 2) {
+    public static Result strip(byte[] payload, int playerId, Set<Integer> effects) {
+        if (payload == null || playerId < 0 || effects == null || effects.isEmpty() || payload.length < 2) {
             return null;
         }
         if ((payload[0] & 0xFF) != (UpdateScan.UPDATE_ID & 0xFF) || (payload[1] & 0xFF) != 0) {
@@ -90,6 +164,7 @@ public final class ConfusedStrip {
         }
 
         List<Rewrite> rewrites = new ArrayList<>(1);
+        Map<Integer, Integer> removedByEffect = new TreeMap<>();
         boolean walked = UpdateScan.walk(payload, new UpdateScan.Visitor() {
             @Override
             public void onStatusList(int objectId, int countOffset, int count, int firstEntryOffset) {
@@ -100,7 +175,9 @@ public final class ConfusedStrip {
                 int keptLength = 0;
                 for (int i = 0; i < count; i++) {
                     int entry = firstEntryOffset + i * UpdateScan.STATUS_ENTRY_BYTES;
-                    if (effectAt(payload, entry) == effect) {
+                    int effect = effectAt(payload, entry);
+                    if (effects.contains(effect)) {
+                        removedByEffect.merge(effect, 1, Integer::sum);
                         continue;
                     }
                     System.arraycopy(payload, entry, kept, keptLength, UpdateScan.STATUS_ENTRY_BYTES);
@@ -138,10 +215,10 @@ public final class ConfusedStrip {
 
         // A rewrite that does not re-read to its exact new length is a rewritten packet that would
         // desync the session. Refusing it costs one lost debuff removal; accepting it costs the run.
-        if (!reWalkIsClean(result, playerId, effect)) {
+        if (!reWalkIsClean(result, playerId, effects)) {
             return null;
         }
-        return new Result(result, removed, rewrites.size());
+        return new Result(result, removed, rewrites.size(), List.copyOf(removedByEffect.keySet()));
     }
 
     /**
@@ -165,8 +242,8 @@ public final class ConfusedStrip {
                 | (payload[offset + 3] & 0xFF) << 24;
     }
 
-    /** True when {@code result} decodes exactly and no longer carries {@code effect} on {@code playerId}. */
-    private static boolean reWalkIsClean(byte[] result, int playerId, int effect) {
+    /** True when {@code result} decodes exactly and no longer carries any of {@code effects} on {@code playerId}. */
+    private static boolean reWalkIsClean(byte[] result, int playerId, Set<Integer> effects) {
         boolean[] clean = {true};
         boolean walked = UpdateScan.walk(result, new UpdateScan.Visitor() {
             @Override
@@ -175,7 +252,7 @@ public final class ConfusedStrip {
                     return;
                 }
                 for (int i = 0; i < count; i++) {
-                    if (effectAt(result, firstEntryOffset + i * UpdateScan.STATUS_ENTRY_BYTES) == effect) {
+                    if (effects.contains(effectAt(result, firstEntryOffset + i * UpdateScan.STATUS_ENTRY_BYTES))) {
                         clean[0] = false;
                     }
                 }

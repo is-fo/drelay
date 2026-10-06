@@ -5,6 +5,7 @@ import networking.packets.gmpackets.EscapeCastStatePacket;
 import networking.packets.gmpackets.EscapePacket;
 import networking.packets.gmpackets.ForcedEscapePacket;
 import networking.packets.gmpackets.HealthUpdatePacket;
+import networking.packets.gmpackets.KickedPacket;
 import networking.packets.gmpackets.ReconnectPacket;
 import networking.packets.gmpackets.SafeAreaStatePacket;
 import networking.packets.qpackets.QError;
@@ -58,6 +59,10 @@ public final class PacketRegistry {
         GAME.put(GmPacketType.FORCED_ESCAPE, ForcedEscapePacket::new);
         GAME.put(GmPacketType.ESCAPE_CAST_STATE, EscapeCastStatePacket::new);
         GAME.put(GmPacketType.SAFE_AREA_STATE, SafeAreaStatePacket::new);
+        // Kicked is the server's parting words. Decoding it is what turns "the session closed" into
+        // "the server said why" in events-*.jsonl - the difference between an experiment that failed
+        // opaquely and one that names its own cause.
+        GAME.put(GmPacketType.KICKED, KickedPacket::new);
 
         // --- queue service (QPacketType ids) ----------------------------------------------
         QUEUE.put(QPacketType.HELLO, QHello::new);

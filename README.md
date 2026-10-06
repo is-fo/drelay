@@ -118,7 +118,10 @@ Any `-Ddrelay.*` property reaches the relay, so settings can be changed for one 
 java -jar drelay.jar -Ddrelay.web.port=0                  # no dashboard
 java -jar drelay.jar -Ddrelay.log.dir=D:\drelay-logs      # logs elsewhere
 java -jar drelay.jar -Ddrelay.nexus.enabled=true -Ddrelay.nexus.dryRun=true
-java -jar drelay.jar -Ddrelay.strip.confused=true         # remove the Confused debuff from this client
+java -jar drelay.jar -Ddrelay.strip.enabled=false          # forward server->client bytes verbatim
+java -jar drelay.jar -Ddrelay.strip.effects=11,16          # the shipped default, spelled out
+java -jar drelay.jar -Ddrelay.strip.effects=11,16,7        # add Slowed - it is server-validated
+java -jar drelay.jar -Ddrelay.strip.hallucinating=false     # disarm the cosmetic one only
 ```
 
 ### Updates
@@ -149,13 +152,21 @@ the launcher or by an update: its contents decide, and the moment they differ fr
 the file is yours. To hand it back to the launcher, delete its line from `work/install-manifest.txt`
 (or delete the file).
 
+**Settings changed in the dashboard are saved.** The auto-nexus rule and the `strip` module are the
+two things the dashboard owns, and pressing **apply** writes them back into the file the relay was
+started with — `work/relay-routes.json` under the launcher — telling you in the panel whether the write
+succeeded. The launcher then carries those two blocks forward when it regenerates that file on the next
+run, so a threshold or an armed effect survives a restart instead of quietly reverting to the default.
+Change them from the dashboard, or by editing `work/relay-routes.json`; the template's copy of those
+two keys is only the first-run default.
+
 ---
 
 ## Watching a session
 
 | | |
 |---|---|
-| **Dashboard** | <http://127.0.0.1:8765/> — live HP, the auto-nexus state, and a filtered packet stream |
+| **Dashboard** | <http://127.0.0.1:8765/> — live HP, the auto-nexus and status-effect-strip panels, both saved back to the route table, and a filtered packet stream |
 | **Event log** | `work/logs/events-<run>.jsonl` — every event, with raw payload and decoded fields |
 | **Nexus log** | `work/logs/nexus-<run>.jsonl` — the escape story only |
 | **Relay console** | `work/logs/relay-console.out` — the relay's own output, mirrored from the launcher's window |
@@ -165,10 +176,22 @@ run when switched on: [docs/AUTONEXUS-GUIDE.md](docs/AUTONEXUS-GUIDE.md) is the 
 [docs/AUTONEXUS.md](docs/AUTONEXUS.md) is how it works. It is reactive — it reads the server's own
 health packet, it does not predict damage.
 
-The `strip` block is the one setting that changes bytes the server sent: it removes a status effect
-(`Confused` by default) from this client's status lists, because that effect is applied client-side
-and never expires on a timer. Off by default; [docs/INJECTION.md](docs/INJECTION.md) §5 has the wire
-format, the reason a shortened duration does nothing, and what it refuses to rewrite.
+The `strip` block is the one thing that changes bytes the server sent. It is **on by default**, with
+`Confused` (11) and `Hallucinating` (16) armed: it removes those entries from this client's own status
+lists, because both effects are applied client-side and never expire on a timer. The dashboard's
+**status effect strip** panel also offers `Paralyzed` (6) and `Slowed` (7), both off by default — in the
+2026-10-05 capture Slowed landed on the local player 69 times and Confused 5, while Paralyzed managed 4,
+so arming them is a real choice rather than a free one. They are a trap as well as a choice: `Slowed`,
+`Paralyzed`, `Cutscene`, `Grounded` and `FearOfTheBull` all sit in the client's movement law, so the
+server re-simulates them and a stripped entry is a speed-check kick. `Hallucinating` is the exception and
+the reason it is on: its whole client-side consequence is a sprite swap, nothing derived from it reaches
+the wire, and that has been confirmed — so it is a free cosmetic gain rather than a gameplay change.
+[docs/INJECTION.md](docs/INJECTION.md) §5 has the wire format, the reason a shortened duration does
+nothing, the effect-by-effect verdict, and what it refuses to rewrite.
+
+When a session does end badly, `GmKicked` (id 185) is decoded into the event log: the server's own
+reason text lands in `data.reason`, and again on the session-close event as `kickedReason`, so a failed
+rewrite names its cause instead of showing up as a bare disconnect.
 
 ---
 
@@ -194,8 +217,8 @@ Modules:
 
 | Package | Role |
 |---|---|
-| `networking` | `Launcher` (entry point), `Relay` (listeners and forwarding), `Session`, `AutoNexus`, `PlayerLocator` |
-| `networking.packets` | packet codecs and the registry, the injection primitive, `UpdateScan` (the `GmUpdate` walk), `ConfusedStrip` |
+| `networking` | `Launcher` (entry point), `Relay` (listeners and forwarding), `Session`, `AutoNexus`, `Strip`, `PlayerLocator`, `ConfigWriter` (settings persistence) |
+| `networking.packets` | packet codecs and the registry, the injection primitive, `UpdateScan` (the `GmUpdate` walk), `StatusStrip` (the effects it removes) |
 | `networking.log` | the structured event log |
 | `networking.web` | the dashboard |
 | `networking.util` | JSON writing, preferences, field decoding |
@@ -224,13 +247,14 @@ java -cp "target\classes;target\test-classes" networking.FrameTests          # f
 java -cp "target\classes;target\test-classes" networking.ClientPacketsTests  # the client clock field
 java -cp "target\classes;target\test-classes" networking.InjectionTests      # injected bytes, gates, write lock
 java -cp "target\classes;target\test-classes" networking.UpdateScanTests     # the GmUpdate walk, the strip, the player locator
+java -cp "target\classes;target\test-classes" networking.SettingsTests       # settings parsing, the route-table write, the filter round trip
 
 python tools\tests\test_relay.py                   # framing, byte-exact both directions
 python tools\tests\test_relay_little_endian.py     # both length orders end to end
 python tools\tests\test_relay_stress.py            # both directions under concurrent load
-python tools\tests\test_reconnect_log.py           # a GmReconnect retarget is decoded and learned
+python tools\tests\test_reconnect_log.py           # a GmReconnect retarget and a GmKicked reason are decoded and logged
 python tools\tests\test_auto_nexus.py              # the auto-nexus chain against a fake game server
-python tools\tests\test_strip_confused.py          # a server->client rewrite, against a fake game server
+python tools\tests\test_status_strip.py            # a server->client rewrite, against a fake game server
 python tools\tests\test_dashboard.py               # the page parses; the endpoints have the right shape
 python tools\tests\test_relay_live.py              # the relay in front of the real server
 python tools\verify_packet_ids.py                  # packet ids against the client's own enums

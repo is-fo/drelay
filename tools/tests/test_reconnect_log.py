@@ -1,4 +1,4 @@
-"""End-to-end check that the relay decodes and logs a `GmReconnect` retarget.
+"""End-to-end check that the relay decodes and logs a `GmReconnect` retarget, and a `GmKicked` reason.
 
 `GmReconnect` (game id 36) is the only packet that tells the client to move to another game
 server, and under an address claim it is the only way a session can leave the proxy unnoticed.
@@ -6,6 +6,12 @@ server, and under an address claim it is the only way a session can leave the pr
 game: the fake peer sits on the server side and sends the packet, and the assertions are that the
 bytes still arrive unchanged (decoding must never alter forwarding) and that the log names the
 target host and port.
+
+The same run then sends `GmKicked` (id 185), the server's own reason for ending the session. It is
+the same shape of check - decode a server->client packet and prove the field reaches the log - and
+it is the fastest explanation of a failed server->client rewrite, so it is asserted in the same
+place, on disk in `events-*.jsonl`: `data.reason` on the packet event, and `kickedReason` on the
+session-close event that the teardown produces a moment later.
 
 Usage: python tools/tests/test_reconnect_log.py [--relay-port 6520] [--upstream-port 6620]
 """
@@ -25,6 +31,9 @@ RECONNECT_ID = 36
 TARGET_HOST = "18.145.215.213"
 TARGET_PORT = 6411
 TARGET_CHARACTER = 3774335
+
+KICKED_ID = 185
+KICK_REASON = "speed hack detected"
 
 # The payload as captured live on 2026-10-02, when the server moved the client to a realm:
 #   24 00              type, a 2-byte little-endian ushort (game packets, not the queue's 1 byte)
@@ -91,12 +100,27 @@ def reconnect_payload() -> bytes:
     )
 
 
-def fake_server(port: int, ready: threading.Event, payload: bytes) -> None:
+def kicked_payload() -> bytes:
+    """`GmKicked`: the type id, then the reason as a string16 (2-byte LE length + UTF-8).
+
+    `GmKicked.Read` is a single `ReadString16` of `Reason`, exactly like `GmForcedEscape` (184) one
+    id earlier, so the payload is built the same way - and the UTF-8 length is a byte count, not a
+    character count.
+    """
+    raw = KICK_REASON.encode("utf-8")
+    return struct.pack("<H", KICKED_ID) + struct.pack("<H", len(raw)) + raw
+
+
+def fake_server(port: int, ready: threading.Event, payloads) -> None:
     def serve(conn: socket.socket) -> None:
         with conn:
             try:
-                conn.sendall(frame(payload))
-                time.sleep(0.5)
+                for payload in payloads:
+                    conn.sendall(frame(payload))
+                    time.sleep(0.25)
+                # Then hang up, the way a server does after a kick. That teardown is what produces the
+                # session-close event the reason has to survive into.
+                time.sleep(0.3)
             except OSError:
                 pass
 
@@ -112,6 +136,26 @@ def fake_server(port: int, ready: threading.Event, payload: bytes) -> None:
             threading.Thread(target=serve, args=(conn,), daemon=True).start()
 
 
+def newest_events(log_dir: Path):
+    """The newest `events-*.jsonl` under ``log_dir``, parsed into events, or [] if there is none.
+
+    A dedicated directory per test run keeps this unambiguous: the relay's run id is a timestamp, so
+    "newest by mtime" is this run's log and never a previous one's.
+    """
+    logs = sorted(log_dir.glob("events-*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if not logs:
+        return []
+    events = []
+    for line in logs[-1].read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if line:
+            try:
+                events.append(json.loads(line))
+            except ValueError:
+                pass
+    return events
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--relay-port", type=int, default=6520)
@@ -119,16 +163,20 @@ def main() -> int:
     args = ap.parse_args()
 
     payload = reconnect_payload()
+    kicked = kicked_payload()
 
     ready = threading.Event()
-    threading.Thread(target=fake_server, args=(args.upstream_port, ready, payload), daemon=True).start()
+    threading.Thread(target=fake_server, args=(args.upstream_port, ready, [payload, kicked]),
+                     daemon=True).start()
     if not ready.wait(5):
         print("FAIL: fake server did not start")
         return 1
 
     config = ROOT / "work" / "reconnect-routes.json"
+    log_dir = ROOT / "work" / "logs" / "reconnect-test"
     config.write_text(json.dumps({
         "listenHost": "127.0.0.1",
+        "logDirectory": str(log_dir),
         "routes": [{
             "name": "Game",
             "listenPort": args.relay_port,
@@ -144,6 +192,7 @@ def main() -> int:
 
     failures = []
     echoed = None
+    echoed_kick = None
     deadline = time.time() + 20
     while time.time() < deadline:
         try:
@@ -161,6 +210,11 @@ def main() -> int:
         with client:
             client.settimeout(5)
             echoed = read_frame(client)
+            echoed_kick = read_frame(client)
+        # Both directions then close (the client above, the fake peer a moment later), which is what
+        # lets the relay finish the session and write the close event. Give that write time to land
+        # before the process is taken down.
+        time.sleep(1.2)
     except Exception as exc:  # noqa: BLE001
         failures.append(f"exception reading the forwarded frame: {exc}")
     finally:
@@ -177,6 +231,8 @@ def main() -> int:
         failures.append(f"the built payload no longer matches the live capture: {payload.hex()}")
     if echoed != payload:
         failures.append(f"forwarding changed the packet (got {echoed!r})")
+    if echoed_kick != kicked:
+        failures.append(f"forwarding changed the GmKicked packet (got {echoed_kick!r})")
 
     log = out or ""
     expected = f"RETARGET -> {TARGET_HOST}:{TARGET_PORT}  characterId={TARGET_CHARACTER}  toBeyond=false"
@@ -197,12 +253,47 @@ def main() -> int:
     else:
         print(f"(claim path taken: {'claimed' if claimed else 'refused (unelevated)'})")
 
+    if "Kicked (codec)" not in log:
+        failures.append("relay did not mark the packet as a decoded Kicked")
+
+    # On disk, which is where a failed run is actually analysed: the reason on the packet event, and
+    # again on the session-close event, so a disconnect is never cause-less.
+    events = newest_events(log_dir)
+    if not events:
+        failures.append(f"no events-*.jsonl under {log_dir}, so nothing can be checked on disk")
+    else:
+        kicks = [e for e in events if e.get("pkt") == "Kicked"]
+        if not kicks:
+            failures.append("no Kicked packet event in events-*.jsonl")
+        else:
+            kick = kicks[-1]
+            print(f"   kicked event: id={kick.get('id')} data={kick.get('data')}")
+            if kick.get("id") != KICKED_ID:
+                failures.append(f"the Kicked event carries id {kick.get('id')!r}")
+            if (kick.get("data") or {}).get("reason") != KICK_REASON:
+                failures.append("the packet event's data.reason is %r, expected %r"
+                                % ((kick.get("data") or {}).get("reason"), KICK_REASON))
+            if KICK_REASON not in (kick.get("note") or ""):
+                failures.append(f"the packet event's note does not name the reason: {kick.get('note')!r}")
+        closes = [e for e in events
+                  if e.get("kind") == "session" and "closed" in (e.get("note") or "")]
+        if not closes:
+            failures.append("no session-close event in events-*.jsonl")
+        else:
+            close = closes[-1]
+            print(f"   close event: note={close.get('note')!r}")
+            if (close.get("data") or {}).get("kickedReason") != KICK_REASON:
+                failures.append("the close event lost kickedReason: %r" % (close.get("data"),))
+            if KICK_REASON not in (close.get("note") or ""):
+                failures.append(f"the close event's note lost the reason: {close.get('note')!r}")
+
     if failures:
         print("FAIL:")
         for f in failures:
             print("  -", f)
         return 1
-    print("PASS: Reconnect was forwarded byte-exact and the relay logged the retarget target")
+    print("PASS: Reconnect and Kicked were forwarded byte-exact, the relay logged the retarget target, "
+          "and the kick reason reached both log events")
     return 0
 
 

@@ -375,6 +375,7 @@ public final class GmPacketType {
     public static final int ESCAPE_CAST_STATE = 290;
     public static final int SAFE_AREA_STATE = 291;
     public static final int FORCED_ESCAPE = 184;
+    public static final int KICKED = 185;
     public static final int RECONNECT = 36;
     public static final int PING = 92;
     public static final int PONG = 72;

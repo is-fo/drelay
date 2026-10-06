@@ -84,6 +84,45 @@ final class JsonText {
         return Document.of(text);
     }
 
+    /**
+     * The parsed document as plain Java values: {@code LinkedHashMap}, {@code ArrayList},
+     * {@code String}, {@code Double}, {@code Boolean} and {@code null}.
+     *
+     * <p>Used by {@link ConfigWriter}, which has to rewrite a key of a file the user also edits by
+     * hand and therefore cannot afford to drop the keys it does not understand. Objects keep their key
+     * order, which is what makes a rewritten route table still diffable against the previous one.
+     */
+    static Object parsePlain(String text) {
+        return plain(Document.of(text).root());
+    }
+
+    private static Object plain(Value value) {
+        if (value instanceof Str s) {
+            return s.value();
+        }
+        if (value instanceof Num n) {
+            return n.value();
+        }
+        if (value instanceof Bool b) {
+            return b.value();
+        }
+        if (value instanceof Null) {
+            return null;
+        }
+        if (value instanceof Arr a) {
+            List<Object> out = new ArrayList<>(a.values().size());
+            for (Value item : a.values()) {
+                out.add(plain(item));
+            }
+            return out;
+        }
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<String, Value> entry : ((Obj) value).values().entrySet()) {
+            out.put(entry.getKey(), plain(entry.getValue()));
+        }
+        return out;
+    }
+
     /** Parses the body of {@code drelay.properties}, which is a Java properties file, not JSON. */
     static Map<String, String> parseProperties(String text) {
         var values = new LinkedHashMap<String, String>();

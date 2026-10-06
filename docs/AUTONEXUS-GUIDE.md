@@ -97,9 +97,11 @@ Settings can come from any of the three surfaces, and the later ones win:
    | `-Ddrelay.nexus.castChannel` | `DRELAY_NEXUS_CAST_CHANNEL` | channelled escape (not on the dashboard) |
 
 3. **The dashboard, live, mid-session** - the **auto nexus** panel. Press **apply**; the change takes
-   effect on the next health reading. Every change is recorded as a `note` event carrying the request,
+   effect on the next health reading, and it is written back into the route table the relay was started
+   with so it survives a restart. Every change is recorded as a `note` event carrying the request,
    what was applied, and the whole resulting config, so the log always says which settings produced a
-   run.
+   run. The panel says whether the write succeeded; if it could not (a read-only install), the setting
+   is still live for this run and the reason is printed under the controls.
 
 Keys are forgiving: `threshold_percent`, `thresholdPercent` and `threshold-percent` are the same key,
 and an unrecognised one is reported back as `unknown:<key>` rather than silently ignored.
@@ -117,6 +119,7 @@ The header, left to right, tells you whether anything can happen at all:
 | `no session` / `<route>#<n> · <phase>` | the **newest** session and its phase (`NEW`, `CONNECTED`, `HELLO`, `IN_WORLD`, `CLOSED`) | you are still in the lobby, or the newest session is not the one you are playing |
 | `injection disarmed` / `injection armed` | the world gate: has the client's `Hello` **and** a `MapInfo` been seen | this is the usual reason nothing fires. `IN_WORLD` and `injection armed` go together |
 | `auto-nexus off` / `auto-nexus dry run` / `AUTO-NEXUS LIVE` | the master switch and dry run | note that LIVE only means `enabled && !dryRun`; a threshold of 0 can never fire while it still says LIVE |
+| `strip off` / `strip 11` / `strip 7,11` | the status-effect strip and the ordinals it is armed with (11 Confused, 7 Slowed, 6 Paralyzed) | it is on by default with Confused armed; `strip off` means server→client payloads are forwarded verbatim. See [INJECTION.md](INJECTION.md) §5 |
 
 Then:
 
@@ -127,6 +130,10 @@ Then:
   evaluated, `nexused` is escapes written, `dry runs` is would-haves, `declines` is everything else.
   In a healthy live run below the threshold you should see `nexused` increase by one and `declines`
   by a handful around it. The `last ack` line is the server's verdict.
+- **status effect strip** - the effects to remove (Confused on by default, Paralyzed and Slowed off),
+  the locator's evidence requirement, and the counters: `packets rewritten`, `entries removed`, and
+  the last strip's object and byte sizes. Both this panel and the auto-nexus one save to the route
+  table when you press **apply**; the line under the counters says where, or why not.
 - **sessions** - every session, its phase, whether injection is armed, and its own health.
 - **filters** / **packets** - the live stream. The default filter, *character hp*, keeps the health
   readings, the whole escape conversation, world entry, and every action the relay took. If you change

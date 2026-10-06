@@ -1,22 +1,30 @@
-"""End-to-end check of the server->client status-effect strip, with no game client.
+"""End-to-end check of the server->client status-effect strip module, with no game client.
 
 Everything is driven the way the real relay is driven: a fake game server on one port, a route
 pointing at it, and a synthetic client that speaks the game's framing
 ([4-byte big-endian length][2-byte little-endian type id][body]). The fake server sends a world
 entry, health readings and GmUpdate packets; the client asserts on the bytes that come back.
 
-What is checked:
+What is checked, and why each case is here:
 
-  1. with the strip switched off, every server packet reaches the client byte-identical;
-  2. with it switched on, the local player's Confused entry is gone and the packet is exactly nine
-     bytes shorter;
-  3. another object's Confused entry in the *same* packet is left alone;
-  4. the framing stays in sync afterwards - a following packet still arrives whole and unchanged,
+  1. with the module switched off, every server packet reaches the client byte-identical - the
+     feature is inert when it is asked to be, which is the property that makes it safe to ship on
+     by default;
+  2. with no `strip` block at all, the module is ON and removes exactly Confused (11) and
+     Hallucinating (16), which are the defaults. The default is part of the behaviour, so it is
+     checked like any other case rather than assumed;
+  3. with Confused armed alone, only the local player's Confused entry is removed and the packet is
+     exactly nine bytes shorter - which also proves Hallucinating is not removed unless it is armed;
+  4. with Paralyzed (6) and Slowed (7) armed as well, all three go, the unarmed Barrier on the same
+     list stays, and another object's Slowed in the *same* packet is left alone;
+  5. with Hallucinating armed alone, only its entry goes, so the two default effects are independently
+     attributable rather than only ever removed together;
+  6. the framing stays in sync afterwards - a following packet still arrives whole and unchanged,
      which is the failure this feature could cause and the reason it re-frames the length prefix;
-  5. the relay's own event log says what it did, so a silent no-op and a working strip are
-     distinguishable after the fact.
+  7. the relay's own event log names the object and the ordinals it removed, so a silent no-op and a
+     working strip are distinguishable after the fact.
 
-Usage: python tools/tests/test_strip_confused.py [--keep-logs]
+Usage: python tools/tests/test_status_strip.py [--keep-logs]
 """
 import argparse
 import json
@@ -39,7 +47,10 @@ MAPINFO = bytes.fromhex("0500")        # GmMapInfo (5)
 
 PLAYER_OBJECT = 1930
 OTHER_OBJECT = 1924
+PARALYZED = 6
+SLOWED = 7
 CONFUSED = 11
+HALLUCINATING = 16
 BARRIER = 32
 
 
@@ -227,6 +238,16 @@ def contains_effect(payload: bytes, object_id: int, effect: int) -> bool:
             return True
     return False
 
+
+def list_of(payload: bytes, object_id: int):
+    """The status entries one object carries, or None when it carries no list."""
+    lists, _ = statuses_of(payload)
+    for oid, entries in lists:
+        if oid == object_id:
+            return entries
+    return None
+
+
 # --- the fake server ---------------------------------------------------------------------------
 
 class FakeServer:
@@ -291,24 +312,55 @@ class FakeServer:
         self.conn.sendall(frame(payload))
 
 
-def write_config(path: Path, log_dir: Path, relay_port: int, upstream_port: int, strip: bool,
-                 min_votes: int = 3):
-    path.write_text(json.dumps({
+def write_config(path: Path, log_dir: Path, relay_port: int, upstream_port: int, strip):
+    """The route table for one run; ``strip`` is the whole block, or None to leave it out.
+
+    Omitting it is a case in its own right: the module's default is on with Confused armed, and the
+    only way to check a default is to not configure it.
+    """
+    document = {
         "listenHost": "127.0.0.1",
         "logDirectory": str(log_dir),
         "ringCapacity": 5000,
         "web": {"host": "127.0.0.1", "port": 0},
-        "strip": {"confused": strip, "effect": CONFUSED, "minVotes": min_votes},
         "routes": [{
             "name": "Game",
             "listenPort": relay_port,
             "remoteHost": "127.0.0.1",
             "remotePort": upstream_port,
         }],
-    }, indent=2), encoding="utf-8")
+    }
+    if strip is not None:
+        document["strip"] = strip
+    path.write_text(json.dumps(document, indent=2), encoding="utf-8")
 
 
-def run_once(strip: bool, keep_logs: bool):
+def startup_line(effects):
+    """The startup text the relay should print for an armed set (or for being off)."""
+    if not effects:
+        return "strip: disabled"
+    names = {PARALYZED: "paralyzed", SLOWED: "slowed", CONFUSED: "confused",
+             HALLUCINATING: "hallucinating"}
+    return "status effect(s) %s" % ", ".join(
+        "%d (%s)" % (effect, names[effect]) for effect in sorted(effects))
+
+
+# The five cases, each as (label, strip block or None, the effects that must be removed from the
+# player). The "default" case has no strip block at all, which is the on-by-default claim: the module
+# ships armed with Confused (11) and Hallucinating (16). The fixture carries all four named debuffs in
+# every case, so each case also asserts that the effects it did not arm survive untouched - which is
+# what keeps the two defaults independently attributable rather than only ever removed together.
+CASES = [
+    ("off", {"enabled": False, "effects": [CONFUSED, HALLUCINATING], "minVotes": 3}, set()),
+    ("default", None, {CONFUSED, HALLUCINATING}),
+    ("confused", {"enabled": True, "effects": [CONFUSED], "minVotes": 3}, {CONFUSED}),
+    ("multi", {"enabled": True, "effects": [PARALYZED, SLOWED, CONFUSED], "minVotes": 3},
+     {PARALYZED, SLOWED, CONFUSED}),
+    ("halluc", {"enabled": True, "effects": [HALLUCINATING], "minVotes": 3}, {HALLUCINATING}),
+]
+
+
+def run_once(label: str, strip, expected_removed: set, keep_logs: bool):
     """One relay run: return (failures, log_path)."""
     failures = []
     server = FakeServer(0)
@@ -320,9 +372,8 @@ def run_once(strip: bool, keep_logs: bool):
     relay_port = probe.getsockname()[1]
     probe.close()
 
-    tag = "on" if strip else "off"
     log_dir = ROOT / "work" / "logs" / "strip-test"
-    config = ROOT / "work" / ("strip-%s-routes.json" % tag)
+    config = ROOT / "work" / ("strip-%s-routes.json" % label)
     write_config(config, log_dir, relay_port, server.port, strip)
 
     relay = subprocess.Popen([JAVA, "-cp", str(CLASSES), "networking.Relay", str(config)],
@@ -365,35 +416,42 @@ def run_once(strip: bool, keep_logs: bool):
             if read_frame(client) != update(10 + tick, [(PLAYER_OBJECT, [(2, 1, i16(health))])]):
                 failures.append("a plain Update was not forwarded unchanged")
 
-        # The packet under test: Confused on the player, Confused on somebody else, and a stat after
+        # The packet under test: four effects on the player, two on somebody else, and a stat after
         # both lists so a rewrite that is short by nine bytes cannot still look correct.
+        kept_on_player = {BARRIER} | ({CONFUSED, SLOWED, PARALYZED, HALLUCINATING} - expected_removed)
         marker = (7, 9, f32(1.5))
-        confused_packet = update(99, [
-            (OTHER_OBJECT, [(78, 8, status_list([(BARRIER, 1, 69420.0), (CONFUSED, 1, 0.5)]))]),
+        packet = update(99, [
+            (OTHER_OBJECT, [(78, 8, status_list([(BARRIER, 1, 69420.0), (SLOWED, 1, 0.5)]))]),
             (PLAYER_OBJECT, [(78, 8, status_list([(BARRIER, 1, 69420.0), (CONFUSED, 1, 0.85),
-                                                  (2, 1, 0.2)]))]),
+                                                  (SLOWED, 1, 2.5), (PARALYZED, 1, 1.5),
+                                                  (HALLUCINATING, 1, 10.0)]))]),
             (555, [marker]),
         ])
-        server.send(confused_packet)
+        server.send(packet)
         arrived = read_frame(client)
 
-        if strip:
-            if contains_effect(arrived, PLAYER_OBJECT, CONFUSED):
-                failures.append("the player's Confused entry reached the client")
-            if not contains_effect(arrived, OTHER_OBJECT, CONFUSED):
-                failures.append("another object's Confused entry was removed as well")
-            if len(arrived) != len(confused_packet) - 9:
+        if expected_removed:
+            for effect in expected_removed:
+                if contains_effect(arrived, PLAYER_OBJECT, effect):
+                    failures.append("effect %d on the player reached the client" % effect)
+            for effect in kept_on_player:
+                if not contains_effect(arrived, PLAYER_OBJECT, effect):
+                    failures.append("arming %s removed the unrelated effect %d from the player"
+                                    % (sorted(expected_removed), effect))
+            if not contains_effect(arrived, OTHER_OBJECT, SLOWED):
+                failures.append("another object's Slowed entry was removed as well")
+            if len(arrived) != len(packet) - 9 * len(expected_removed):
                 failures.append("the rewritten packet is %d bytes, expected %d"
-                                % (len(arrived), len(confused_packet) - 9))
-            lists, object_ids = statuses_of(arrived)
-            player_entries = [e for oid, e in lists if oid == PLAYER_OBJECT]
-            if not player_entries or len(player_entries[0]) != 2:
+                                % (len(arrived), len(packet) - 9 * len(expected_removed)))
+            entries = list_of(arrived, PLAYER_OBJECT)
+            if not entries or len(entries) != 5 - len(expected_removed):
                 failures.append("the player's list survived with the wrong number of entries: %r"
-                                % (player_entries,))
+                                % (entries,))
+            _, object_ids = statuses_of(arrived)
             if not any(oid == 555 for oid in object_ids):
                 failures.append("the object after the rewritten list lost its stats")
         else:
-            if arrived != confused_packet:
+            if arrived != packet:
                 failures.append("the strip is off but the packet was changed anyway")
 
         # The framing check: a packet sent after a rewrite must still arrive whole. A length prefix
@@ -410,18 +468,19 @@ def run_once(strip: bool, keep_logs: bool):
         if logs:
             log_path = logs[-1]
             text = log_path.read_text(encoding="utf-8", errors="replace")
-            stripped = [json.loads(line) for line in text.splitlines()
-                        if '"stripped"' in line]
-            if strip and not stripped:
+            stripped = [json.loads(line) for line in text.splitlines() if '"stripped"' in line]
+            if expected_removed and not stripped:
                 failures.append("the event log records no strip, so the rewrite is unattributable")
-            if strip and stripped:
-                entry = stripped[-1]
-                if entry.get("data", {}).get("objectId") != PLAYER_OBJECT:
-                    failures.append("the logged strip names object %r"
-                                    % entry.get("data", {}).get("objectId"))
-                if entry.get("data", {}).get("bytesAfter", 0) >= entry.get("data", {}).get("bytesBefore", 0):
+            if expected_removed and stripped:
+                data = stripped[-1].get("data", {})
+                if data.get("objectId") != PLAYER_OBJECT:
+                    failures.append("the logged strip names object %r" % data.get("objectId"))
+                if sorted(data.get("effects") or []) != sorted(expected_removed):
+                    failures.append("the logged strip names effects %r, expected %r"
+                                    % (data.get("effects"), sorted(expected_removed)))
+                if data.get("bytesAfter", 0) >= data.get("bytesBefore", 0):
                     failures.append("the logged strip does not record a shorter packet")
-            if not strip and stripped:
+            if not expected_removed and stripped:
                 failures.append("the log records a strip while the feature was switched off")
     except Exception as e:
         # A closed socket is a failure to report, not a traceback: the interesting part is usually
@@ -448,10 +507,10 @@ def run_once(strip: bool, keep_logs: bool):
             for stray in (ROOT / "work").glob("strip-*-routes.json"):
                 stray.unlink(missing_ok=True)
 
-    # The startup line is the operator's only confirmation that the switch was read: a typo in the
+    # The startup line is the operator's only confirmation that the settings were read: a typo in the
     # route table would otherwise look identical to "the debuff never arrived". Checked on every run,
     # passing or failing, because it is the one thing a live test depends on being true.
-    expected = ("strip: removing StatusEffect %d" % CONFUSED) if strip else "strip: disabled"
+    expected = startup_line(expected_removed)
     if not any(expected in line for line in relay_output):
         failures.append("the relay did not report the strip setting at startup (wanted %r)" % expected)
 
@@ -468,21 +527,20 @@ def main():
         return 2
 
     all_failures = []
-    for strip in (False, True):
-        label = "strip ON " if strip else "strip OFF"
-        failures, log_path = run_once(strip, args.keep_logs)
+    for label, strip, expected_removed in CASES:
+        failures, log_path = run_once(label, strip, expected_removed, args.keep_logs)
         if failures:
             all_failures.extend("%s: %s" % (label, f) for f in failures)
         else:
-            print("   %s: ok%s" % (label, "" if log_path is None else "  (log %s)" % log_path.name))
+            print("   %-9s: ok%s" % (label, "" if log_path is None else "  (log %s)" % log_path.name))
 
     if all_failures:
         print("FAIL: %d problem(s)" % len(all_failures))
         for failure in all_failures:
             print("  - " + failure)
         return 1
-    print("PASS: the strip is off by default, removes only the local player's effect, keeps the "
-          "framing, and says so in the log")
+    print("PASS: the strip is on by default, inert when switched off, removes only the armed effects "
+          "from only the local player's list, keeps the framing, and says so in the log")
     return 0
 
 

@@ -48,6 +48,7 @@ public record LogFilter(String name, boolean enabled, Set<String> kinds, Set<Str
             "EscapeCastState",
             "EscapeAck",
             "ForcedEscape",
+            "Kicked",
             "SafeAreaState",
             "Reconnect",
             "Ping");
@@ -121,12 +122,36 @@ public record LogFilter(String name, boolean enabled, Set<String> kinds, Set<Str
             return out;
         }
         for (String part : text.split("[,\\s]+")) {
-            String value = part.trim();
+            String value = stripBrackets(part.trim());
             if (!value.isEmpty()) {
                 out.add(value);
             }
         }
         return out;
+    }
+
+    /**
+     * Removes the bracket layers an older dashboard left on a name.
+     *
+     * <p>The endpoint used to hand the page's own JSON array to {@code String.valueOf}, so a packet
+     * list came back as the text {@code "[HealthUpdate, Update]"}; splitting that on its separators
+     * kept the brackets as part of the first and last names, and every save added another layer
+     * ({@code "[]"} became {@code "[[]]"}, then {@code "[[[]]]"}). None of a packet name, a kind or a
+     * session tag can contain a bracket, so removing them at the ends repairs a filter list saved by
+     * that version instead of preserving a pattern that matches nothing. The endpoint itself no longer
+     * produces them (see {@code WebDashboard.filterText}); this is the repair for what is already
+     * stored, and it is why a poisoned list heals on the next read rather than needing to be retyped.
+     */
+    private static String stripBrackets(String value) {
+        int start = 0;
+        int end = value.length();
+        while (start < end && (value.charAt(start) == '[' || value.charAt(start) == ']')) {
+            start++;
+        }
+        while (end > start && (value.charAt(end - 1) == '[' || value.charAt(end - 1) == ']')) {
+            end--;
+        }
+        return value.substring(start, end);
     }
 
     /** Packet matching with {@code *} support, used when a filter's packet list has wildcards. */

@@ -107,6 +107,7 @@ final class DashboardPage {
   <span id="sess" class="pill">no session</span>
   <span id="arm" class="pill">injection disarmed</span>
   <span id="nexusPill" class="pill">auto-nexus off</span>
+  <span id="stripPill" class="pill">strip off</span>
   <span class="spacer"></span>
   <span id="seq" class="pill">seq 0</span>
   <button id="pause" class="small">pause</button>
@@ -147,6 +148,26 @@ final class DashboardPage {
         </div>
         <dl class="kv" id="nxKv"></dl>
         <div id="nxAcks" class="data"></div>
+        <div id="nxSaved" class="data muted"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>status effect strip</h2>
+      <div class="body">
+        <div class="row">
+          <label class="chk"><input type="checkbox" id="stEnabled"> enabled</label>
+        </div>
+        <div class="row" id="stEffects"></div>
+        <div class="row">
+          <label>other ids</label><input type="text" id="stExtra" placeholder="e.g. 32" style="width:96px"
+                 title="status-effect ordinals to remove as well, comma or space separated">
+          <label>min votes</label><input type="number" id="stVotes" min="1" max="64" style="width:64px">
+          <button id="stApply" class="primary">apply</button>
+          <button id="stReload">reload</button>
+        </div>
+        <dl class="kv" id="stKv"></dl>
+        <div id="stSaved" class="data muted"></div>
       </div>
     </section>
 
@@ -198,6 +219,9 @@ let filters = [];
 let state = null;
 let fullHex = new WeakSet();
 let rowCount = 0;
+// The last settings write, as the relay reported it. Held here rather than in the polled state: the
+// state says what the configuration *is*, and this says whether it will still be there tomorrow.
+let lastSave = null;
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -230,6 +254,7 @@ async function refreshState() {
   renderHeader();
   renderHealth();
   renderNexus();
+  renderStrip();
   renderSessions();
   renderLog();
   renderFilters();
@@ -241,6 +266,10 @@ function renderHeader() {
   const live = enabled && !nexus.dryRun;
   pill($('nexusPill'), live ? 'AUTO-NEXUS LIVE' : (enabled ? 'auto-nexus dry run' : 'auto-nexus off'),
        live ? 'bad' : (enabled ? 'warn' : ''));
+  const strip = state.strip || { config: { effects: [] }, active: false };
+  const armed = (strip.config.effects || []);
+  pill($('stripPill'), strip.active ? 'strip ' + armed.join(',') : 'strip off',
+       strip.active ? 'warn' : '');
   const sessions = state.sessions || [];
   const open = sessions.filter(s => !s.closed);
   const primary = sessions.find(s => s.tag === state.primary) || open[open.length - 1];
@@ -296,6 +325,66 @@ function renderNexus() {
       '<div>' + esc(a.at) + ' ' + (a.success ? '<span style="color:var(--good)">accepted</span>'
                                               : '<span style="color:var(--bad)">refused</span>') +
       ' ' + esc(a.note || '') + '</div>').join('');
+  $('nxSaved').innerHTML = saveNote();
+}
+
+// The strip panel is built from the relay's own list of named effects, so a name and an ordinal are
+// defined in exactly one place (StatusStrip.NAMED) and the page cannot disagree with the server about
+// which effect is which. Only the boxes are rebuilt; typed input is never touched here.
+function renderStrip() {
+  const s = state.strip;
+  if (!s) return;
+  const named = s.named || [];
+  const box = $('stEffects');
+  const wanted = named.length ? named : [{ name: 'confused', effect: 11, armed: true }];
+  box.innerHTML = wanted.map((e, i) =>
+    '<label class="chk"><input type="checkbox" data-effect="' + e.effect + '" id="stFx' + i + '"' +
+    (e.armed ? ' checked' : '') + '> ' + esc(e.name) + ' <span class="muted">(' + e.effect +
+    ')</span></label>').join('');
+  const c = s.config;
+  if (document.activeElement.tagName !== 'INPUT') {
+    $('stEnabled').checked = !!c.enabled;
+    $('stVotes').value = c.minVotes;
+    const known = wanted.map(e => e.effect);
+    $('stExtra').value = (c.effects || []).filter(e => !known.includes(e)).join(', ');
+  }
+  $('stKv').innerHTML =
+      row('packets rewritten', s.packetsStripped) + row('entries removed', s.entriesRemoved) +
+      row('last strip', s.lastStrippedAt) +
+      row('last object', s.lastObjectId) +
+      row('last size', s.lastBytesBefore == null ? null
+            : s.lastBytesBefore + ' -> ' + s.lastBytesAfter + ' bytes');
+  $('stSaved').innerHTML = saveNote();
+}
+
+// The last settings write, if there was one. "saved to <file>" is the whole point of the line: a
+// setting that is live but not saved looks identical to one that is, until the next restart.
+function saveNote() {
+  if (!lastSave) return '';
+  if (lastSave.saved) {
+    return '<span style="color:var(--good)">saved</span> to ' + esc(lastSave.file || '');
+  }
+  return '<span style="color:var(--bad)">not saved</span> to ' + esc(lastSave.file || '') +
+         (lastSave.error ? ': ' + esc(lastSave.error) : '');
+}
+
+async function applyStrip() {
+  const effects = [];
+  document.querySelectorAll('#stEffects input[type=checkbox]').forEach(cb => {
+    if (cb.checked) effects.push(Number(cb.dataset.effect));
+  });
+  ($('stExtra').value || '').split(/[\s,]+/).forEach(part => {
+    if (!part) return;
+    const value = Number(part);
+    if (Number.isFinite(value) && value >= 0 && !effects.includes(value)) effects.push(value);
+  });
+  const r = await postJson('/api/strip', {
+    enabled: $('stEnabled').checked,
+    effects: effects,
+    min_votes: Number($('stVotes').value)
+  });
+  if (r) lastSave = r.persistence || null;
+  await refreshState();
 }
 
 function renderSessions() {
@@ -323,12 +412,15 @@ function renderLog() {
 function renderFilters() {
   const box = $('filters');
   const active = filters.filter(f => f.enabled).map(f => f.name).join(', ') || '(none — nothing is shown)';
+  // A field may arrive as an array (what this page posts) or as a string (what the JSON box accepts),
+  // and the panel must render both rather than throwing on one of them.
+  const spec = (v) => Array.isArray(v) ? v.join(' ') : (v == null ? '' : String(v));
   box.innerHTML = filters.map((f, i) =>
     '<div class="filter"><div class="row"><label class="chk"><input type="checkbox" data-i="' + i + '"' +
     (f.enabled ? ' checked' : '') + '></label><span class="name">' + esc(f.name) + '</span>' +
     (f.builtIn ? '<span class="pill">built-in</span>' : '') + '</div>' +
-    '<div class="spec">kinds: ' + esc((f.kinds || []).join(' ')) + '<br>packets: ' +
-    esc((f.packets || []).join(' ')) + '</div></div>').join('');
+    '<div class="spec">kinds: ' + esc(spec(f.kinds)) + '<br>packets: ' +
+    esc(spec(f.packets)) + '</div></div>').join('');
   box.querySelectorAll('input[type=checkbox]').forEach(cb => cb.onchange = async () => {
     filters[Number(cb.dataset.i)].enabled = cb.checked;
     await applyFilters();
@@ -429,10 +521,13 @@ $('nxApply').onclick = async () => {
     skip_in_safe_area: $('nxSafe').checked,
     rearm_percent: Number($('nxRearm').value)
   };
-  await postJson('/api/nexus', body);
+  const r = await postJson('/api/nexus', body);
+  if (r) lastSave = r.persistence || null;
   refreshState();
 };
 $('nxReload').onclick = refreshState;
+$('stApply').onclick = applyStrip;
+$('stReload').onclick = refreshState;
 $('filtersApply').onclick = async () => {
   try {
     const parsed = JSON.parse($('filtersJson').value);

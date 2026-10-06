@@ -214,7 +214,7 @@ public final class EventLog {
             case Event.KIND_HEALTH -> true;
             case Event.KIND_PACKET -> switch (event.pkt == null ? "" : event.pkt) {
                 case "HealthUpdate", "Escape", "EscapeAck", "ForcedEscape", "EscapeCastState",
-                     "SafeAreaState", "MapInfo", "Reconnect" -> true;
+                     "SafeAreaState", "MapInfo", "Reconnect", "Kicked" -> true;
                 default -> false;
             };
             default -> false;

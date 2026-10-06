@@ -1,6 +1,6 @@
 package networking;
 
-import networking.packets.ConfusedStrip;
+import networking.packets.StatusStrip;
 import networking.packets.UpdateScan;
 
 import java.nio.file.Files;
@@ -25,8 +25,10 @@ import java.util.TreeMap;
  * <p>The argument is the object id the operator's own player is known to have had in the fatal world;
  * it is printed as a cross-check, not used to drive anything. What this proves that a unit test cannot:
  * that {@link UpdateScan} decodes <em>every</em> {@code GmUpdate} a real server sent, that
- * {@link PlayerLocator} names one object per world, and that {@link ConfusedStrip} only ever fires on
- * the effect it was asked for.
+ * {@link PlayerLocator} names one object per world, and that {@link StatusStrip} only ever fires on
+ * the effects it was asked for. The armed set is the command line's fourth argument (default
+ * {@code 11,16}, which is the module's own default - Confused and Hallucinating), so the same replay
+ * answers "would stripping Slowed have touched anyone else's list" without a rebuild.
  *
  * <p>Input line format, produced by {@code work/make_replay.py}: {@code W sess ms},
  * {@code H sess ms health}, {@code U sess ms hex}.
@@ -37,6 +39,12 @@ public final class CaptureReplay {
         Path path = Path.of(args.length > 0 ? args[0] : "work/replay.txt");
         int expectedPlayerId = args.length > 1 ? Integer.parseInt(args[1]) : -1;
         int minVotes = args.length > 2 ? Integer.parseInt(args[2]) : 3;
+        java.util.Set<Integer> effects = args.length > 3
+                ? java.util.Arrays.stream(args[3].split("[,\\s]+")).filter(s -> !s.isBlank())
+                        .map(Integer::parseInt).collect(java.util.stream.Collectors.toSet())
+                : new java.util.LinkedHashSet<>(
+                        java.util.List.of(StatusStrip.CONFUSED, StatusStrip.HALLUCINATING));
+        System.out.println("armed effects:     " + effects);
 
         Map<String, PlayerLocator> locators = new HashMap<>();
         Map<String, Integer> worlds = new TreeMap<>();
@@ -86,16 +94,18 @@ public final class CaptureReplay {
                                 session, worlds.getOrDefault(session, 0), millis, playerId,
                                 locator.explain());
                     }
-                    ConfusedStrip.Result result =
-                            ConfusedStrip.strip(payload, playerId, ConfusedStrip.CONFUSED);
+                    StatusStrip.Result result = StatusStrip.strip(payload, playerId, effects);
                     if (result != null) {
                         strips++;
                         bytesRemoved += payload.length - result.payload().length;
-                        stripsPerEffect.merge("effect " + ConfusedStrip.CONFUSED, 1, Integer::sum);
+                        for (int effect : result.removedEffects()) {
+                            stripsPerEffect.merge("effect " + effect, 1, Integer::sum);
+                        }
                         stripsPerObject.merge(session + " obj " + playerId, 1, Integer::sum);
-                        System.out.printf("%-15s world %-3d t=%-9d STRIP obj %-8d %d ent %d -> %d bytes%n",
+                        System.out.printf("%-15s world %-3d t=%-9d STRIP obj %-8d %d ent %s %d -> %d bytes%n",
                                 session, worlds.getOrDefault(session, 0), millis, playerId,
-                                result.removed(), payload.length, result.payload().length);
+                                result.removed(), result.removedEffects(), payload.length,
+                                result.payload().length);
                         if (result.removed() * UpdateScan.STATUS_ENTRY_BYTES
                                 != payload.length - result.payload().length) {
                             failures.add("strip shrank the packet by the wrong amount at "

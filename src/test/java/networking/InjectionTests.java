@@ -57,6 +57,7 @@ public final class InjectionTests {
         testAcknowledgementsArePerSession();
         testConfigValidation();
         testFilterDefaults();
+        testKickReasonIsLogged();
         testJsonEscaping();
 
         if (FAILURES.isEmpty()) {
@@ -250,6 +251,11 @@ public final class InjectionTests {
         Map<String, Object> forced = Injection.decode(false, GmPacketType.FORCED_ESCAPE,
                 new byte[]{(byte) 0xB8, 0x00, 0x03, 0x00, 'n', 'o', 'p'});
         checkEquals("nop", forced.get("message"), "ForcedEscape message decodes from string16");
+
+        // Kicked (185 = 0xB9) is the same string16 one id later - the server's reason for ending it.
+        Map<String, Object> kicked = Injection.decode(false, GmPacketType.KICKED,
+                new byte[]{(byte) 0xB9, 0x00, 0x05, 0x00, 's', 'p', 'e', 'e', 'd'});
+        checkEquals("speed", kicked.get("reason"), "GmKicked reason decodes from string16");
 
         // An unknown id decodes to nothing rather than throwing: the relay must never fail a session
         // because a codec is missing.
@@ -712,6 +718,34 @@ public final class InjectionTests {
     }
 
     // --- 7. log correctness --------------------------------------------------------------------
+
+    /**
+     * The kick reason has to survive into the log, twice: once on the packet event, and again on the
+     * session-close event the server's socket teardown produces a moment later. The second is the one
+     * that matters after a run - a close with a cause and a close without one look identical
+     * otherwise, and the cause is the whole point of decoding this packet.
+     */
+    private static void testKickReasonIsLogged() {
+        byte[] payload = {(byte) 0xB9, 0x00, 0x05, 0x00, 's', 'p', 'e', 'e', 'd'};
+        EventLog log = EventLog.memoryOnly(64);
+        Session session = session(log);
+        feed(session, Event.DIR_S2C, GmPacketType.KICKED, payload);
+
+        Event kicked = log.ring().last(5).stream()
+                .filter(e -> "Kicked".equals(e.pkt)).findFirst().orElseThrow();
+        checkEquals("speed", kicked.data.get("reason"), "the kick reason did not reach the event's data");
+        check(Boolean.TRUE.equals(kicked.data.get("kicked")), "the kick event is not marked as a kick");
+        check(kicked.note != null && kicked.note.contains("speed"),
+                "the kick event's note does not name the reason: " + kicked.note);
+
+        session.onClosed("peer hung up");
+        Event closed = log.ring().last(5).stream()
+                .filter(e -> Event.KIND_SESSION.equals(e.kind)).findFirst().orElseThrow();
+        checkEquals("speed", closed.data.get("kickedReason"),
+                "the session-close event lost the server's kick reason");
+        check(closed.note != null && closed.note.contains("speed"),
+                "the close note does not repeat the kick reason: " + closed.note);
+    }
 
     private static void testJsonEscaping() {
         // The log is read by other tools; a quote or a control character in a name must not be able to

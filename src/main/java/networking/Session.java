@@ -111,6 +111,15 @@ public final class Session {
     private volatile boolean safeArea;
     private volatile boolean casting;
 
+    /**
+     * The reason from the server's {@code GmKicked} (id 185), or {@code null} when it never sent one.
+     *
+     * <p>Latched rather than only logged: the kick and the socket close are two different events
+     * moments apart, and the close is the one that ends the run. Volatile because the downstream pump
+     * sets it while a relay-level close may read it.
+     */
+    private volatile String lastKickReason;
+
     private final AtomicLong injectedPackets = new AtomicLong();
     private final AtomicLong forwardedToServer = new AtomicLong();
     private final AtomicLong forwardedToClient = new AtomicLong();
@@ -358,6 +367,8 @@ public final class Session {
                 casting = Boolean.TRUE.equals(decoded.get("casting"));
             } else if (id == GmPacketType.ESCAPE_ACK) {
                 onEscapeAck(event, decoded);
+            } else if (id == GmPacketType.KICKED) {
+                onKicked(event, decoded);
             }
         }
     }
@@ -470,11 +481,47 @@ public final class Session {
                 .putIf(pending != null, "latencyMs", pending == null ? null : pending.latencyMillis());
     }
 
+    /**
+     * {@code GmKicked} (id 185) — the server ended the session and said why.
+     *
+     * <p>This is the packet that makes a failed experiment self-explaining. The relay changes bytes
+     * the server wrote, so the most likely way for a session to end badly is that the server noticed -
+     * a stripped status entry is a client moving at a speed the server's own model does not allow,
+     * and the reason here is what names that, instead of leaving a bare socket close. The full text is
+     * kept in the event's {@code data.reason} and repeated on the {@code note} line, because the
+     * grep that finds a failed run looks for the note and the analysis reads the field.
+     *
+     * <p>It is also latched onto the session so {@link #onClosed}, which fires when the server drops
+     * the socket a moment later, can carry the same reason. A close with no cause and a close with a
+     * cause look identical in a log otherwise, and the second is the one worth having.
+     */
+    private void onKicked(Event.Builder event, Map<String, Object> decoded) {
+        Object raw = decoded.get("reason");
+        String reason = raw instanceof String text ? text : "";
+        lastKickReason = reason;
+        event.putAll(decoded).put("kicked", true);
+        if (!reason.isBlank()) {
+            event.note("the server ended this session: " + reason);
+        }
+    }
+
     public void onClosed(String reason) {
         closed.set(true);
         synchronized (this) {
             phase = Phase.CLOSED;
             injectionReady = false;
+        }
+        String kicked = lastKickReason;
+        if (kicked != null && !kicked.isBlank()) {
+            // ASCII only, deliberately: this note is mirrored to the console, whose code page mangles
+            // anything else, and the text log is the format the Python tools parse.
+            emit(Event.builder(Event.KIND_SESSION)
+                    .note("closed: " + reason + " (server said: " + kicked + ")")
+                    .put("kickedReason", kicked)
+                    .put("packetsToServer", forwardedToServer.get())
+                    .put("packetsToClient", forwardedToClient.get())
+                    .put("injected", injectedPackets.get()));
+            return;
         }
         emit(Event.builder(Event.KIND_SESSION)
                 .note("closed: " + reason)

@@ -1,6 +1,6 @@
 package networking;
 
-import networking.packets.ConfusedStrip;
+import networking.packets.StatusStrip;
 import networking.packets.UpdateScan;
 
 import java.io.ByteArrayInputStream;
@@ -48,7 +48,7 @@ public final class UpdateScanTests {
     private static final List<String> FAILURES = new ArrayList<>();
     private static int checks;
 
-    private static final int CONFUSED = ConfusedStrip.CONFUSED;
+    private static final int CONFUSED = StatusStrip.CONFUSED;
 
     public static void main(String[] args) {
         testVarintMatchesTheCanonicalReader();
@@ -60,6 +60,7 @@ public final class UpdateScanTests {
         testStripRejectsWhatItCannotUnderstand();
         testStripEmptiesASingleEntryList();
         testStripHandlesSeveralListsOnOneObject();
+        testStripRemovesSeveralEffectsAtOnce();
         testLocatorNeedsEvidence();
         testLocatorRequiresAMargin();
         testLocatorPrefersOwnCharacterId();
@@ -210,7 +211,7 @@ public final class UpdateScanTests {
 
     private static void testStripRemovesOnlyThePlayersEntry() {
         byte[] full = fixture();
-        ConfusedStrip.Result result = ConfusedStrip.strip(full, 1930, CONFUSED);
+        StatusStrip.Result result = StatusStrip.strip(full, 1930, CONFUSED);
         check(result != null, "the captured Confused entry was not stripped");
         if (result == null) {
             return;
@@ -230,38 +231,38 @@ public final class UpdateScanTests {
     }
 
     private static void testStripIsIdempotentAndNarrow() {
-        ConfusedStrip.Result once = ConfusedStrip.strip(fixture(), 1930, CONFUSED);
+        StatusStrip.Result once = StatusStrip.strip(fixture(), 1930, CONFUSED);
         check(once != null, "the first strip returned nothing");
         if (once == null) {
             return;
         }
-        check(ConfusedStrip.strip(once.payload(), 1930, CONFUSED) == null,
+        check(StatusStrip.strip(once.payload(), 1930, CONFUSED) == null,
                 "stripping an already-stripped packet changed it again");
-        check(ConfusedStrip.strip(fixture(), 1924, CONFUSED) == null,
+        check(StatusStrip.strip(fixture(), 1924, CONFUSED) == null,
                 "an object that never had Confused was rewritten");
-        check(ConfusedStrip.strip(fixture(), 1928, CONFUSED) == null,
+        check(StatusStrip.strip(fixture(), 1928, CONFUSED) == null,
                 "an object that never had Confused was rewritten");
-        check(ConfusedStrip.strip(fixture(), 1930, 32) != null,
+        check(StatusStrip.strip(fixture(), 1930, 32) != null,
                 "removing a different effect from the player removed nothing");
     }
 
     private static void testStripRejectsWhatItCannotUnderstand() {
-        check(ConfusedStrip.strip(fixture(), -1, CONFUSED) == null,
+        check(StatusStrip.strip(fixture(), -1, CONFUSED) == null,
                 "the strip acted without knowing which object is the player");
-        check(ConfusedStrip.strip(null, 1930, CONFUSED) == null, "the strip accepted a null payload");
-        check(ConfusedStrip.strip(new byte[]{0x0A, 0x00}, 1930, CONFUSED) == null,
+        check(StatusStrip.strip(null, 1930, CONFUSED) == null, "the strip accepted a null payload");
+        check(StatusStrip.strip(new byte[]{0x0A, 0x00}, 1930, CONFUSED) == null,
                 "the strip acted on something that is not a GmUpdate");
-        check(ConfusedStrip.strip(new byte[]{0x46, 0x00, 0x01}, 1930, CONFUSED) == null,
+        check(StatusStrip.strip(new byte[]{0x46, 0x00, 0x01}, 1930, CONFUSED) == null,
                 "the strip acted on a HealthUpdate");
         byte[] truncated = java.util.Arrays.copyOf(fixture(), 800);
-        check(ConfusedStrip.strip(truncated, 1930, CONFUSED) == null,
+        check(StatusStrip.strip(truncated, 1930, CONFUSED) == null,
                 "the strip rewrote a payload it could not walk");
     }
 
     private static void testStripEmptiesASingleEntryList() {
         byte[] packet = update(object(900, stat(UpdateScan.STATUS_EFFECTS_STAT,
                 UpdateScan.STATUS_EFFECT_DATA_TYPE, statusList(entry(CONFUSED, 1, 1.0f)))));
-        ConfusedStrip.Result result = ConfusedStrip.strip(packet, 900, CONFUSED);
+        StatusStrip.Result result = StatusStrip.strip(packet, 900, CONFUSED);
         check(result != null, "a one-entry Confused list was not stripped");
         if (result == null) {
             return;
@@ -281,7 +282,7 @@ public final class UpdateScanTests {
                         stat(9, 9, floatBytes(1.0f)),
                         stat(UpdateScan.STATUS_EFFECTS_STAT, UpdateScan.STATUS_EFFECT_DATA_TYPE,
                                 statusList(entry(CONFUSED, 1, 0.9f), entry(17, 1, 0.1f)))));
-        ConfusedStrip.Result result = ConfusedStrip.strip(packet, 901, CONFUSED);
+        StatusStrip.Result result = StatusStrip.strip(packet, 901, CONFUSED);
         check(result != null, "two Confused lists on one object were not both stripped");
         if (result == null) {
             return;
@@ -291,6 +292,46 @@ public final class UpdateScanTests {
         checkEquals(packet.length - 18, result.payload().length,
                 "two entries removed did not shrink the packet by eighteen bytes");
         check(UpdateScan.walk(result.payload(), silent()), "the two-list rewrite broke the walk");
+    }
+
+    /**
+     * Several armed effects at once, which is what the dashboard's checkboxes actually ask for.
+     *
+     * <p>The fixture's player list carries three entries ({@code Slowed}, {@code Confused} and
+     * {@code Barrier}); arming two of them must remove exactly those two and leave the third, shorten
+     * the packet by eighteen bytes, and name the ordinals it removed - the log line and the dashboard
+     * counter are built from that list, so a strip that reported the wrong effects would be reported
+     * as success while doing something else.
+     */
+    private static void testStripRemovesSeveralEffectsAtOnce() {
+        byte[] full = fixture();
+        StatusStrip.Result result = StatusStrip.strip(full, 1930,
+                java.util.Set.of(StatusStrip.SLOWED, StatusStrip.CONFUSED));
+        check(result != null, "arming two effects removed nothing from the captured packet");
+        if (result == null) {
+            return;
+        }
+        checkEquals(2, result.removed(), "the wrong number of entries was reported as removed");
+        checkEquals(1, result.lists(), "only the player's list should have been shortened");
+        checkEquals(full.length - 18, result.payload().length,
+                "two entries removed did not shrink the packet by eighteen bytes");
+        checkEquals(java.util.List.of(StatusStrip.SLOWED, StatusStrip.CONFUSED), result.removedEffects(),
+                "the removed effects are not reported in ordinal order");
+        check(!containsEffect(result.payload(), 1930, StatusStrip.SLOWED),
+                "Slowed survived a strip that armed it");
+        check(!containsEffect(result.payload(), 1930, StatusStrip.CONFUSED),
+                "Confused survived a strip that armed it");
+        check(containsEffect(result.payload(), 1930, StatusStrip.BARRIER),
+                "an unarmed effect on the same list was removed as well");
+        checkEquals(java.util.List.of("1924@656x2", "1928@721x2", "1930@784x1"), statusLists(result.payload()),
+                "the multi-effect strip changed a list it was not asked to change");
+        // An effect nobody has must not turn a real strip into a refusal.
+        StatusStrip.Result withAbsent = StatusStrip.strip(full, 1930,
+                java.util.Set.of(StatusStrip.CONFUSED, StatusStrip.PARALYZED));
+        check(withAbsent != null && withAbsent.removed() == 1,
+                "a set containing an effect the packet does not carry removed nothing");
+        checkEquals(java.util.List.of(StatusStrip.CONFUSED), withAbsent == null ? null : withAbsent.removedEffects(),
+                "an absent effect was reported as removed");
     }
 
     // --- the locator --------------------------------------------------------------------------

@@ -369,7 +369,7 @@ public final class PrimitiveTests {
                 "game id 70 must not resolve as a queue packet");
         check(PacketRegistry.createGameOrNull(GmPacketType.RECONNECT) instanceof ReconnectPacket,
                 "game registry resolves Reconnect");
-        checkEquals(Set.of(36, 66, 70, 158, 184, 290, 291), PacketRegistry.gameIds(),
+        checkEquals(Set.of(36, 66, 70, 158, 184, 185, 290, 291), PacketRegistry.gameIds(),
                 "game registry holds only verified ids");
         checkEquals(Set.of(1, 2, 3, 4), PacketRegistry.queueIds(), "queue registry holds the four queue ids");
 
@@ -390,6 +390,10 @@ public final class PrimitiveTests {
                 instanceof networking.packets.gmpackets.SafeAreaStatePacket, "registry resolves SafeAreaState");
         check(PacketRegistry.createGameOrNull(GmPacketType.ESCAPE_CAST_STATE)
                 instanceof networking.packets.gmpackets.EscapeCastStatePacket, "registry resolves EscapeCastState");
+        // Kicked is the server's reason for ending the session, and the only explanation a failed
+        // rewrite ever gets - so its codec is pinned alongside the escape conversation.
+        check(PacketRegistry.createGameOrNull(GmPacketType.KICKED)
+                instanceof networking.packets.gmpackets.KickedPacket, "registry resolves Kicked");
     }
 
     private static void testPacketTypeIds() {
@@ -401,6 +405,11 @@ public final class PrimitiveTests {
         checkEquals("HelloResp", GmPacketType.name(28), "GmPacketType 28 is HelloResp");
         checkEquals("Goto", GmPacketType.name(17), "GmPacketType 17 is Goto");
         checkEquals("Reconnect", GmPacketType.name(36), "GmPacketType 36 is Reconnect");
+        checkEquals("ForcedEscape", GmPacketType.name(184), "GmPacketType 184 is ForcedEscape");
+        // The codec is registered under GmPacketType.KICKED, so the enum's order is what decides which
+        // id on the wire is decoded. Reordering it would move the codec silently.
+        checkEquals("Kicked", GmPacketType.name(185), "GmPacketType 185 is Kicked");
+        checkEquals(185, GmPacketType.id("Kicked"), "Kicked id is 185");
         checkEquals("JumpScare", GmPacketType.name(320), "GmPacketType 320 is JumpScare");
         checkEquals(321, GmPacketType.count(), "GmPacketType has 321 entries");
         check(GmPacketType.name(9999).startsWith("Unknown"), "out-of-range id is reported");

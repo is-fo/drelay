@@ -102,6 +102,7 @@ final class Routes {
     static Refresh write(Path template, Path target, String upstreamHost) throws IOException {
         Document document = parse(Files.readString(template, StandardCharsets.UTF_8));
         document.upstreamHost = upstreamHost;
+        carryRuntimeSettings(document, target);
 
         var changes = new ArrayList<String>();
         var failures = new ArrayList<String>();
@@ -141,9 +142,47 @@ final class Routes {
         return new Refresh(changes, failures);
     }
 
+    /**
+     * Keeps the settings the dashboard owns from being undone by this regeneration.
+     *
+     * <p>{@code autoNexus} and {@code strip} are edited live by the relay ({@link ConfigWriter} writes
+     * them into the file the relay was started with, which is this method's {@code target}). The
+     * launcher regenerates that file from the template on every run, so without this step a threshold
+     * or an armed effect chosen in the dashboard would be silently reverted by the next launch - the
+     * exact "it did not save" complaint, caused by the launcher rather than by the relay.
+     *
+     * <p>So the existing generated copy wins for these two keys. That is a deliberate precedence: the
+     * template is the default, and a value that has been set from the dashboard is not a default any
+     * more. Everything else in the template - the comment block, the routes, the ports - is still what
+     * the launcher writes, and keys this class does not know about are still dropped, as before.
+     *
+     * <p>A generated copy that cannot be read or parsed is treated as absent: the template's values
+     * are then used, which is the same as a first run.
+     */
+    private static void carryRuntimeSettings(Document document, Path target) {
+        if (target == null || !Files.exists(target)) {
+            return;
+        }
+        try {
+            Json existing = parseJson(Files.readString(target, StandardCharsets.UTF_8));
+            if (existing instanceof JObj object) {
+                Json autoNexus = object.values().get("autoNexus");
+                if (autoNexus instanceof JObj) {
+                    document.autoNexus = autoNexus;
+                }
+                Json strip = object.values().get("strip");
+                if (strip instanceof JObj) {
+                    document.strip = strip;
+                }
+            }
+        } catch (Exception e) {
+            // Best effort by design: a corrupt generated copy must not stop the launcher from writing
+            // a good one, and the template's settings are a usable answer.
+        }
+    }
+
     /** The current game server host from the game's own public API. */
-    private static String serverListHost() throws IOException, InterruptedException {
-        try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()) {
+    private static String serverListHost() throws IOException, InterruptedException {        try (var client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build()) {
             var request = HttpRequest.newBuilder(URI.create(SERVER_LIST))
                     .timeout(Duration.ofSeconds(15))
                     .header("User-Agent", "drelay/" + Resources.VERSION)
