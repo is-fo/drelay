@@ -63,9 +63,14 @@ final class Updater {
     /**
      * The newest published, non-draft release that is newer than this build, or empty.
      *
-     * <p>Reads the release list rather than {@code /releases/latest} so that a release published as a
-     * prerelease can still be picked up by a build that opted into it, and so the jar asset's URL is
-     * taken from the API instead of being constructed from the tag name.
+     * <p>Reads the release list rather than {@code /releases/latest} for two reasons: the jar asset's
+     * URL is taken from the API instead of being constructed from the tag name, and a release marked
+     * as a GitHub prerelease is still considered.
+     *
+     * <p>That second one is deliberate and unconditional: {@code prerelease} is a label on the
+     * releases page, not a gate. A build does not opt in - if the version is newer than this one, it
+     * is offered. So an {@code -alpha} tag reaches every install, and the version scheme in
+     * {@code drelay.properties} carries all the meaning the flag appears to.
      */
     static Optional<Available> check() throws IOException, InterruptedException {
         String body = get(URI.create("https://api.github.com/repos/" + Resources.REPOSITORY

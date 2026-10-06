@@ -6,7 +6,7 @@
 
     <groupId>org.isak</groupId>
     <artifactId>drelay</artifactId>
-    <version>1.0.0</version>
+    <version>0.0.2-alpha</version>
     <packaging>jar</packaging>
 
     <name>drelay</name>

@@ -1,42 +1,93 @@
 name: release
 
-# Publishing happens on a version tag. The tag has to match the version in
-# src/main/resources/drelay.properties, because that is the version the jar reports and the version
-# the auto-updater compares against - a mismatch would either make an update invisible or make the
-# same release install itself forever.
+# A release happens one of two ways:
 #
-# The workflow can also be started by hand. With `publish` left false it builds and uploads the jar
-# as a workflow artifact and changes nothing else, which is the way to check a release candidate.
+#   * a push to master whose version in src/main/resources/drelay.properties has no tag yet - so
+#     merging a version bump IS the release, and a push that did not bump anything is a no-op;
+#   * a push of a v* tag, or a manual run, which are the explicit paths.
+#
+# The version is bumped in the repository rather than invented here. That keeps the invariant this
+# project rests on - drelay.properties is the single source of truth, the jar's embedded version is
+# what the auto-updater compares against, and a tag whose name disagrees with the jar would either
+# make an update invisible or make the same release install itself forever.
+#
+# Publishing creates the tag, and it creates it at the exact commit that was built. The ordering is
+# deliberate: a tag made before the build succeeded would leave the next push deciding "already
+# tagged" and the release would never happen.
 on:
   push:
+    branches: [master, main]
     tags: ['v*']
   workflow_dispatch:
     inputs:
       publish:
-        description: Publish a GitHub release for the tag
+        description: Publish a GitHub release once the build passes
         type: boolean
-        default: false
-      tag:
-        description: Tag to build (required when publishing from a branch)
-        type: string
-        required: false
+        default: true
+      bump:
+        description: Bump the version in the repository first (choosing one commits and pushes it)
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+        default: none
 
 permissions:
-  contents: write        # create the release
+  contents: write        # create the tag and the release; push a bump commit
   id-token: write        # attest the build provenance
   attestations: write
 
+# One release at a time. Two pushes landing together would otherwise both decide "no tag yet" and
+# race to create the same one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   version:
-    name: check the version
+    name: decide what to release
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.read.outputs.version }}
       tag: ${{ steps.read.outputs.tag }}
+      sha: ${{ steps.sha.outputs.sha }}
+      build: ${{ steps.decide.outputs.build }}
+      release: ${{ steps.decide.outputs.release }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # Optional, and only from a branch: bumping a tag's own version would move it out from under
+      # the tag that was just pushed.
+      - name: Bump the version
+        if: github.event_name == 'workflow_dispatch' && inputs.bump != 'none' && startsWith(github.ref, 'refs/heads/')
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          current="$(sed -n 's/^version=//p' src/main/resources/drelay.properties | tr -d '[:space:]')"
+          suffix=""
+          case "$current" in *-*) suffix="-${current#*-}" ;; esac
+          base="${current%%-*}"
+          IFS='.' read -r major minor patch <<< "$base"
+          case "$BUMP" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            *) echo "unknown bump '$BUMP'"; exit 1 ;;
+          esac
+          next="$major.$minor.$patch$suffix"
+          echo "$current -> $next"
+          sed -i "s/^version=.*/version=$next/" src/main/resources/drelay.properties
+          # The first <version> in the pom is the project's; the rest belong to plugins.
+          sed -i "0,/<version>[^<]*<\/version>/s//<version>$next<\/version>/" pom.xml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore(release): $next"
+          git push origin "HEAD:${{ github.ref_name }}"
 
       - name: Read and check the version
         id: read
@@ -47,9 +98,9 @@ jobs:
             echo "no version= line in src/main/resources/drelay.properties"
             exit 1
           fi
-          # A prerelease version (1.1.0-rc1) is still published, but as a GitHub prerelease, which
-          # keeps it out of /releases/latest: a user's auto-updater therefore only ever sees a
-          # finished version, while anyone who wants the candidate can download it by tag.
+          # A prerelease version (0.0.2-alpha) is still published, but as a GitHub prerelease, which
+          # keeps it out of /releases/latest. The updater reads the release list rather than that
+          # endpoint, so it does see it - the flag is a label on the releases page, not a gate.
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "version '$version' is not a semantic version (major.minor.patch, optionally -prerelease)"
             exit 1
@@ -79,12 +130,46 @@ jobs:
             exit 1
           fi
 
+      # `git ls-remote` rather than a local lookup: checkout's tag refspec is not something to depend
+      # on, and this is the question the whole job turns on.
+      - name: Decide whether this version still needs a release
+        id: decide
+        env:
+          TAG: ${{ steps.read.outputs.tag }}
+        run: |
+          set -euo pipefail
+          build=true
+          release=false
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            # A manual run does what it is told: publish, or just build a candidate to download.
+            if [ "${{ inputs.publish }}" = "true" ]; then release=true; fi
+          elif [ "${GITHUB_REF}" = "refs/tags/${TAG}" ]; then
+            release=true
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "tag ${TAG} already exists; this push has nothing to release"
+            build=false
+          else
+            release=true
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "build=$build release=$release"
+
+      # What gets built is what gets tagged, and after a bump that is no longer the commit the push
+      # named - so it is resolved once here and carried through both later jobs.
+      - name: Resolve the commit to build and tag
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
   build:
     name: build the jar
     needs: version
+    if: needs.version.outputs.build == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
 
       - name: Set up JDK 25
         uses: actions/setup-java@v6
@@ -102,6 +187,9 @@ jobs:
           test -f target/drelay.jar
           java -jar target/drelay.jar --version
           java -jar target/drelay.jar --help > /dev/null
+          # The jar's own version has to be the version being released: the updater compares against
+          # it, so a mismatch makes the release invisible or endlessly re-installable.
+          java -jar target/drelay.jar --version | grep -F "${{ needs.version.outputs.version }}"
           for entry in relay-routes.json tools/Set-AddressClaim.ps1 tools/Restore-HostsFile.ps1; do
             unzip -l target/drelay.jar "$entry" > /dev/null || { echo "missing from the jar: $entry"; exit 1; }
           done
@@ -113,7 +201,7 @@ jobs:
 
       - name: Run the offline checks
         run: |
-          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests; do
+          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests UpdateScanTests SettingsTests; do
             echo "== networking.$check"
             java -cp "target/classes:target/test-classes" "networking.$check"
           done
@@ -143,10 +231,29 @@ jobs:
   publish:
     name: publish the release
     needs: [version, build]
-    if: startsWith(github.ref, 'refs/tags/') || inputs.publish
+    if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          fetch-depth: 0
+
+      # Created here rather than before the build, so a failed build cannot leave a tag that makes
+      # the next push believe this version was already released.
+      - name: Tag the commit that was built
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ needs.version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "tag ${TAG} already exists; publishing it"
+          else
+            git tag "$TAG" "$SHA"
+            git push origin "refs/tags/${TAG}"
+            echo "created tag ${TAG} at ${SHA}"
+          fi
 
       - name: Download the release files
         uses: actions/download-artifact@v8
@@ -185,7 +292,7 @@ jobs:
       - name: Create the release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag || needs.version.outputs.tag }}
+          tag_name: ${{ needs.version.outputs.tag }}
           name: drelay ${{ needs.version.outputs.version }}
           body_path: notes.md
           files: |

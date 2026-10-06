@@ -269,19 +269,37 @@ skips.
 
 ### Releasing
 
-Bump the version in **both** places — `src/main/resources/drelay.properties` (what the jar reports
-and the updater compares) and `pom.xml` — commit, then tag the commit:
+A release is a **version bump merged to master**. The version lives in `src/main/resources/drelay.properties`
+(what the jar reports and the updater compares) and in `pom.xml`, and the workflow refuses to publish
+while they disagree:
 
 ```powershell
-git tag v1.0.1
-git push origin v1.0.1
+.\tools\Bump-Version.ps1 -Bump patch      # 0.0.2-alpha -> 0.0.3-alpha, both files
+git commit -am "chore(release): 0.0.3-alpha"
+git push origin master
 ```
 
-The release workflow fails before publishing if the tag, `drelay.properties` and `pom.xml` disagree.
-It then builds the jar on Java 25, runs the offline checks, verifies that the jar is runnable and
-carries its bundled files, attaches `drelay.jar` and `SHA256SUMS.txt` to a GitHub release, and attests
-the build provenance. The workflow can also be run manually from the Actions tab: it builds and
-uploads the jar as a workflow artifact, and publishes only if the `publish` input is set.
+The `release` workflow then reads the version, and if tag `v<version>` does not exist yet it builds the
+jar on Java 25, runs the offline checks, verifies that the jar is runnable and carries its bundled
+files, tags exactly the commit it built, and attaches `drelay.jar` and `SHA256SUMS.txt` to a GitHub
+release with a build provenance attestation. A push to master that did **not** bump the version is a
+no-op. Bumping the version without wanting a release is therefore safe; tag a commit by hand, or push
+a `v*` tag, to publish an existing version.
+
+A version with a prerelease suffix (`0.0.2-alpha`) is published as a GitHub prerelease, which keeps it
+off the *Latest* badge on the releases page. It is **not** held back from the updater: the updater
+reads the release list and does not look at that flag, so an alpha reaches every install. The
+releases are version 0.0.x to date; the updater only ever offers a *newer* version than the one
+running, so the numbering has to keep increasing to be delivered.
+
+The same workflow can be run from the Actions tab instead: `bump` commits a `patch`/`minor`/`major`
+bump and releases it in one step, and with `publish` off it only builds and uploads the jar as a
+workflow artifact, which is how to check a release candidate.
+
+The former manual release was tagged `50` (its *release name* was `v0.0.1-alpha`) and carried no
+`SHA256SUMS.txt`, and the updater reads the tag rather than the release name — so no install could
+update from it. It has been retagged `v0.0.1-alpha`; its jar still reports `1.0.0`, which is why the
+numbering restarted at `0.0.2-alpha` and why an install of that build needs one manual download.
 
 ---
 
