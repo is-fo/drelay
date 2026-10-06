@@ -749,7 +749,7 @@ directly by tile coordinate, holding exactly the collision byte. A native reader
   `byte[,]` the stride is 1 byte with the two lengths stored in the array's MethodTable-adjacent
   bounds.
 
-`Tilemap.GetTile(x, y)?.Type` (`World.cs:9673`) gives the tile *type*, and `DataManager.Data.Tiles`
+`Tilemap.GetTile(x, y)?.Type` (`World.cs:9669`) gives the tile *type*, and `DataManager.Data.Tiles`
 maps a type to `TileData`, which carries the `NoWalk` flag (`TileData.cs:52`) — so a hook that
 prefers a type-based model has that route available too. But the collision grid is the direct one and
 is what the game's own movement code consults.
