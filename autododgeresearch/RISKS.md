@@ -42,6 +42,7 @@ What follows from that:
 | **6** | the dodge fights the escape | **high if unhandled — verified** | an in-progress nexus cast is cancelled, in the same frame | `World.cs:13043-13047` |
 | **7** | prediction disagrees with the game's collision | unknown until measured | the dodge is confidently wrong | no measurement exists yet; Phase 2 exists to produce one |
 | **8** | terrain awareness unavailable | medium | dodge aims through walls | the walkability accessor is unresolved |
+| **8b** | **AoE / bomb damage is not modelled at all** | **certain — it is not built yet** | a whole damage channel stays un-dodged; the plan's threat model covers `Projectile` only | `Entity.HitBy(AoeData)`, `AoeBomb` and `Objects/Aoes*` were not read in this pass; bombs detonate on a timer, so a collision sweep cannot see them |
 | **9** | the runtime's assumptions break | low today | whole approach needs rework | tiered compilation is off and verified; a future patch could flip it |
 | **10** | the tool gets blamed for a game bug | medium | time lost, trust lost | unavoidable; mitigation is logging |
 

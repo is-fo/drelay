@@ -514,10 +514,11 @@ antidote to copying constants that were calibrated to a different game.
 |---|---|---|
 | sample step | 30 ms | sampling rate, not a game constant — portable |
 | horizon | 600 ms | **ours**; must be re-derived from [TIMING.md](TIMING.md) and the measured tile scale |
-| move budget `b` | `playerSpeed · frameSeconds` | from the game's own `TilesPerSecond` law, resolved: `3.5 + 5.0·(SPD/75)` tiles/s |
+| move budget `b` | `playerSpeed · frameSeconds` | from the game's own `TilesPerSecond` law, resolved (row below) |
 | headings | 24 | budget-driven |
 | radii | `{0.35, 0.7, 1.0}·b` | budget-driven |
 | `r_eff` | `player.Radius + bullet.Radius` | **read live**, not assumed; `GameObject.Radius` defaults to 0.25 |
+| player movement speed | `(3.5 + 5.0·(SPD+10)/75) · slow · speedy` tiles/s | resolved from the pool: **3.5 tiles/s at SPD 0, 8.5 at the cap**; `FearOfTheBull` clamps SPD to 40. The reference's `4.0 + 5.6·(SPD/75)` would be ~13 % too generous |
 | hysteresis dwell | ~100 ms | to be tuned; the reference engine's 100/250 ms are theirs |
 | retirement strikes | 2 | from the reference engine's retirement policy, which is portable reasoning, not a tuned number |
 | `minAgeMs` for retirement | ~1 frame | ditto |
@@ -575,9 +576,21 @@ exists.
 - **It cannot dodge what it cannot see.** A damage source with no `Projectile` object — an
   instant-tick server event, a melee contact that resolves server-side — is invisible to this design
   and is handled only by §7.
+- **AoE and bomb damage is a known, un-modelled channel, and it is the biggest gap in the plan.**
+  The threat model in §3 is built on `Projectile` objects; `Entity.HitBy(AoeData)` (`Entity.cs:2203`),
+  `AoeBomb.cs` and `Objects/Aoes*` were deliberately not read in this research pass. Bombs detonate on
+  a timer, so a collision-sweep model does not see them at all. This is recorded as a **required
+  pre-Phase-4 task**, not a curiosity: it is another 74 %-class blind spot if left unaddressed, and
+  unlike projectile damage it *is* visible in the packet stream (the AoE telegraph), so a proxy could
+  handle it even where the hook does not.
+- **Wall-bouncing projectiles are not yet predictable** (`WallBouncePath`), and the parametric
+  families draw their spawn phase from a per-bullet seeded LCG. Both are handled correctly when the
+  game's own `GetPosition` is called (§4.1) and neither is handled by any reimplementation — one more
+  reason not to write one.
 - **The escape decision inherits `RequestEscape`'s own gates.** In a safe area it is a no-op, in the
   world-entry grace window it is instant, and in a totem world it becomes a channel that cancels on
-  movement — the last of which interacts with the dodge and must be tested explicitly.
+  movement — the last of which interacts with the dodge and must be tested explicitly
+  ([RISKS.md](RISKS.md) §3d).
 
 ---
 

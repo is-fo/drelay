@@ -411,18 +411,24 @@ session's `GmHealthUpdate` readings (120/120 and 15/15).
 What remains true, and is what the design depends on:
 
 - **it is not a general mechanism.** 74 % of measured HP falls (571 of 775) have **no such claim**
-  within 400 ms, and whole sessions have 100 % claim-free falls, so the server plainly resolves most
+  within 400 ms, and whole sessions have 100 % claim-free falls, so the server plainly resolves much
   damage on its own (`TIMING.md` §2.3, §7.2);
+- **but where a claim *is* sent, it demonstrably drives the server's damage.** Of 161 analysable
+  `GmHit{PlayerProj=false}` reports, **105 are followed by an HP fall**, with a median **56 ms**
+  (p90 **99 ms**) reconciliation lag onto the ~50/100 ms health cadence (`CLIENT-MAP.md` §10.1, from
+  the captured traffic in `tools/_projhit_raw.txt`). So the true model is **both**: the server
+  simulates independently **and** honours the client's claim. That reconciliation lag must enter every
+  latency budget in [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md);
 - **there is no equivalent for any other damage source** — no client→server packet carries an HP,
   shield or damage value anywhere in the assembly, and AoE, beam, contact and DoT hits have no claim
   packet at all;
 - **the earliest client-side knowledge is therefore still the collision test** (`Projectile.cs:1573`),
   not the health packet and not the claim, because the claim is *emitted by* that same test.
 
-The consequence for design is unchanged: anchor on the collision. But the corrected fact does rule out
-one thing an earlier draft of [RISKS.md](RISKS.md) had left open — suppressing the claim is **not** an
-alternative architecture, because it would blind the server to some hits and remove none of the ones
-that matter (34 % of claims produce no immediate fall; 74 % of falls have no claim).
+The consequence for design is unchanged: anchor on the collision. But the corrected facts do rule out
+one thing an earlier draft of [RISKS.md](RISKS.md) had left open — **suppressing the claim is not an
+alternative architecture.** It would blind the server to a subset of hits it currently applies *because
+of* that claim, while removing none of the 74 % it resolves on its own.
 
 ---
 
@@ -447,12 +453,15 @@ The character list accessors are `World.GetCharacters()` (`World.cs:15230`) and
 is `World.ProjectileCollides(int x, int y, out bool hit3d)` (`World.cs:13411`). The parallel-array
 ingest of a server projectile batch is at `World.cs:10982-11032`.
 
-**Units.** There is no uncompressed tile-size constant to quote (`grep` for `TileSize` finds
-nothing; the candidate is `GameObject.cs:305 TeleportSnapDistanceSq = 256f`, which is clearly
-16 units squared). The scale is `UNKNOWN — needs live measurement`, and the measurement is trivial:
-log `Player.Position` alongside the tile the player is standing on and take the delta per tile.
-Everything in [DODGE_ALGORITHM.md](DODGE_ALGORITHM.md) is written to be scale-agnostic until that
-number is known.
+**Units.** `Position` is in **tiles**, not pixels — the client indexes tilemaps with
+`[(int)Position.X, (int)Position.Y]` directly, and the tile→pixel factor is the runtime camera zoom
+`World.BaseNodeScale`, so there is **no fixed tile-size constant to find** (`CLIENT-MAP.md` §4.3; the
+`1f/64f` in `Tilemap` is an atlas UV, not a world scale). That resolves the units question decisively
+and in the convenient direction: everything in [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) is already in
+the same units the game uses, and no conversion is needed anywhere.
+
+What remains `UNKNOWN — needs live measurement` is only the **map dimensions in tiles**, which bound the
+candidate bounds check.
 
 ---
 
@@ -486,12 +495,12 @@ tps *= StatusEffectValues.GetValue(Slowed,  slowTier);      // pool[42]
 tps *= StatusEffectValues.GetValue(Speedy,  speedyTier);    // pool[75]
 ```
 
-`3.5 + 5.0·(SPD/75)` — **not** the `4.0 + 5.6·(SPD/75)` the old packet-only feasibility note
-guessed from the reference game (`work/auto-dodge-feasibility.md` §3, quoting
-`auto-dodge.js:442`). At the cap of 75 that is **8.5 tiles/s** rather than 9.6, so every escape
-budget derived from the guess was ~13 % too generous. This is exactly the kind of error the hook
-does not have to make, and it is the reason none of the dodge constants may be inherited from the
-reference engine.
+`3.5 + 5.0·(SPD+10)/75` — **not** the `4.0 + 5.6·(SPD/75)` the old packet-only feasibility note
+guessed from the reference game (`work/auto-dodge-feasibility.md` §3, quoting `auto-dodge.js:442`).
+The endpoints are **3.5 tiles/s at SPD 0 and 8.5 at the SPD 75 cap**, so every escape budget derived
+from the guess was ~13 % too generous. `FearOfTheBull` clamps SPD to 40. This is exactly the kind of
+error the hook does not have to make, and it is the reason none of the dodge constants may be
+inherited from the reference engine.
 
 **The armour law and the damage formula.** `Entity.CalculateDamage` (`Entity.cs:726`), resolved:
 
@@ -834,7 +843,7 @@ Each of these is a *measurement*, not a research question, and each has a design
 |---|---|---|---|
 | 1 | ~~value of `Player.Radius`, `GameObject.Radius` default~~ | defines `r_eff` | **RESOLVED by pool decode** — `GameObject.Radius = 0.25` (float pool[16]) unless the spawn path overrides it; confirm live at spike 3 |
 | 2 | ~~`Desc.Size` default and the `Size`→`Radius` relation~~ | bullet hit radius | **RESOLVED** — `ProjDesc.Size = 3.0` (float pool[6]); `Projectile.cs:1864` sets `Radius = (float)Desc.Size · C`, so read `Projectile.Radius` live rather than recomputing |
-| 3 | world-units-per-tile | converts every timing and distance constant | log `Player.Position` per frame beside the tile index; take the delta |
+| 3 | ~~world-units-per-tile~~ | — | **RESOLVED** — `Position` is already in **tiles**, and the tile→pixel factor is the runtime camera zoom `World.BaseNodeScale`. No conversion needed; no fixed tile-size constant exists. Only the map dimensions in tiles remain unknown, and they bound the bounds check |
 | 4 | `DarzaWindow.Update` frame period and jitter | the hook's budget | `StallProbe` in the game's own log, or hook #1 and timestamp |
 | 5 | ~~`World.ClientTime` unit and its relation to the trajectory clock~~ | predicting with the same clock the game uses | **RESOLVED** — `ProjDesc.GetPosition` divides `time` by 1000 (float pool[70]), so `time` is **milliseconds** and `dt` is seconds; `Speed` is world-units-per-second |
 | 6 | server tick rate | the horizon constant | measure `GmUpdate` cadence — [TIMING.md](TIMING.md) |

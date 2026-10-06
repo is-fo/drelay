@@ -316,6 +316,19 @@ existing settings are, because "a typo would otherwise look like a setting that 
 proves the shape works — but the **movement question**, which is the one thing in this whole design
 with no precedent in the reference and no measurement in the captures.
 
+### Phase 4 prerequisite — close the AoE gap
+
+**This is a task, not a risk item, and it must be done before the solver is written.** The threat model
+in [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §3 is built entirely on `Projectile` objects. **AoE and
+bomb damage is a separate channel that was not read in this research pass**: `Entity.HitBy(AoeData)`
+(`Entity.cs:2203`), `AoeBomb.cs` and `Objects/Aoes*`. Bombs detonate on a timer, so a collision sweep
+does not see them at all, which makes this another 74 %-class blind spot if it is left unaddressed.
+
+Read it, and note the one thing that makes it *easier* than projectiles: the AoE telegraph **is** in the
+packet stream (`GmAoes`/`GmAoes2` carry `Target`, `Value`, `Radius`, `Delay` — `work/report-handlers.md`
+§C.3), so this is the one damage channel a packet-only proxy could also handle. The hook's advantage
+here is live tile/occupancy state, not earlier knowledge.
+
 ### Spike 4.1 — can we move at all? (do this before writing a solver)
 
 This spike uses **no dodge logic whatsoever**. It answers one question: *can the hook cause the
