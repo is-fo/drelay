@@ -405,8 +405,20 @@ void WriteTargetSizeSummary() {
             DrLog(DRLOG_INFO, "target-size %-12s IL size %u: compiled %u time(s) AND MATCHED "
                               "-- the target is found", name, static_cast<unsigned>(want), count);
         } else {
-            DrLog(DRLOG_INFO, "target-size %-12s IL size %u: compiled %u time(s) but did not "
-                              "match -- the pinned IL differs from this build's",
+            // THE MIDDLE GROUND, AND THE OLD WORDING ASSERTED THE WRONG HALF OF IT.  This
+            // branch means "methods of this IL size were compiled and none of them was
+            // this target"; it used to say "the pinned IL differs from this build's",
+            // which is a claim about the BUILD.  The 2026-10-12 21:22 session is why that
+            // is wrong: `escape` printed "compiled 6 time(s) but did not match" on a build
+            // whose pinned IL is correct -- six other 335-byte methods were compiled and
+            // `RequestEscape` was simply never reached.  A maintainer reading the old line
+            // goes looking for a game patch that does not exist.  What tells the two cases
+            // apart is `hook.log.observed`, which lists every same-size hash that was
+            // seen, so the line now points at it instead of choosing for the reader.
+            DrLog(DRLOG_INFO, "target-size %-12s IL size %u: %u same-size method(s) compiled, "
+                              "none of them this target -- either the target never reached the "
+                              "JIT in this run, or its IL differs from the pinned build; "
+                              "hook.log.observed lists every same-size hash that was seen",
                   name, static_cast<unsigned>(want), count);
         }
     }

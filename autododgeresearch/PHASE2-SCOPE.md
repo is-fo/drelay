@@ -1246,6 +1246,19 @@ first-criterion datapoint. Everything else it measured stands, and it is recorde
 deleted: a run whose empty comparison has a named cause is worth more than a run with no empty
 comparison at all.
 
+**And the same session caught a second line making a claim it cannot support.** `escape` printed
+
+```
+target-size escape       IL size 335: compiled 6 time(s) but did not match -- the pinned IL differs from this build's
+```
+
+on a build whose pinned IL is correct: six *other* methods of 335 bytes were compiled and
+`RequestEscape` was never reached, which is what "the player did not press escape" looks like. The
+line is a statement about which same-size candidates were compiled, so it now says that, and points
+at `hook.log.observed` — which lists every same-size hash that was seen — instead of choosing between
+"never compiled" and "a game patch" for the reader. The README already tells operators to read these
+lines first; a line that sends them looking for a patch that does not exist is worse than no line.
+
 ## 6. Instrumentation this phase needed before it could report
 
 Both of these were the tail of Phase 1's own verification, and both are now done.
