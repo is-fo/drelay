@@ -200,7 +200,7 @@ line being written", and that is answerable with one clock.
 | `frame` | at most every N frames (default 10) | frameIndex, `World.ClientTime`, player x/y, hp/max/shield/barrier, threat count, solver cost µs |
 | `threat` | on spawn, subject to a cap | gameId, startTime, x, y, angle, damage, hitsPlayer, owner |
 | `decision` | on every *decision that matters* — chosen move, egress, escape, refusals | the kind, the reason, the inputs that produced it, the projected damage |
-| `collision` | on every `HitCharacter` | gameId, predicted-vs-actual impact time, the damage the game computed |
+| `collision` | on every `HitCharacter` that returns `true` (the method is a per-frame predicate; its `false` entries are not decisions) | gameId, predicted-vs-actual impact time, the damage the game computed |
 | `escape` | when the hook calls `RequestEscape` | the reason, the projected lethal damage, the HP at the moment of the decision |
 | `error` | on any internal failure | a reason string |
 
@@ -224,6 +224,16 @@ Sparse, low-rate, and idempotent:
 The hook applies `setConfig` at the next frame boundary and never mid-frame. **A command that never
 arrives must be harmless**: the hook starts with conservative defaults compiled in, so a relay that
 is not running leaves it in a defined state.
+
+**Open question (operator, 2026-10-11): who fires the escape?** §4.1 above has the hook call
+`RequestEscape` in-process and the relay *observe* the packet. The escape command already exists on
+the Java side and is probably the cleaner owner of it — the relay is already the only writer of the
+socket — which would leave the hook publishing a request word into the shared block instead of
+running managed code on the game's thread. That removes the dependency on the open yes/no in
+[MANAGED-ENTRY-HANDOFF.md](MANAGED-ENTRY-HANDOFF.md) and adds one relay poll quantum to the act. It
+needs a hook→Java command this table does not yet have, plus an acknowledgement, or "the hook
+decided to escape" and "the game escaped" become indistinguishable in the evidence. See
+[PHASE1-VERIFICATION.md](PHASE1-VERIFICATION.md) §9. Not decided here.
 
 ---
 

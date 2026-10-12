@@ -1,0 +1,31 @@
+<Project>
+  <!--
+    Common settings for the managed half of the hook.
+
+    LangVersion is pinned rather than left to the SDK so that a future SDK on the
+    build machine cannot introduce syntax the current toolchain would reject -
+    this project is expected to be built by whoever picks it up next, on whatever
+    SDK they happen to have.
+  -->
+  <PropertyGroup>
+    <!--
+      TargetFramework is deliberately NOT set here, and it cannot be: an
+      SDK-style project imports Directory.Build.props *before* the SDK's own
+      props, and the SDK's target-framework inference runs afterwards and would
+      see an empty value (NETSDK1013, "The TargetFramework value '' was not
+      recognized").  Each project therefore states its own TargetFramework, and
+      the reasoning for the value lives in one place, the comment at the top of
+      Drelay.Bootstrap.csproj.
+    -->
+    <LangVersion>12.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningLevel>5</WarningLevel>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>portable</DebugType>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+</Project>

@@ -2150,8 +2150,32 @@ collision code uses (`Projectile.cs:1606`, `:1211`, `:394`, `:506`).
 
 ### 5.2 Where the live projectiles are
 
-**There is no `List<Projectile>` and no projectile dictionary on `World`.** A projectile is an ordinary
-node: `AddObject` puts it in `Objects` and into a **layer**:
+> **CORRECTION, 2026-10-12 (evening).** This section said that `World.AddObject` puts a
+> projectile in `World.Objects`, and that "the live projectile set is `World.Objects`
+> (filtered by `is Projectile`)". **That is false, and a live session measured the
+> consequence: 54 600 frames of real play in a zone with bullets on screen, and the hook's
+> sensor — which read exactly that dictionary and filtered by exactly that type — reported
+> `live=0` on every one of them.** The four numbers Phase 2 exists to produce were
+> therefore all zeros with nothing to count.
+>
+> A fired projectile never reaches `Objects`. `Entity.cs:1521,1550,1589` is the whole
+> path: `Projectile.Rent(gameObjectData)` → `World.GameObjectLayer.AddChild(projectile)` →
+> `projectile.World = World`. `World.AddObject` is not called and neither is
+> `AddSortObject`; and the only method that writes `Objects[obj.GameId]` is
+> `World.hehe_EB2C_E5A5_EE82_E9C5_EF78` (`World.cs:14553-14577`), whose five call sites are
+> the map loader (`:5496`, through `AddSortObject`), the local player (`:10199`), the
+> entity spawn paths (`:10262`, `:10400`) and `SpawnDebugCharacter` (`:14449`) — **no
+> projectile among them.** So `World.Objects` holds the map's static objects and the
+> entities, and the live projectiles are in **`World.GameObjectLayer.Children`**
+> (`Node._children`, which `GameObjectLayer.AddChild` reaches through `base.AddChild`).
+>
+> The run is accounted for in [PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.14, which also records
+> the second half of the finding: the synthetic host modelled the same wrong shape, so the
+> 90-check offline suite passed while the hook read nothing. **§10.6 below, which asked for
+> exactly this experiment, is closed by that measurement.**
+
+**There is no `List<Projectile>` and no projectile dictionary on `World`.** A projectile is
+an ordinary node, and `GameObjectLayer.AddChild` puts it in the layer:
 
 ```csharp
 // World.cs:14331-14346
@@ -2165,8 +2189,9 @@ FlatGroundLayer.AddChild(obj);
 Lasers and sweeps are also put there explicitly: `GameObjectLayer.AddChild(laser2)`
 (`World.cs:11135`, `:11195`, `:11283`), `GameObjectLayer.AddChild(sweep)` (`:11364`, `:11443`, `:11497`).
 
-So the **live projectile set is `World.Objects` (filtered by `is Projectile`) or
-`World.GameObjectLayer.Children` (filtered)**, and the game itself iterates `Objects.Values`:
+So the **live projectile set is `World.GameObjectLayer.Children` (filtered by
+`is Projectile`)**, and the game itself iterates `Objects.Values` for the *entities* —
+which is where the earlier reading of this section came from:
 
 ```csharp
 // World.cs:6698
@@ -2180,15 +2205,20 @@ using (Dictionary<int, GameObject>.ValueCollection.Enumerator enumerator = Objec
 **Recommended read path for a hook, cheapest first:**
 1. `World.Shared.Player` - one dereference.
 2. `World.Shared.GetEnemies()` - cached array (for `HitEnemy`-side reasoning and homing targets).
-3. For **incoming projectiles**: `World.Shared.Objects` and test `obj is Projectile`. Cost is
-   O(objects) with a managed type check per entry. **Which layer a projectile lands in is
-   `UNKNOWN - needs live measurement`** (the `AddObject` branch at `:14331-14382` was not fully
-   decoded); if projectiles all live in `GameObjectLayer`, iterating that list is cheaper. Sec 10.6.
+3. For **incoming projectiles**: `World.Shared.GameObjectLayer.Children` and test
+   `obj is Projectile`. This is the path the hook uses, and it is a walk of everything the
+   world draws — the fixture measures it at p50 ≤ 20 µs and p99 ≤ 150 µs over a 22-node
+   layer, and **the client's own number is what the next session's `PHASE2-SCOPE.md` §4.14
+   report carries**, because the layer in a real zone holds far more than 22 nodes. If that
+   p99 leaves the 150 µs frame-tick slice, `GameObjectLayer._dynamicList` (the layer's own
+   split list of moving nodes) is the cheaper container and the change is one field
+   lookup. §10.6.
 4. `Allocations.Projectiles` is **not** a live list - it is a free-list `Pool<Projectile>`
    (`Allocations.cs:257`), i.e. recycled instances only. **Do not enumerate it as "live projectiles".**
 
-`Object3d`, `StaticObject` and `StaticObjectFlat` share `Objects` with projectiles, so a
-`Projectile`-only filter is required; there is no `ObjectsByType`. `World.RemoveObject` (removes from
+`Object3d`, `StaticObject`, `StaticObjectFlat`, the local player, the enemies, the effects,
+the lasers and the sweeps all share `GameObjectLayer` with the projectiles, so a
+`Projectile`-only filter is required there; there is no `ObjectsByType`. `World.RemoveObject` (removes from
 `Enemies` at `:14838`) and `World.ClearWorld` (`:13928`) are the two events that invalidate everything;
 `ClearWorld` clears `Objects`, `Characters`, `Enemies`, `FlatGroundLayer`, `GameObjectLayer`,
 `AoeObjectLayer`, ... and nulls `Player` at `:13960`.
@@ -2738,7 +2768,7 @@ for the stated goal. "What breaks" covers inlining and shared/private-generic ha
 | **1** | `World` | `LateUpdate` | `public override void LateUpdate(ClientTime time)` | `World.cs:6356` | instance, override of `public virtual`, not sealed | **per-frame tick, post-logic** | once per frame; runs after `Scene.UpdateScene`'s `Update(time)` (`Scene.cs:1005`) so all entity/projectile updates have run; `World.Shared` reachable statically | inlining (unlikely - called via `List<Node>` virtual dispatch); needs a JIT-entry patch. It is a *late* tick, so a decision made here is consumed next frame |
 | **2** | `World` | `Update` | `public override void Update(ClientTime time)` | `World.cs:9473` | instance, override of `public virtual`, not sealed | **per-frame tick, pre-movement** | an entry hook lands before `base.Update` (`:9552`) and before the movement call (`:9567`); a decision written here is consumed the *same* frame | runs before this frame's packet drain, so the world may be one server tick stale at entry |
 | **3** | `Projectile` | `LateUpdate` | `public override void LateUpdate(ClientTime time)` | `Projectile.cs:1091` | instance, override of `public virtual`, not sealed | **per-projectile motion + collision + damage decision** | this *is* where a projectile's position advances and where `Hit()`/`HitCharacter()` runs (`:1246`); detouring gives the exact predicate inputs | fires N times/frame (100+ projectiles); needs per-call cost discipline. `this` is the projectile |
-| **4** | `Projectile` | `HitCharacter` | `private bool HitCharacter()` | `Projectile.cs:1514` | **private**, instance, not virtual | **the moment a projectile's collision with the local player is decided** | contains the exact predicate `DistanceSquared(World.Player.Position) < (World.Player.Radius + Radius)^2 && CanHitEntity(...)` (`:1573`), the `World.Player.HitBy(this)` call (`:1576`) and the `GmHit` claim (`:1581`) | `private` -> no vtable slot; needs a `MethodDesc` lookup or an entry patch. Runs at most once per projectile per frame |
+| **4** | `Projectile` | `HitCharacter` | `private bool HitCharacter()` | `Projectile.cs:1514` | **private**, instance, not virtual | **the moment a projectile's collision with the local player is decided** | contains the exact predicate `DistanceSquared(World.Player.Position) < (World.Player.Radius + Radius)^2 && CanHitEntity(...)` (`:1573`), the `World.Player.HitBy(this)` call (`:1576`) and the `GmHit` claim (`:1581`) | `private` -> no vtable slot; needs a `MethodDesc` lookup or an entry patch. It is a per-frame PREDICATE, called once per projectile per frame from `Hit()` (`:1246`), and it returns `true` only when the hit resolves (`return false` at `:1604`)** — so a hook here sees every question, and only the `true` answers are collisions (CLIENT-FINDINGS.md §7, PHASE2-SCOPE.md §4.14) |
 | **5** | `Entity` | `HitBy(Projectile)` | `public void HitBy(Projectile proj)` | `Entity.cs:2459` | instance, not virtual, not sealed | **the moment damage is computed** | the entire damage arithmetic (crit, pierce, `GetDamageTaken`) is here; gives exact pre/post damage and the victim | runs for *every* entity hit, not only the local player - must filter `this == World.Shared.Player` |
 | **6** | `Entity` | `GetDamageTaken` | `public int GetDamageTaken(int baseDamage, double armorPierce, bool criticalHit, out Color color)` | `Entity.cs:568` | instance, not virtual | **the damage-about-to-land number, post-mitigation** | the single reduction of the whole pipeline; small method | called 4x per `HitBy` (health, health%, mana, mana%); the `out Color` complicates the detour ABI (4-byte out pointer) |
 | **7** | `World` | `RequestEscape` | `public void RequestEscape()` | `World.cs:12984` | instance, not virtual, not sealed, `public` | **escape emission (callable)** | trivially callable from a detour or by `MethodDesc`; honours cooldown/safe-area/totem/cast | none structurally; risk is behavioural (it *casts* rather than escapes when Impermanence is owned, and the cast is cancelled by movement - Sec 6.5) |
@@ -3123,14 +3153,28 @@ test, and calibrate `hehe(752)` (`Projectile.cs:542`, the homing steer dead-zone
 (`ProjDesc.cs:82,100`; `ProjSinDesc.cs:12`) - the hook must run on the simulation thread or re-seed
 identically.
 
-### 10.6 High: which layer live projectiles occupy, and the exact `AddObject` branch
+### 10.6 CLOSED (2026-10-12) - which layer live projectiles occupy, and the exact `AddObject` branch
 
-**Why it matters.** Enumerating `World.Objects` and type-testing every entry is O(all game objects) per
-frame. If projectiles all land in one `GameObjectLayer`, the enumeration is much cheaper.
+**Answered, and the answer was not the expected one.** The live projectiles are in
+`World.GameObjectLayer.Children` (`Node._children`) and **not** in `World.Objects`: a
+projectile is rented and passed to `GameObjectLayer.AddChild` (`Entity.cs:1521,1550,1589`)
+and never to the registration method that writes `Objects[obj.GameId]` (`World.cs:14553`).
 
-**Experiment.** At a frame tick, count `World.Objects.Count`, count entries `is Projectile`, and count
-`World.GameObjectLayer.Children` / `World.FlatGroundLayer.Children` entries `is Projectile`. Also dump
-the `AddObject` decision (`World.cs:14331-14382`) per type in a live session.
+**The measurement.** A fifteen-minute session against the real client on the evening of
+2026-10-12 read both containers and logged them separately: `World.Objects` carried the
+map's static objects and the entities (200-400 entries per frame) and **zero projectiles
+for all 54 600 frames**, while the game's own log recorded projectiles, beams and
+`Spawned 1 pending projectile(s) for entity 411542 (Rhinoceros)` throughout. The full
+accounting is [PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.14.
+
+**What it cost to find out.** Fifteen minutes of an operator's play, one live session, and
+a fixture that had modelled the same wrong shape — see §5.2's correction. The cost the
+experiment was originally worried about is also now a number: the layer walk is
+O(everything the world draws), and `PHASE2-SCOPE.md` §4.14 records its percentiles.
+
+**The remaining branch worth reading** is `AddObject` itself: `World.cs:14329` adds the
+object to a layer and calls `AddedToWorld`, and only `AddSortObject` (`:14323`) also
+registers it in `Objects`. That split is the whole of this finding.
 
 ### 10.7 Low: `hehe(16)`, the radius halving - statically resolvable, not yet looked up
 
@@ -3358,7 +3402,13 @@ Ranked list of what is actually still open:
    exactly one outbound `GmHit` (`PlayerProj = false`) and confirm no HP fall follows within ~2 s.
    This is the only remaining architectural question, and it decides whether hit-report suppression is
    a viable actuation primitive at all.
-2. **Which layer live projectiles occupy** (10.6). Count `World.Objects` entries `is Projectile` versus
+2. **Which layer live projectiles occupy** (10.6) — **CLOSED 2026-10-12: the layer, not the
+   dictionary.** The live session read `World.Objects` (200-400 entries/frame, zero
+   projectiles) and `World.GameObjectLayer.Children` (the bullets) side by side; the
+   container question is answered in §5.2's correction and the cost question — O(all
+   objects) per frame — is now a measured percentile rather than a guess
+   ([PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.14). The original experiment text follows.
+   Count `World.Objects` entries `is Projectile` versus
    `World.GameObjectLayer.Children` / `FlatGroundLayer.Children` at a frame tick. Decides whether the
    per-frame threat scan is O(projectiles) or O(all objects) - i.e. whether the hook's budget is fine
    or the whole design needs a spatial index.

@@ -1,0 +1,24 @@
+# Build output and scratch for the Phase 1 hook.
+#
+# The root .gitignore already excludes *.dll and *.exe everywhere, which covers
+# out/ by accident of extension -- but not the object files, the generated
+# build logs, the size probe's output, or the intermediate directories. Those
+# are all regenerable from the sources, and a stale one in the tree is a way to
+# debug a build that is not the one being compiled.
+obj/
+out/
+
+# The managed projects' `bin/Release` output.  It used to be covered by the root
+# .gitignore's `*.dll` / `*.exe` lines, which are not in this tree any more -- and those
+# lines never covered the `deps.json` / `runtimeconfig.json` / `.pdb` files beside them, so
+# a sweep of this directory picked up eighteen build outputs and no sources were missing
+# until someone tried to build from the commit.
+bin/
+
+# The size probe's little executable and object tree.
+obj/size/
+
+# The linker's shared PDB, which cl.exe drops in the current directory of the
+# batch file rather than beside the objects. It is regenerated on every build and
+# is not a source.
+vc140.pdb

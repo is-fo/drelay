@@ -307,20 +307,38 @@ dereferencing. Reference fields are plain 8-byte pointers.
    read.
 2. **Hold long-lived references in a `GCHandle`, not a raw pointer.** The runtime updates a handle's
    contents when the object moves, so a `GCHandle` stays valid across a compacting GC while a raw
-   `Object*` does not. The bootstrap allocates one strong handle for `World.Shared` and hands the
-   native side the handle value; native resolves it each frame.
-3. **Do the managed reads on the game's own managed thread, inside a managed callback.** If a
-   detour calls into a small managed helper, then at that moment the GC already knows about every
-   reference in scope, the thread is in cooperative mode, and exception unwinding is correct. Doing
-   the equivalent reads from raw native code requires entering cooperative mode (which the runtime's
-   own threading documentation explicitly discourages for native code) and handling the fact that
-   native frames cannot be hijacked for GC suspension.
+   `Object*` does not. *Not yet implemented:* Phase 1 resolves `World.Shared` by taking the address
+   of the static field (`ldsflda` through a `DynamicMethod`) and dereferencing it each frame, which
+   is equivalent for a static field of a non-collectible class but is not a handle, and the header
+   that publishes it says so. A strong handle resolved by the native side is Phase 2's shape.
+3. **Read managed state from native code, on the game's own thread, with no managed call.** This rule
+   said the opposite until it was measured, and the measurement killed the process: a **call** detour
+   on a managed method runs on a thread that is already *inside* managed code — the detour sits
+   between the managed caller and the callee's body — so a reverse P/Invoke from there is illegal.
+   coreclr refuses it in `ReversePInvokeBadTransition`, which fail-fasts with
+   `COR_E_EXECUTIONENGINE` (0x80131506) through `TerminateProcess`, raising nothing an in-process
+   handler can see. Six dumps across three builds, always at `coreclr+0x244839`, always with the
+   detour on the faulting stack. `PHASE1-HANDOFF.md` §13 and
+   [MANAGED-ENTRY-HANDOFF.md](MANAGED-ENTRY-HANDOFF.md) carry the evidence and the open question.
+   
+   What is safe is what the old rule already relied on: that thread **is** in cooperative GC mode, so
+   it cannot be suspended mid-read and the GC cannot move the objects a raw read walks. Re-read the
+   root, guard the object identity against the type's MethodTable (masking the low three mark bits),
+   bound the values, and wrap the dereferences in `__try`. That is what `FrameTickDetour` does; no
+   allocation, no transition, no compile, and no ABI boundary.
+   
+   For anything that must *run* managed logic on the game's thread — calling `RequestEscape`, walking
+   a pooled collection — there is no working mechanism yet. Entering managed code from that thread is
+   the thing that is refused, so the candidate is a **jump** detour into a managed replacement (which
+   the thread enters as a managed call and never leaves cooperative mode), not a call detour into a
+   managed callback. It is unresearched, and the preemptive-mode hazard in its obvious form is
+   recorded in MANAGED-ENTRY-HANDOFF.md.
 
 ### 5.3 Which rule applies to which hook
 
 | hook | where the reads happen | why it is safe |
 |---|---|---|
-| frame tick (`DarzaWindow.Update`) | resolve `World.Shared` from the handle; read a handful of `Player` floats | one resolve + pure float reads, no allocation |
+| frame tick (`DarzaWindow.Update`) | dereference the `World.Shared` static field, then read a handful of `Player` floats | native, no managed call; one dereference + pure float reads, no allocation |
 | spawn (`Projectile.ProcessProjectileData`) | **arguments only** | the threat arrives in registers and on the stack; no dereference of anything |
 | collision (`Projectile.HitCharacter`) | `this` + the player's position | `this` is already on the stack as the first argument |
 | escape (`World.RequestEscape`) | call it, do not read | the client's own gates run |
@@ -402,9 +420,14 @@ watches for exactly this. Three budgets, nested:
 
 | budget | value | source |
 |---|---|---|
-| the game's frame period | ~16.7 ms at 60 fps, ~6.9 ms at 144 fps | to be measured ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §10 #4) |
+| the game's frame period | **measured: the game runs its frame loop uncapped at roughly 200 Hz (~4.9 ms per frame) at the title screen**; the design target is 60 Hz (16.7 ms), which is the conservative design point rather than the observed worst case | measured from the frame detour's own argument (`GameTime.TotalGameTime.TotalMilliseconds`, advancing ~4.9 ms per call), via `frames.csv`'s `arg_total_ms`/`frame_delta_ms` columns. The operator caps FPS in the game's settings, and the high-rate/uncapped limit test is deferred ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §10 #4) |
 | our self-imposed ceiling | **≤ 300 µs**, i.e. under 2 % of a 60 fps frame | design choice; the game's own watchdog tolerance is the input to be measured |
 | the per-hook cost split | frame tick ≤ 150 µs; spawn ≤ 5 µs per bullet; collision ≤ 5 µs | derived from the algorithmic budget in [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §8 |
+
+The frame loop is measured running uncapped at roughly 200 Hz, but the operator caps FPS in the
+game's own settings and the design target is 60 Hz — so the **≤ 300 µs ceiling stays expressed against
+a 60 Hz frame (16.7 ms)**, the frame the hook is actually built to fit inside. The uncapped
+measurement is what makes that the conservative design point rather than the observed worst case.
 
 Two features follow directly from the budget being a hard constraint:
 

@@ -841,6 +841,18 @@ exact damage, the moment of the collision decision — is available at this inst
 server's own damage is still downstream of it by one client→server trip. The end-to-end latency
 budget that follows from this is measured in [TIMING.md](TIMING.md).
 
+**One clarification, and the hook paid for it on 2026-10-12: `HitCharacter()` is a per-frame
+predicate, not an event.** `LateUpdate` calls `Hit()` for every live projectile every frame, and
+`HitCharacter()` answers `true` only on the frame the hit resolves — the `return false` at
+`Projectile.cs:1604` is the ordinary answer, and `CanHitEntity` suppresses repeats for the same
+bullet. So anything patched onto this method sees every *question*; **the collision decisions are
+the `true` answers.** The first live session with the collision hook installed counted 418 328
+entries and 48 resolved hits, and for a while every one of those entries was treated as a decision
+— which inflates the false-negative rate by however many frames a bullet spends near the player.
+`IMPLEMENTATION-PLAN.md` Deliverable 2.3, `VERIFICATION.md` §"the procedure" and
+[DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §10 invariant 4 all now say the same thing: gate on the
+return value. The accounting is [PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.14.
+
 The hook therefore does not need to *predict the future from outside the process*. It needs to
 **arrive at the collision decision earlier than the server does**, which is automatic once it is
 running inside the process, and then to spend the remaining window doing something better than

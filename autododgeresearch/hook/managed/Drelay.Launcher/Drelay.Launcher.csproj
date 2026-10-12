@@ -1,0 +1,42 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Drelay.Launcher: starts the game suspended, injects the hook, resumes it.
+
+    A console application rather than a windowed one: it is a diagnostic tool
+    first, and its output is the evidence for Spike 1.1. It needs no elevation,
+    because CreateProcess plus CreateRemoteThread on a process it created
+    requires no privilege at all.
+  -->
+  <PropertyGroup>
+    <!-- net8.0 for the same reason as the bootstrap; see Drelay.Bootstrap.csproj. -->
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>Drelay.Launcher</AssemblyName>
+    <RootNamespace>Drelay.Launcher</RootNamespace>
+    <UseAppHost>true</UseAppHost>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <PublishSingleFile>false</PublishSingleFile>
+  </PropertyGroup>
+
+  <!--
+    The launcher references the bootstrap, and that is deliberate rather than
+    convenient.
+
+    Both processes have to agree on the shared block's layout and on its total
+    size, and the size is a compile-time constant here: the launcher creates the
+    mapping at that size, and the native DLL's sizeof(DrelayShared) must be the
+    same number. A second copy of that constant in the launcher would be a second
+    place for it to be wrong, and the failure it produces (a mapping one size and
+    a reader another) is exactly the class of bug this design spends its effort
+    turning into a loud refusal.
+
+    So the layout lives once, in Drelay.Bootstrap\DrelayBlock.cs, and the launcher
+    links against it. The bootstrap DLL is never loaded by the launcher; this is a
+    compile-time dependency on a library of types, which is what it always was.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\Drelay.Bootstrap\Drelay.Bootstrap.csproj" />
+  </ItemGroup>
+
+</Project>

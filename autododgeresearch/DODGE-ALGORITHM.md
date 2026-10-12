@@ -561,9 +561,10 @@ tested cheaply:
 3. **The chosen heading never changes while it stays admissible and no alternative beats it by the
    hysteresis margin.** Jitter is measurable as a heading-change rate.
 4. **Predicted and actual collision agree.** The strongest possible test: log every predicted
-   first-impact time and every actual `HitCharacter` call, and assert the model predicted the ones
-   that happened. This is the hook's ground truth, and it is only available *because* we hook the
-   collision.
+   first-impact time and every `HitCharacter` call **that returned `true`** — the method is the
+   client's per-frame predicate, so its `false` entries are questions and not collisions — and assert
+   the model predicted the ones that happened. This is the hook's ground truth, and it is only
+   available *because* we hook the collision.
 5. **A re-rented `Projectile` never inherits state.** Key on `(GameId, startTime)`; assert that a
    `Reset` observation clears the record.
 6. **The hook never exceeds its frame budget**, asserted as a p99 over a replay.

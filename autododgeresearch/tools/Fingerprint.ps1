@@ -254,12 +254,120 @@ foreach ($dll in @('coreclr.dll', 'clrjit.dll')) {
 }
 
 # --- 6. target method IL hashes -----------------------------------------------------------
+# Two layers, and the difference matters.
+#
+#   (a) structural: for each target, the instruction stream at its recorded RVA must be
+#       exactly `ilSize` bytes long, and hashing those bytes must reproduce `ilHash`.
+#       This is the check that catches "a game patch changed one target's IL" -- the
+#       failure the whole gate exists for -- and it needs no other tooling.
+#
+#   (b) executable: the hash must also be what tools/il_index.py regenerates from the
+#       metadata, which is how the table is produced. Run it and compare.
+#
+# A same-length byte flip in a target's IL passes every file-level check (that is what the
+# mutation test proved) but cannot pass (a).
 $hashes = @($known.targetMethods.PSObject.Properties |
     Where-Object { $_.Name -notlike '_*' -and $null -ne $_.Value })
+
 if ($hashes.Count -eq 0) {
     $gaps.Add('target-method IL hashes: not generated yet (Phase 0, tools/il_index.py)')
+} elseif (-not (Test-Path $assembly)) {
+    $gaps.Add('target-method IL hashes: cannot check, the assembly was not found')
 } else {
-    Note 'target IL hashes' "$($hashes.Count) recorded"
+    $pe = Read-PE $assembly
+    foreach ($prop in $hashes) {
+        $t = $prop.Value
+        $name = "$($t.role)"
+        if (-not $t.rva -or -not $t.ilHash -or -not $t.ilSize) {
+            Check "target $name" 'rva, ilSize and ilHash recorded' 'incomplete entry' | Out-Null
+            continue
+        }
+        # tiny header: high 6 bits are the size, code at +1. fat header: 12 bytes unless
+        # MoreSects is set, in which case the +12 field carries the real header size.
+        $bodyOff = RvaToOff $pe ([uint32]$t.rva)
+        if ($bodyOff -lt 0) {
+            Check "target $name IL" 'RVA inside a section' 'not mapped' | Out-Null
+            continue
+        }
+        $first = $pe.Bytes[$bodyOff]
+        if (($first -band 0x03) -eq 0x02) {
+            $codeOff = $bodyOff + 1
+            $codeSize = $first -shr 2
+        } else {
+            $flagsAndSize = [BitConverter]::ToUInt16($pe.Bytes, $bodyOff)
+            $codeSize = [BitConverter]::ToUInt32($pe.Bytes, $bodyOff + 4)
+            if ($flagsAndSize -band 0x0008) {
+                # MoreSects. The documented rule is to take the +12 field, but this build
+                # disagrees with it for DarzaWindow::Update (the FlagsAndSize field says 12,
+                # the +12 field says 60, and the code is at +12). il_index.py resolves it by
+                # decoding both candidates; the tie-breaker here is the recorded ilSize,
+                # which is legitimate because ilSize was itself confirmed against the
+                # disassembly and the two candidates are 48 bytes apart.
+                $declared = ($flagsAndSize -shr 12) * 4
+                $alt = ([BitConverter]::ToUInt16($pe.Bytes, $bodyOff + 12) -shr 12) * 4
+                $codeOff = $bodyOff + $declared
+                if ($alt -ne $declared -and $alt -ge 12 -and $alt -le 64) {
+                    $altSize = [BitConverter]::ToUInt32($pe.Bytes, $bodyOff + 4)
+                    # The recorded ilSize is the same either way (it is CodeSize), so pick
+                    # the candidate whose *own* header reads consistently: the one that puts
+                    # the code where the comment says it is. Prefer the declared header
+                    # unless it would place the code inside the +12 size field itself.
+                    if ($declared -lt 12) { $codeOff = $bodyOff + $alt }
+                }
+            } else {
+                $codeOff = $bodyOff + (($flagsAndSize -shr 12) * 4)
+            }
+        }
+        if ($codeSize -ne $t.ilSize) {
+            Check "target $name ilSize" $t.ilSize $codeSize | Out-Null
+            continue
+        }
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $digest = $sha.ComputeHash($pe.Bytes, $codeOff, $codeSize)
+        } finally {
+            $sha.Dispose()
+        }
+        $actual = -join ($digest | ForEach-Object { $_.ToString('X2') })
+        Check "target $name IL hash" $t.ilHash $actual | Out-Null
+    }
+
+    # (b) the executable half: regenerate and compare.
+    $ilIndex = Join-Path $here 'il_index.py'
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if ((Test-Path $ilIndex) -and $python) {
+        $json = Join-Path $env:TEMP ("drelay_il_index_{0}.json" -f $PID)
+        try {
+            & $python.Source $ilIndex --check --json $json 2>&1 | Out-Null
+            $regen = $null
+            if (Test-Path $json) { $regen = Get-Content $json -Raw | ConvertFrom-Json }
+            $diff = @()
+            if ($regen) {
+                foreach ($prop in $hashes) {
+                    $fresh = $regen.targets.($prop.Name)
+                    if (-not $fresh) {
+                        $diff += "$($prop.Name): absent from the regenerated table"
+                    } elseif ($fresh.ilHash -ne $prop.Value.ilHash) {
+                        $diff += ("$($prop.Name): recorded {0}, regenerated {1}" -f `
+                                  $prop.Value.ilHash, $fresh.ilHash)
+                    }
+                }
+            }
+            if (-not $regen) {
+                $gaps.Add('target IL hashes: il_index.py produced no JSON to compare against')
+            } elseif ($diff.Count -gt 0) {
+                foreach ($d in $diff) {
+                    Check 'target IL hash (regenerated)' 'same as recorded' $d | Out-Null
+                }
+            } else {
+                Note 'target IL hashes' ("{0} targets re-derived by il_index.py, all matching" -f $hashes.Count)
+            }
+        } finally {
+            if (Test-Path $json) { Remove-Item $json -Force -ErrorAction SilentlyContinue }
+        }
+    } else {
+        $gaps.Add('target IL hashes: python or il_index.py unavailable, so the recorded hashes were checked physically but not re-derived')
+    }
 }
 $gaps.Add('effective runtime environment: cannot be read from a script (check DOTNET_TieredCompilation is unset in the launcher)')
 $gaps.Add('the loaded assembly MVID: must be re-checked in-process at attach')
