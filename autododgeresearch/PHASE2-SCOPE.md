@@ -1207,6 +1207,45 @@ written to check only that the code ran:
    a live game would need the documented fallback, and this is the evidence that the risk is real
    rather than theoretical.
 
+### 4.16 The run that looked like a regression, and the patch that arrived too early to be useful
+
+**What it looked like.** The session of 2026-10-12 21:22 published
+`collisions: 0 decision(s), 0 known, 0 unknown` on every report line. The collision counter had been
+changed a few hours earlier — from counting predicate entries to counting decisions — so the obvious
+reading was that the change had broken it.
+
+**What it actually was.** The hook decides what to patch in **one pass at the close of the
+thirty-second discovery window**, and `Projectile.HitCharacter` is compiled the first time a
+projectile is fired at the player. The game's own log puts the player in `GameScene` at 21:23:10 and
+the first zone music at 21:23:16; the window closed at 21:23:16. The target was then matched and
+reported as found — *after* the pass that would have hooked it:
+
+```
+[ERROR]   collision    MISSING  never compiled in the discovery window ... This target is NOT patched.
+[INFO ] 1 of 4 target(s) patched
+[INFO ] target 'collision' found: IL 989 bytes, native 1298 bytes at 0x7FFF8F4FE720 (3/4)
+```
+
+So `collisions: 0 decision(s)` meant **"nothing was hooked"**, not "nothing collided" — and the
+sensor around it was healthy: 19 349 frames read, 11 projectiles live on the last frame, the report
+published 64 times, straight fraction 0.891. **The counter change is not implicated**; the
+replacement was never entered, because the method was never patched.
+
+**The fix is §6.2 one level down: a window's count standing in for the run's.** The live window now
+runs a late patch pass once a second (`DrelayPatchNewTargets`), which hooks any target that became
+`found` after the window closed, skips the ones already hooked, and leaves the record list the
+uninstall walks untouched — the same body as the first pass, shared rather than copied, because the
+detour selection and the trampoline-before-enable order are exactly the parts that must not differ
+between a patch at t+5 s and one at t+55 s. Run 12 of the injection suite is the regression test: the
+host's first call to the predicate is delayed past the window, so the method *cannot* be compiled
+inside it, and the run has to show `collision MISSING` at the window's close, `PATCHED 'collision'`
+afterwards, and observed collisions that follow.
+
+**What it changes about this run.** Only that it has no collision comparison, and therefore no §7
+first-criterion datapoint. Everything else it measured stands, and it is recorded rather than
+deleted: a run whose empty comparison has a named cause is worth more than a run with no empty
+comparison at all.
+
 ## 6. Instrumentation this phase needed before it could report
 
 Both of these were the tail of Phase 1's own verification, and both are now done.

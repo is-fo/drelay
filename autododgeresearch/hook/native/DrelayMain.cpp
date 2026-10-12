@@ -740,6 +740,7 @@ DWORD WINAPI WatcherThread(LPVOID) {
     //    play and a five-second recording window cannot show one.
     const DWORD liveWindowMs = ReadLiveWindowMs();
     const DWORD liveStart = GetTickCount();
+    uint32_t latePatchPolls = 0;
     while (GetTickCount() - liveStart < liveWindowMs) {
         if (InterlockedCompareExchange(&g_shutdownRequested, 0, 0) != 0) {
             break;
@@ -748,8 +749,28 @@ DWORD WINAPI WatcherThread(LPVOID) {
         // whose world appears during this window is a run that still gets a live
         // read -- and the evidence written below is what has to show it.
         DrelayPollArmProbe();
+
+        // AND STILL WATCHING FOR TARGETS THAT ARRIVE LATE, WHICH IS A FIX AND NOT A
+        // REFINEMENT.  The discovery window is thirty seconds long and the patch pass
+        // runs once, at its close, so a method the game first compiles at t+31 s is
+        // matched, reported as found -- and left unhooked.  The 2026-10-12 21:22 session
+        // is the receipt: the player reached `GameScene` at 21:23:10 and the window closed
+        // at 21:23:16, so `Projectile.HitCharacter` missed the pass and the run published
+        // `collisions: 0 decision(s)` with a healthy sensor around it, which reads as "no
+        // collisions happened" when the truth is "nothing was watching for them".
+        //
+        // Once a second is enough: the cost is one walk of a four-entry table, and the
+        // alternative is a session whose comparison silently starts at whatever moment
+        // the player happened to enter the game.
+        if (++latePatchPolls >= 4) {
+            latePatchPolls = 0;
+            DrelayPatchNewTargets();
+        }
         Sleep(250);
     }
+    // One last look, because a target matched in the final second is still worth hooking
+    // for the evidence that follows.
+    DrelayPatchNewTargets();
 
     // THE ROUND IS OVER, SO THE READ STOPS HERE.
     //

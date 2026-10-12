@@ -567,9 +567,26 @@ void DrelayDetoursUninit() {
     }
 }
 
-uint32_t DrelayPatchTargets() {
+// The record for an address, or nullptr when it has not been patched.  This is what
+// makes a second pass safe: a target that is already hooked is skipped rather than
+// hooked twice, and the record list the uninstall walks is left intact.
+static PatchRecord* FindPatch(void* target) {
+    for (uint32_t i = 0; i < g_patchRecords; ++i) {
+        if (g_patches[i].target == target) {
+            return &g_patches[i];
+        }
+    }
+    return nullptr;
+}
+
+// ONE PATCH PASS.  `initialPass` selects the pass at the close of the discovery window
+// -- the one that polls the arming probe and prints the "patching may go live" line --
+// from a later pass, which must leave the record list alone.  Everything else is shared
+// deliberately: the detour selection, the trampoline publication that has to precede
+// the enable, and the enable itself are the parts that must not differ between a patch
+// at t+5 s and one at t+55 s.
+static uint32_t PatchTargetsPass(bool initialPass) {
     uint32_t patched = 0;
-    g_patchRecords = 0;
 
     // THE FRAME READ PATH NEEDS NOTHING PREPARED BEFORE A PATCH GOES LIVE, AND THAT
     // IS THE POINT OF THIS ROUND RATHER THAN AN OMISSION.
@@ -586,10 +603,12 @@ uint32_t DrelayPatchTargets() {
     // The probe is still called, and still worth calling: it is what publishes the
     // arm-state transition, so running it here means the first frames after the patch
     // see the freshest verdict rather than one up to a poll interval old.
-    DrelayPollArmProbe();
-    DrLog(DRLOG_INFO, "the frame read is native and needs no managed entry point; patching may "
-                      "go live");
-    DrLogFlushNow();
+    if (initialPass) {
+        DrelayPollArmProbe();
+        DrLog(DRLOG_INFO, "the frame read is native and needs no managed entry point; patching may "
+                          "go live");
+        DrLogFlushNow();
+    }
 
     // A diagnostic switch, and it exists because it is the only cheap way to tell
     // two very different failures apart.  With `DRELAY_NO_PATCH=1` the JIT detour
@@ -620,6 +639,14 @@ uint32_t DrelayPatchTargets() {
     for (uint32_t i = 0; i < g_shared->targetCount && g_patchRecords < kMaxPatched; ++i) {
         DrelayTargetHash* t = &g_shared->targets[i];
         if (t->found == 0 || t->nativeEntry == 0) {
+            continue;
+        }
+
+        // ALREADY HOOKED, SO THERE IS NOTHING TO DO.  Only a second pass can find this,
+        // and without it the late pass would try to re-create a hook on a live target:
+        // `MH_CreateHook` refuses, the error would be logged every second, and the record
+        // list the uninstall walks would be corrupted by a reset.
+        if (FindPatch(reinterpret_cast<void*>(t->nativeEntry)) != nullptr) {
             continue;
         }
 
@@ -662,10 +689,16 @@ uint32_t DrelayPatchTargets() {
             }
         }
         if (detour == nullptr) {
-            DrLog(DRLOG_INFO,
-                  "target '%s' verified at %p and NOT patched: its detour body is Phase 2's "
-                  "(this spike patches one target on purpose)", t->name,
-                  reinterpret_cast<void*>(t->nativeEntry));
+            // ONLY THE FIRST PASS SAYS SO.  A target with no body for this phase is
+            // reported once, at the window's close, where a reader is looking for it;
+            // the late pass runs every second and would otherwise repeat this line for
+            // the rest of the session.
+            if (initialPass) {
+                DrLog(DRLOG_INFO,
+                      "target '%s' verified at %p and NOT patched: its detour body is Phase 2's "
+                      "(this spike patches one target on purpose)", t->name,
+                      reinterpret_cast<void*>(t->nativeEntry));
+            }
             continue;
         }
 
@@ -716,9 +749,48 @@ uint32_t DrelayPatchTargets() {
     if (patched > 0) {
         g_shared->nativeStatus |= DRELAY_ST_PATCHED;
     }
-    DrLog(patched > 0 ? DRLOG_INFO : DRLOG_ERR,
-          "%u of %u target(s) patched", patched, g_shared->targetCount);
+    if (initialPass) {
+        DrLog(patched > 0 ? DRLOG_INFO : DRLOG_ERR,
+              "%u of %u target(s) patched", patched, g_shared->targetCount);
+    }
     return patched;
+}
+
+// The pass at the close of the discovery window.  It owns the reset of the record list,
+// because it is the one that starts it.
+uint32_t DrelayPatchTargets() {
+    g_patchRecords = 0;
+    return PatchTargetsPass(true);
+}
+
+// THE LATE PASS, AND THE SESSION THAT MADE IT NECESSARY.
+//
+// The patch decision used to be a single pass at the close of the fixed thirty-second
+// discovery window, so a target the game compiled *after* that window was matched,
+// reported as found by the target-size table -- and never patched.  On the
+// 2026-10-12 21:22 session the operator reached `GameScene` at 21:23:10 and the window
+// closed at 21:23:16, so `Projectile.HitCharacter` missed it by seconds: the run
+// recorded `collisions: 0 decision(s)` with a perfectly healthy sensor around it,
+// because the method was never hooked rather than because nothing collided.
+//
+// That is PHASE2-SCOPE.md section 6.2's defect one level down -- the window's count
+// standing in for the run's -- and the fix has the same shape: keep watching, and act on
+// what arrives.  The compileMethod detour is still installed and still matching, so a
+// target that appears later sets `found` and this pass hooks it.
+uint32_t DrelayPatchNewTargets() {
+    if (g_shared == nullptr) {
+        return 0;
+    }
+    const uint32_t added = PatchTargetsPass(false);
+    if (added > 0) {
+        g_shared->targetsPatched = g_patchRecords;
+        DrLog(DRLOG_INFO, "%u target(s) that the game compiled after the discovery window closed "
+                          "were patched late; %u of %u target(s) are now patched, and this run's "
+                          "comparison starts from here rather than from the window",
+              added, g_patchRecords, g_shared->targetCount);
+        DrLogFlushNow();
+    }
+    return added;
 }
 
 bool DrelayIsFrameTargetPatched() {

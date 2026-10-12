@@ -922,8 +922,8 @@ Check 'the target was found by IL hash in the compilation stream' (
     $log7 -match "target 'frameTick' found") 'expected "target ''frameTick'' found"'
 Check 'the target was patched' (
     $log7 -match "PATCHED 'frameTick'") 'expected "PATCHED ''frameTick''"'
-Check 'summary.txt counts one found and one patched' (
-    $sum7 -match '1 found, 1 patched') (($sum7 -split "`r?`n" | Where-Object { $_ -match 'pinned' }) -join ' ')
+Check 'summary.txt counts one matched by the end of the run and one patched' (
+    $sum7 -match '1 matched by the end of the run, 1 patched') (($sum7 -split "`r?`n" | Where-Object { $_ -match 'pinned' }) -join ' ')
 
 $cadenceText = if (Test-Path -LiteralPath $cadenceFile) {
     Get-Content -LiteralPath $cadenceFile -Raw
@@ -1455,6 +1455,82 @@ Check 'the warning is positive and plausible' (
 Check 'the hook did not see more collisions than the host made' (
     $null -eq $hostHits -or $collisions.Count -le $hostHits) (
     "observed=$($collisions.Count) host=$hostHits -- a hook observing every ENTRY rather than every 'true' would exceed the host's own count here")
+
+# ---------------------------------------------------------------------------
+# Run 12: a target the game compiles AFTER the discovery window
+# ---------------------------------------------------------------------------
+#
+# THE LIVE FAILURE THIS REPRODUCES, AND IT IS THE ONE THAT LOOKS LIKE A REGRESSION.
+# The hook matches targets inside a fixed thirty-second window and made its patch
+# decision once, at that window's close -- so a method the game first compiles at t+31 s
+# was matched, reported as `found` by the target-size table, and never hooked.  The
+# 2026-10-12 21:22 session is exactly that: the operator reached `GameScene` at 21:23:10
+# and the window closed at 21:23:16, `Projectile.HitCharacter` was compiled a few seconds
+# late, and the run published `collisions: 0 decision(s)` with a perfectly healthy sensor
+# around it.  Read without the patch line, that says "no collisions happened", which is
+# the opposite of what it means.
+#
+# `DRELAY_TEST_HITS_AFTER_MS` is the knob that delays the host's first call to the
+# predicate.  Thirty-five seconds puts that first call -- and therefore the method's one
+# and only compilation, tiering being off -- about ten seconds after the window shuts.
+# What the run has to show is that the late pass hooks it anyway, and that the comparison
+# then has content.
+Write-Host ''
+Write-Step 'run 12: a target compiled after the discovery window is patched late'
+
+$savedSensor12 = $env:DRELAY_FRAME_SENSOR
+$savedHold12 = $env:DRELAY_TEST_HOLD_MS
+$savedDelay12 = $env:DRELAY_TEST_CADENCE_DELAY_MS
+$savedCadenceFile12 = $env:DRELAY_TEST_CADENCE_FILE
+$savedHitsAfter12 = $env:DRELAY_TEST_HITS_AFTER_MS
+$env:DRELAY_FRAME_SENSOR = '1'
+$env:DRELAY_TEST_HOLD_MS = '90000'
+$env:DRELAY_TEST_CADENCE_DELAY_MS = '5000'
+$env:DRELAY_TEST_HITS_AFTER_MS = '35000'
+$cadence12 = Join-Path $testRoot 'cadence-run12.txt'
+$env:DRELAY_TEST_CADENCE_FILE = $cadence12
+Remove-Item -LiteralPath $cadence12 -ErrorAction SilentlyContinue
+
+$runDirsBefore12 = @(Get-ChildItem $runRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+$null = & $launcher @commonLauncherArgs --collect-delay 500 --live-seconds 25 `
+    --test-target $spec11 --frame-replacement --verbose 2>&1
+$dir12 = Get-ChildItem $runRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $runDirsBefore12 -notcontains $_.Name } |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+$env:DRELAY_FRAME_SENSOR = $savedSensor12
+$env:DRELAY_TEST_HOLD_MS = $savedHold12
+$env:DRELAY_TEST_CADENCE_DELAY_MS = $savedDelay12
+$env:DRELAY_TEST_CADENCE_FILE = $savedCadenceFile12
+$env:DRELAY_TEST_HITS_AFTER_MS = $savedHitsAfter12
+
+$log12 = Read-RunFile $(if ($dir12) { $dir12.FullName } else { '' }) 'hook.log'
+$boot12 = Read-RunFile $(if ($dir12) { $dir12.FullName } else { '' }) 'bootstrap.log'
+$sum12 = Read-RunFile $(if ($dir12) { $dir12.FullName } else { '' }) 'summary.txt'
+$cadence12Text = if (Test-Path -LiteralPath $cadence12) { Get-Content -LiteralPath $cadence12 -Raw } else { '' }
+
+$lateHits = @($boot12 -split "`r?`n" | Where-Object { $_ -match 'collision: key=' })
+$latePredicted = 0
+foreach ($line in $lateHits) {
+    if ($line -match 'predicted=yes') { $latePredicted++ }
+}
+$hostHits12 = $null
+if ($cadence12Text -match 'host_hits=(\d+)') { $hostHits12 = [int]$Matches[1] }
+
+Check 'the window closed before the collision method existed' (
+    $log12 -match "collision\s+MISSING") (
+    'expected the discovery status table to report collision MISSING; without that the run is not testing a late compile at all')
+Check 'the late pass patched it anyway' (
+    $log12 -match 'were patched late' -and $log12 -match "PATCHED 'collision'") (
+    (($log12 -split "`r?`n" | Where-Object { $_ -match 'patched late|PATCHED' }) -join ' | '))
+Check 'the closing summary counts the late patch' (
+    $sum12 -match '2 matched by the end of the run' -and $sum12 -match '2 patched' -and
+    $sum12 -match '1 matched inside the discovery window') (
+    (($sum12 -split "`r?`n" | Where-Object { $_ -match 'pinned' }) -join ' '))
+Check 'collisions were observed after the late patch' (
+    $lateHits.Count -ge 1) "observed=$($lateHits.Count), host's own count=$hostHits12"
+Check 'at least one of them had been predicted' (
+    $latePredicted -ge 1) "predicted=$latePredicted of $($lateHits.Count)"
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------

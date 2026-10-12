@@ -123,8 +123,25 @@ void WriteSummary(FILE* f) {
 
     // Spike 1.2's headline: which of the four targets the compilation stream
     // produced, and whether the token agrees with what Phase 0 pinned.
-    fprintf(f, "targets (%u pinned, %u found, %u patched)\r\n",
-            g_shared->targetCount, g_shared->targetsFound, g_shared->targetsPatched);
+    //
+    // TWO COUNTS, FOR THE REASON THE CLOSING LOG LINE HAS TWO (DrelayMain.cpp): the
+    // discovery window's match count and the run's are different facts, and a line
+    // reading "1 found, 2 patched" is read as an inconsistency rather than as a target
+    // that arrived late.  Run 12 of the injection suite produces exactly that -- one
+    // target inside the window, two matched by the end -- and this line used to report
+    // the first number beside the second one's label.
+    {
+        uint32_t matchedByEnd = 0;
+        for (uint32_t i = 0; i < g_shared->targetCount && i < DRELAY_MAX_TARGETS; ++i) {
+            if (g_shared->targets[i].found != 0) {
+                matchedByEnd++;
+            }
+        }
+        fprintf(f, "targets (%u pinned, %u matched inside the discovery window, "
+                   "%u matched by the end of the run, %u patched)\r\n",
+                g_shared->targetCount, g_shared->targetsFound, matchedByEnd,
+                g_shared->targetsPatched);
+    }
     for (uint32_t i = 0; i < g_shared->targetCount && i < DRELAY_MAX_TARGETS; ++i) {
         const DrelayTargetHash& t = g_shared->targets[i];
         char name[DRELAY_TARGET_NAME_LEN] = {};

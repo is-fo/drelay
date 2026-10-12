@@ -21,6 +21,20 @@ namespace drelay {
 // never fired" can never be mistaken for silence.
 uint32_t DrelayPatchTargets();
 
+// Patches any target that the game compiled *after* the discovery window closed.
+//
+// Whether a target lands inside that thirty-second window is a fact about how quickly the
+// player reached the content that compiles it, not about the target:
+// `Projectile.HitCharacter` is compiled the first time a projectile is fired at the
+// player, so a session that spends longer in the menu than the window produces a run with
+// no collision comparison at all unless this pass exists -- which is exactly what the
+// 2026-10-12 21:22 session recorded, `collisions: 0 decision(s)`, with the target matched
+// and reported as found but never hooked.
+//
+// Safe to call repeatedly: a target that is already hooked is skipped, and the record list
+// the uninstall walks is left alone.
+uint32_t DrelayPatchNewTargets();
+
 // True once the frame-tick detour is live, which is what the self-check reports.
 bool DrelayIsFrameTargetPatched();
 
