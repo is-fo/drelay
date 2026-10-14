@@ -47,7 +47,7 @@
 // The launcher builds these names and the bootstrap is given the run directory
 // by the launcher, but the *names* of the kernel objects are fixed because both
 // sides must agree on them without a filesystem round trip.
-#define DRELAY_SHARED_VERSION   5u
+#define DRELAY_SHARED_VERSION   6u
 #define DRELAY_MAGIC_CONFIG     0x44485243u  /* 'DHRC' -- section holds a valid config */
 #define DRELAY_MAGIC_STATUS     0x44485253u  /* 'DHRS' -- native has written its status */
 #define DRELAY_MAGIC_BOOT       0x44485242u  /* 'DHRB' -- bootstrap has started and is alive */
@@ -284,7 +284,7 @@ typedef struct DrelayReadSpec {
 /* Rings.  A ring rather than an unbounded file because the native side must
  * never allocate or block inside a JIT callback, and because the interesting
  * events are rare.  Each entry carries a sequence number, so the reader (a
- * script, or Phase 5's bridge) can detect both overflow and gaps -- an
+ * script, or Phase 4's bridge) can detect both overflow and gaps -- an
  * overflowed ring reports a gap rather than silently dropping rows.            */
 
 typedef struct DrelayLogLine {
@@ -321,7 +321,7 @@ typedef struct DrelayFrameRow {
 /* ------------------------------------------------------------------------- */
 /* The block itself.  Sectioned so the two writers never share a cache line: the
  * bootstrap writes `cfg`, native writes `st`.  `bootTick`/`nativeTick` are the
- * liveness pair the plan's Phase 5 heartbeat is modelled on, prototyped here
+ * liveness pair the plan's Phase 4 heartbeat is modelled on, prototyped here
  * because Spike 1.1 already needs a liveness signal.                          */
 
 typedef struct DrelayShared {
@@ -624,6 +624,35 @@ typedef struct DrelayShared {
     volatile uint64_t managedCollisionReplacement;
     volatile uint64_t managedCollisionTrampoline;
 
+    /* ------------------------------------------------------------------ */
+    /* THE MOVEMENT REPLACEMENT -- Phase 3's actuator.                      */
+    /*                                                                     */
+    /* `World.hehe_EB2C_E5A5_EE82_E9C5_EF68(float logicDt, float frameDt)`  */
+    /* is the input->position step: it reads `GameScene.GameInput.Moving`,   */
+    /* `.MoveAngle` and `.MoveSpeed`, applies the client's own speed law,    */
+    /* its own collision and its own history accounting, and commits         */
+    /* `Player.Position` (`World.cs:12687-12783`).  It is `private` and has  */
+    /* no readable metadata name, so its identity in `known-build.json` is a */
+    /* string of private-use code points pinned by IL hash like every other  */
+    /* target -- see `tools/il_targets.py`, which exists because searching   */
+    /* for the decompiler's spelling finds nothing at all.                   */
+    /*                                                                     */
+    /* WHY A REPLACEMENT HERE AND NOT A WRITE FROM THE FRAME TICK.  The      */
+    /* frame tick runs ~1300 IL bytes before this method and `World.Update`  */
+    /* sits between them, but the reason is not the ordering: it is that a   */
+    /* replacement *on this method* is the only place that can both write the */
+    /* input and observe the position the client's own integrator produced   */
+    /* from it, in the same call, with no other writer in between.  That is  */
+    /* what makes the actuator measurable rather than merely plausible, and  */
+    /* it is the hook Phase 3's solver will steer through.                   */
+    /*                                                                     */
+    /* Ordering is the same rule as the two pairs above: the trampoline is   */
+    /* published before the hook is enabled, because the first call arrives  */
+    /* immediately and a replacement that could not reach the original would */
+    /* freeze the player in place.                                          */
+    volatile uint64_t managedMovementReplacement;
+    volatile uint64_t managedMovementTrampoline;
+
     /* Reserved capacity.  The mapping is created at a fixed size by the launcher
      * and mapped by both sides before either knows the other's struct size, so
      * the size has to be a constant both can compute rather than
@@ -644,7 +673,7 @@ typedef struct DrelayShared {
 // pagefile-backed section of that size fails `CreateFileMapping` with error 8.
 // The rings are now sized for a launch (see the DRELAY_*_RING_* comments) and the
 // whole block is 431 KB.
-#define DRELAY_SHARED_SIZE 440912u
+#define DRELAY_SHARED_SIZE 440928u
 
 // The assert is suppressed for the layout probe only.  SizeProbe.c must be able
 // to compile in order to *report* the real size when the constant is wrong; with

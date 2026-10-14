@@ -1,13 +1,14 @@
 # autododge research — an in-process hook for Darza's Dominion
 
 This directory is the research and implementation plan for replacing `drelay`'s **reactive**
-auto-nexus with a hook that runs **inside the game process** and can act before the damage lands.
+auto-nexus with a hook that runs **inside the game process**: it dodges incoming damage before it
+lands, and falls back to the client's own nexus only when no move can avoid it.
 
-It is research plus a plan, **and Phases 0 and 1 are built and closed**: the fingerprint gate and the
-target table that pins the hook's four detour points by IL hash, and the injection and hook skeleton
-that matches all four against the live game. Phase 2 — the read-only sensor — was started on
-2026-10-12 ([`PHASE2-SCOPE.md`](PHASE2-SCOPE.md)). No game file has been modified; the hook attaches
-at runtime.
+It is research plus a plan, **and Phases 0, 1 and 2 are built and closed**: the fingerprint gate and
+the target table that pin the hook's four detour points by IL hash; the injection and hook skeleton
+that matches all four against the live game; and the read-only sensor that predicts collisions and
+compares them against the game's own decision ([`PHASE2-SCOPE.md`](PHASE2-SCOPE.md), closed by
+operator decision on 2026-10-13). No game file has been modified; the hook attaches at runtime.
 
 Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 
@@ -17,10 +18,11 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 
 | phase | state |
 |---|---|
-| **0** — ground truth, and a build gate | **built.** The gate passes 15 checks against the installed build and refuses a mutated one at the *method* level; the four targets are pinned by IL hash, cross-checked against the disassembly, and recorded in [`known-build.json`](known-build.json). The procedure is [`docs/HOOK-BUILD-MATRIX.md`](docs/HOOK-BUILD-MATRIX.md). One item is open: the controlled `GmHit`-drop trial, which needs a live session and does not gate the hook |
+| **0** — ground truth, and a build gate | **built.** The gate passes 15 checks against the installed build and refuses a mutated one at the *method* level; **five** targets are pinned by IL hash, cross-checked against the disassembly, and recorded in [`known-build.json`](known-build.json) (four Phase 0/2 targets, plus Phase 3's movement integrator). The procedure is [`docs/HOOK-BUILD-MATRIX.md`](docs/HOOK-BUILD-MATRIX.md). One item is open: the controlled `GmHit`-drop trial, which needs a live session and does not gate the hook |
 | **1** — get in, and stay in | **built, confirmed live, and closed on 2026-10-12.** Three artefacts build clean — `Drelay.Hook.dll` (native), `Drelay.Bootstrap.dll` (the startup hook) and `Drelay.Launcher.exe` — and every offline check passes: ABI, the PE/MVID reader (including a deliberately tampered image) and a **127-check end-to-end injection test that passes 127/127** (90 when Phase 1 closed; Phase 2 added the managed replacement under forced full compacting collections, the sensor's read of the live set, the collision comparison and the predicate-semantics checks those last two need). Against the real game the whole chain works: injection before `Main`, the handshake, runtime validation, the JIT/EE GUID, the loaded-vs-file MVID check, the collection delay and its window, and the `compileMethod` detour seeing the compilation stream. **All four targets are matched by IL hash against the live game** — `frameTick` (IL 1286, token `0x06001FC5`, agreeing with Phase 0), `spawn` (2014), `collision` (989) and `escape` (335) — and `frameTick` is patched, with the hook reading live state from the real game: `arm state: ARMED`, the pointer chain and reflection agreeing on `Player.Position`, a plausible coordinate in `frames.csv`, and in the **hour-long acceptance run of 2026-10-12** 198 586 successful reads out of 209 897 frame calls at 53.8 Hz with no fault recorded and the read correctly paused at the window's close. Exit 2a (a denied log target costs evidence, never the game) passed all four of its assertions in the same round. Two verdict lines read FAIL and both are **instrument faults**, not run failures: the two runners read a `$null` exit code under Windows PowerShell 5.1 (fixed in both scripts), and the endurance run's single 323 µs sample sits above the 300 µs ceiling with no way to place it in time — the ring had already overflowed, which is why a cost histogram is Phase 2's first instrumentation change. The full accounting is [`PHASE1-VERIFICATION.md`](PHASE1-VERIFICATION.md) §11; [`PHASE1-HANDOFF.md`](PHASE1-HANDOFF.md) is the long record of how it got there — its earlier sections describe fixed faults and are historical, and the long-form record is [`PHASE1-SCOPE.md`](PHASE1-SCOPE.md) §6 |
-| **2** — observe, and find out whether the model is true | **started 2026-10-12; its mechanism question is answered.** Read-only. The goal is one question — does our prediction of a collision agree with the game's? — and four numbers: the warning distribution, the false-negative and false-positive rates, the per-frame cost p50/p99, and the fraction of real bullets that are straight. **How the sensor runs on the game's thread was resolved by measurement, and it cost the first two candidates.** A native detour that calls into managed code is flaky — about one run in four died inside the GC's mark phase even with every method pre-compiled and nothing allocating — because the runtime cannot unwind a managed stack that a native frame interrupts without a transition marker. What works is a **managed replacement**: MinHook's `jmp` lands directly in a managed method with the target's signature, so the game's own `call` is a managed-to-managed call, and it continues into the original through a **managed** function pointer to MinHook's trampoline. Seven runs survived 650 forced full blocking compacting collections, including with allocation, and run 8 of the injection suite re-runs that configuration on every invocation. Scope, the run tables and both verdicts: [`PHASE2-SCOPE.md`](PHASE2-SCOPE.md) §4.3–§4.4. **And the first session that reached a zone found the sensor reading the wrong container:** fifteen minutes of real play, 54 600 frames with a world on all but one of them, a zone full of bullets in the game's own log — and `live=0` throughout, because the client keeps its projectiles in `World.GameObjectLayer.Children` and not in `World.Objects`, which is what CLIENT-MAP.md §5.2 had claimed and what the hook read. The synthetic host had modelled the same wrong shape, which is why every offline check passed. Both are corrected and §10.6 is closed by the measurement. **The next session read the real client's bullets** — 19 349 frames with a world, 12–28 live projectiles per frame on a layer of 210–265 nodes, a straight fraction of **0.695** over 585 000 sampled trajectories, and a read cost of `p50 <= 50 µs, p99 <= 100 µs` — and it also showed that the collision counter had been counting the game's per-frame *predicate questions* rather than its decisions: 418 328 entries against 48 resolved hits, which inflated the false-negative rate by however long each bullet spent near the player. The counter now gates on the game's own `true`, the fixture models the predicate and would catch a regression, and **one more live session produces the four numbers as the plan defines them**. The operator has waived the cost criteria for this close. [`PHASE2-SCOPE.md`](PHASE2-SCOPE.md) §4.14–§4.15 |
-| **3–5** | not started |
+| **2** — observe, and find out whether the model is true | **closed by operator decision on 2026-10-13**, with two recorded waivers rather than every number clean: the sampler's p99 cost is deferred to the solver that has to share the frame (now Phase 3), and the false-negative count is an over-count from asking the collision predicate on every entry instead of every `true` ([`PHASE2-SCOPE.md`](PHASE2-SCOPE.md) §4.15, §7). Its mechanism question was answered by measurement. Read-only. The goal is one question — does our prediction of a collision agree with the game's? — and four numbers: the warning distribution, the false-negative and false-positive rates, the per-frame cost p50/p99, and the fraction of real bullets that are straight. **How the sensor runs on the game's thread was resolved by measurement, and it cost the first two candidates.** A native detour that calls into managed code is flaky — about one run in four died inside the GC's mark phase even with every method pre-compiled and nothing allocating — because the runtime cannot unwind a managed stack that a native frame interrupts without a transition marker. What works is a **managed replacement**: MinHook's `jmp` lands directly in a managed method with the target's signature, so the game's own `call` is a managed-to-managed call, and it continues into the original through a **managed** function pointer to MinHook's trampoline. Seven runs survived 650 forced full blocking compacting collections, including with allocation, and run 8 of the injection suite re-runs that configuration on every invocation. Scope, the run tables and both verdicts: [`PHASE2-SCOPE.md`](PHASE2-SCOPE.md) §4.3–§4.4. **And the first session that reached a zone found the sensor reading the wrong container:** fifteen minutes of real play, 54 600 frames with a world on all but one of them, a zone full of bullets in the game's own log — and `live=0` throughout, because the client keeps its projectiles in `World.GameObjectLayer.Children` and not in `World.Objects`, which is what CLIENT-MAP.md §5.2 had claimed and what the hook read. The synthetic host had modelled the same wrong shape, which is why every offline check passed. Both are corrected and §10.6 is closed by the measurement. **The next session read the real client's bullets** — 19 349 frames with a world, 12–28 live projectiles per frame on a layer of 210–265 nodes, a straight fraction of **0.695** over 585 000 sampled trajectories, and a read cost of `p50 <= 50 µs, p99 <= 100 µs` — and it also showed that the collision counter had been counting the game's per-frame *predicate questions* rather than its decisions: 418 328 entries against 48 resolved hits, which inflated the false-negative rate by however long each bullet spent near the player. The counter now gates on the game's own `true`, the fixture models the predicate and would catch a regression, and **one more live session produces the four numbers as the plan defines them**. The operator has waived the cost criteria for this close. [`PHASE2-SCOPE.md`](PHASE2-SCOPE.md) §4.14–§4.15 |
+| **3** — dodge, with the escape as its floor | **entered 2026-10-14; Spike 3.1 built, not yet measured live.** The movement question has a mechanism: a **fifth pinned target**, `World`'s movement integrator, with a **managed replacement** on its entry — the same route Phase 2 proved — so the hook writes `GameScene.GameInput.MoveAngle` / `.Moving` / `.MoveSpeed` and the *client* produces the position, the speed law, the collision and the history the outbound `GmMove` is built from. It is opt-in (`Drelay.Launcher.exe --move-steer sweep` or `hold:90:600`), bounded by frame counts, guarded by the game's own dead/safe/spirit gates, and it releases the input when the plan ends. The run reports through [`tools/steering_report.py`](tools/steering_report.py), which reads the pilot's own frame log, the install log and the **relay's wire log** — because the client's position cannot witness whether the server accepted the movement. Entry plan, the corrected spike order, and the measurement that reshapes the phase: [`PHASE3-SCOPE.md`](PHASE3-SCOPE.md) |
+| **4** — the bridge | not started. Phase 3 does not depend on it |
 
 ### Building and checking Phase 1
 
@@ -234,7 +236,8 @@ Read in this order for the argument; the last five are the plan.
 | **[DODGE-ALGORITHM.md](DODGE-ALGORITHM.md)** | what it computes: the threat set, trajectory sampling, the solver, the temporal test, the intent ladder, damage estimation, and the preventive-escape decision. §12 is the borrow/don't-borrow ledger against the reference engine | you are building the dodge |
 | **[JAVA-BRIDGE.md](JAVA-BRIDGE.md)** | keeping the proxy in Java: why the decision cannot cross the bridge, whether JNA is needed (it is, minimally), sequence-stamped shared memory, and failure detection | you are wiring the hook to the relay |
 | **[BRIDGE-RESEARCH.md](BRIDGE-RESEARCH.md)** | the source-cited evidence behind the bridge design: JNA / JNI / FFM benchmarks, Windows named-pipe and shared-memory limitations verified against the OpenJDK and Microsoft sources, and the measured loopback/pipe numbers | you want to check a bridge claim or revisit the transport choice |
-| **[IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)** | **the deliverable**: six phases with spikes, deliverables, exit criteria, a test list, milestones and the decision point | you want to know what to do on Monday |
+| **[IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md)** | **the deliverable**: five phases with spikes, deliverables, exit criteria, a test list, milestones and the decision point | you want to know what to do on Monday |
+| **[PHASE3-SCOPE.md](PHASE3-SCOPE.md)** | Phase 3's entry plan: what Phase 2 left, the run that reshaped the spike order (88 client-resolved collisions, 100 % tracked, 74 % with no warning at all), why the relay cannot answer the movement question, what was built for Spike 3.1, the live protocol, and what would stop the phase | you are starting Phase 3, or running the steering experiment |
 | **[docs/HOOK-BUILD-MATRIX.md](docs/HOOK-BUILD-MATRIX.md)** | the verified build, the exact procedure to re-verify the hook after a game patch, what the gate cannot check, and the build-specific findings a maintainer must not "simplify" away | you are installing, updating or re-verifying the hook |
 | **[VERIFICATION.md](VERIFICATION.md)** | the playbook: five layers from the static gate to the on-the-wire checks, what each can and cannot establish, and the falsification test that must pass before the model may be trusted | you are about to run something live |
 | **[RISKS.md](RISKS.md)** | the risk register, the verified dodge-vs-escape interaction bug, and an explicit list of what this cannot do | you are deciding whether to start |
@@ -244,30 +247,34 @@ every number are in [`tools/`](tools) — see below.
 
 ---
 
-## The plan, in six lines
+## The plan, in five lines
 
 | phase | question | risk | estimate |
 |---|---|---|---|
 | **0** | what are we targeting, and can we prove it has not changed? | very low | 1–2 days |
 | **1** | can native code get into this process, early, and survive? | **high** | 3–5 days |
 | **2** | can we observe the truth, and does our model match it? | medium | 1–2 weeks |
-| **3** | **can a predictive nexus beat the reactive one?** | low given 2 | 1 week |
-| **4** | can we move the player legitimately? | **highest** | 2–4 weeks |
-| **5** | does the relay see the hook, and is that useful? | low | 3–5 days |
+| **3** | **can we move the player out of the way — and escape only when we cannot?** | **highest** | 3–6 weeks |
+| **4** | does the relay see the hook, and is that useful? | low | 3–5 days |
 
-**Phases 0–3 are the recommended commitment.** They deliver the headline benefit — a nexus that acts
-on knowledge of an incoming lethal hit rather than on the aftermath — and they do not depend on the
-movement question at all. Phase 3 is worth shipping on its own.
+**The dodge and the escape are one phase, and the escape is its floor** (merged 2026-10-13). The
+client's `World.RequestEscape()` is reached at exactly one point in the decision — when the projected
+damage over the horizon is lethal **and no admissible move avoids it** — so the deliverable is a dodge
+that never needs the nexus where dodging is possible, rather than a predictive nexus that still ends
+the run. The relay bridge, formerly phase 5, is now phase 4 and is additive to both.
 
-**Phase 4 is entered only after Phase 3 is live and measured.** Its risk is not the algorithm; it is
-whether the server accepts hook-steered movement, which is the one question in this design with no
-precedent in the reference engine and no measurement in the captures. That question can be answered
-**from the existing proxy, with no hook at all**, in an afternoon — see
+**Phase 3 carries the whole risk.** Its risk is not the algorithm; it is whether the server accepts
+hook-steered movement, which is the one question in this design with no precedent in the reference
+engine and no measurement in the captures. That question is answered by a spike that uses **no dodge
+logic at all**, and it can be probed **from the existing proxy, with no hook at all** — see
 [RISKS.md](RISKS.md) §2a.
 
-**Phase 2 is the decision point.** It produces the four numbers that decide whether a dodge is worth
-building: how much warning prediction gives, its false-negative and false-positive rates, and its
-per-frame cost. If those numbers are bad, the honest move is to stop at Phase 3 and document why.
+**Phase 2 was the decision point, and it has been taken: the project proceeds to Phase 3.** Its four
+numbers — how much warning prediction gives, the false-negative and false-positive rates, and the
+per-frame cost — are what license the build. Had they been bad, the honest move would have been to
+stop there and publish the measurement; with the escape folded in as a floor there is no longer a
+consolation deliverable at that point, which is why the numbers were worth reading before Phase 3
+starts.
 
 ---
 
@@ -330,8 +337,10 @@ Everything is reproducible. Nothing here is hand-waved from a blog post.
 
 | tool | does |
 |---|---|
-| **[`tools/Fingerprint.ps1`](tools/Fingerprint.ps1)** | **the Phase 0 gate, and the first thing to run before any session.** Fifteen static checks — tiered compilation, IL-only status, the assembly's size *and SHA-256*, the `clrjit` vtable's code-slot count, both runtime DLL versions, and **all four target IL hashes** — with a non-zero exit on any mismatch. It resolves `getJit` from the export directory itself and re-hashes each target's instruction stream straight out of the assembly, then requires `il_index.py` to regenerate the same table, so it needs no other tooling. Mutation-tested at both levels: a same-size byte flip anywhere in the assembly fails loudly, and a single flipped byte *inside a target's IL* is named as that target. Its expected values live in [`known-build.json`](known-build.json) |
-| **[`tools/il_index.py`](tools/il_index.py)** | **builds the target table, and is the authority on it.** A self-contained PE/CLI metadata reader — no `ilspycmd`, no `dotnet`, no network — that resolves the hook's four detour targets to `(declaring type, name, arity, metadata token, RVA, IL size, SHA-256 of the exact IL bytes)` and writes them into `known-build.json`. Cross-checks every target against the IL dump on RVA, code size and parameter count; deterministic to the byte across runs; `--mutation-test` proves a one-byte IL edit moves exactly that target's hash |
+| **[`tools/Fingerprint.ps1`](tools/Fingerprint.ps1)** | **the Phase 0 gate, and the first thing to run before any session.** Fifteen static checks — tiered compilation, IL-only status, the assembly's size *and SHA-256*, the `clrjit` vtable's code-slot count, both runtime DLL versions, and **every pinned target's IL hash** — with a non-zero exit on any mismatch. It resolves `getJit` from the export directory itself and re-hashes each target's instruction stream straight out of the assembly, then requires `il_index.py` to regenerate the same table, so it needs no other tooling. Mutation-tested at both levels: a same-size byte flip anywhere in the assembly fails loudly, and a single flipped byte *inside a target's IL* is named as that target. Its expected values live in [`known-build.json`](known-build.json) |
+| **[`tools/il_index.py`](tools/il_index.py)** | **builds the target table, and is the authority on it.** A self-contained PE/CLI metadata reader — no `ilspycmd`, no `dotnet`, no network — that resolves the hook's **five** detour targets to `(declaring type, name, arity, metadata token, RVA, IL size, SHA-256 of the exact IL bytes)` and writes them into `known-build.json`. Cross-checks every target against the IL dump on RVA, code size and parameter count; `--check` also compares the record against the table and exits non-zero on a mismatch (a hardcoded key list used to drop a target silently); `--mutation-test` proves a one-byte IL edit moves exactly that target's hash |
+| **[`tools/il_targets.py`](tools/il_targets.py)** | lists candidate methods on a type so a new target can be pinned **without depending on its name** — declaring type, arity, and the return and parameter types decoded from the signature blob, plus IL size and the IL dump's RVA line. It exists because the client's obfuscator gives the movement integrator a metadata name of private-use code points that **cannot be found by searching for the name the decompiler prints** (zero hits in the 89 MB dump). It never writes the record, so `il_index.py` stays the one authority. `--self-test` checks the reader against the four signatures the documents state independently |
+| **[`tools/steering_report.py`](tools/steering_report.py)** | reads a Spike 3.1 steering run and says whether the hook moved the player: the pilot's read-back (did the write land), the realised displacement (did the integrator act), the per-phase commanded-vs-observed headings (was the direction obeyed), the relay log's `GmKicked` (did the server object) and the `GmMove` cadence. It fails loudly on a run where the target was never patched, because that otherwise reads exactly like a pilot that chose to do nothing, and its own fixture (`tools/tests/test_steering_report.py`) asserts the good, unpatched, kicked and empty cases |
 | **[`tools/Test-FingerprintGate.ps1`](tools/Test-FingerprintGate.ps1)** | the gate's own falsification test, at the level that matters: it copies the install to a sandbox, flips one byte **inside a target's IL** with the file length unchanged, and asserts the gate exits non-zero naming *that* target while the other three still pass. A gate that cannot be shown to fail is not a gate |
 | [`tools/Test-JitVtable.ps1`](tools/Test-JitVtable.ps1) | locates `clrjit!getJit`, resolves `&g_CILJit`, and dumps the `ICorJitCompiler` vtable. **This is Phase 0's most important instrument** — it proves the four-slot layout and which slot holds `compileMethod` on the exact runtime build |
 | [`tools/Test-ReadyToRun.ps1`](tools/Test-ReadyToRun.ps1) | reads the COR20 `ManagedNativeHeader` and reports IL-only vs ReadyToRun. Verified on this install: `DarzasDominion.dll` and `MonoGame.Framework.dll` are **IL-only**; `System.Private.CoreLib.dll` **is R2R** |
@@ -377,11 +386,11 @@ plus their raw outputs as `_*_raw.txt` / `_numbers.txt`.
 
 ## What is deliberately not in this directory
 
-- **The hook is a Phase 1 skeleton plus the start of Phase 2.** Phase 0 of the plan said the first
+- **The hook is a Phase 1 skeleton plus the Phase 2 sensor.** Phase 0 of the plan said the first
   thing to write was the fingerprint gate, not the hook — and that gate is here. Phase 1's
   `Drelay.Hook.dll`, `Drelay.Bootstrap.dll` and `Drelay.Launcher.exe` (in [`hook/`](hook)) are built,
-  have been run against the live game, and are closed; Phase 2 builds the sensor on top of them
-  ([`PHASE2-SCOPE.md`](PHASE2-SCOPE.md)).
+  have been run against the live game, and are closed; Phase 2 built the sensor on top of them and
+  closed on 2026-10-13 ([`PHASE2-SCOPE.md`](PHASE2-SCOPE.md)).
 - **No changes to the Java relay.** The bridge design in [JAVA-BRIDGE.md](JAVA-BRIDGE.md) is
   additive by construction: the relay runs identically with and without the hook.
 - **No game files were modified**, and none need to be on the recommended injection path. The gate

@@ -109,6 +109,24 @@ namespace Drelay.Launcher
         // not in the path.  See `managedFrameReplacement` in DrelayHookShared.h.
         public bool FrameReplacement;
 
+        // PHASE 3'S ACTUATOR REQUEST, AND IT IS THE ONE SWITCH THAT MOVES THE PLAYER.
+        //
+        // The value is passed to the hook verbatim as `DRELAY_MOVE_STEER`, and the
+        // hook decides what it means (see `SteeringPilot`): a mode name, optionally
+        // with parameters.  Three properties matter and each is deliberate:
+        //
+        //   * EMPTY MEANS NOTHING HAPPENS.  The movement replacement is still
+        //     published and still calls through, so the plumbing is exercised by
+        //     every run, but the player is only ever moved when an operator asked;
+        //   * IT IS A *VALUE*, NOT A FLAG, because the interesting experiments are
+        //     "hold this heading", "sweep these headings and calibrate", "walk the
+        //     speed boundary" -- and a boolean cannot carry which one;
+        //   * IT IS PASSED THROUGH RATHER THAN INVENTED HERE.  The launcher owns the
+        //     `DRELAY_HOOK_*` namespace and deletes inherited names from it; this one
+        //     is the operator's, so the launcher's job is to place it in the child's
+        //     environment unchanged and let the hook read it.
+        public string MoveSteer;
+
         // How long the hook keeps recording after it patches the frame tick, in
         // seconds.  Passed to the hook as `DRELAY_HOOK_LIVE_MS`.
         //
@@ -155,6 +173,7 @@ namespace Drelay.Launcher
                 case "--test-target": options.TestTargets = Next(args, ref i); break;
                 case "--frame-helper": options.FrameHelper = true; break;
                 case "--frame-replacement": options.FrameReplacement = true; break;
+                case "--move-steer": options.MoveSteer = Next(args, ref i); break;
                     case "--help":
                     case "-h":
                         error = "help";
@@ -169,6 +188,7 @@ namespace Drelay.Launcher
                         else if (a.StartsWith("--timeout=", StringComparison.Ordinal)) { options.TimeoutMs = int.Parse(a.Substring(10), CultureInfo.InvariantCulture); }
                         else if (a.StartsWith("--collect-delay=", StringComparison.Ordinal)) { options.CollectDelayMs = int.Parse(a.Substring(16), CultureInfo.InvariantCulture); }
                         else if (a.StartsWith("--live-seconds=", StringComparison.Ordinal)) { options.LiveSeconds = int.Parse(a.Substring(15), CultureInfo.InvariantCulture); }
+                        else if (a.StartsWith("--move-steer=", StringComparison.Ordinal)) { options.MoveSteer = a.Substring(13); }
                         else if (a.StartsWith("--", StringComparison.Ordinal))
                         {
                             error = "unknown option: " + a;
@@ -584,6 +604,24 @@ namespace Drelay.Launcher
             {
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_FRAME_REPLACEMENT", "1"));
             }
+            if (!string.IsNullOrEmpty(options.MoveSteer))
+            {
+                // BOTH NAMES, AND THE SECOND ONE IS THE OPERATOR'S OWN.
+                //
+                // The hook is loaded into a process the launcher starts, so the value
+                // could just be left in the inherited environment -- but the launcher
+                // deletes every inherited `DRELAY_HOOK_*` name precisely so that a
+                // stale shell variable cannot change what gets patched, and whether
+                // the player may be moved is exactly that kind of decision.  So the
+                // native side is told through the namespace it does not inherit
+                // (`DRELAY_HOOK_MOVE_REPLACEMENT`, which the managed replacement
+                // publishes for), and the *value* is passed under its own name for the
+                // managed side to read.  A value with no name would be a setting that
+                // silently does nothing; a name with no value would be a patch with no
+                // behaviour.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", options.MoveSteer));
+            }
             if (options.Off)
             {
                 // With the off switch set, the startup hook is not installed at
@@ -764,6 +802,17 @@ namespace Drelay.Launcher
                        managed stack. Replaces the detour: with this on, the native
                        frame read and its ring are not in the path. Off by default;
                        Phase 2's mechanism test.
+  --move-steer VALUE   PHASE 3 SPIKE 3.1: let the hook steer the player, using
+                       the hook's own actuator. VALUE selects the experiment and is
+                       documented in PHASE3-SCOPE.md; without this switch the
+                       movement replacement is still published and verified, and
+                       only calls through. Examples:
+                         --move-steer hold:90:8000     hold 90 deg for 8 s
+                         --move-steer sweep:1200       cycle the cardinal headings
+                                                       every 1200 frames and log the
+                                                       commanded-vs-observed pairs
+                       The player WILL move. Do not use it in a run whose result
+                       matters, and never while a nexus cast is in progress.
   --verbose            print the environment that was removed, and diagnostics
   --help               this text
 

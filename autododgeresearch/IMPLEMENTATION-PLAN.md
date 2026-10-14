@@ -32,16 +32,32 @@ and the only claim packets in the whole assembly are `GmHit` (projectiles), `GmA
 is the first to know — projectiles with a client-visible approach — and does nothing for AoE, bomb
 detonations, damage-over-time ticks, or point-blank spawns.
 
-**So the plan is shaped to deliver the reliable half first.** A *predictive nexus* (Phase 3) is
-worth most of the benefit, is far less risky than movement injection, and answers the reported
-frustration directly. A *dodge* (Phase 4) is the larger prize and the larger risk, and it is built
-on the same sensor. This ordering is a deliberate choice, not a convenience: Phase 3 is worth
-shipping on its own, and if Phase 4's movement question (RISKS §2a) turns out badly, Phase 3 is
-unaffected.
+**So the plan is shaped to dodge first and to escape last.** The deliverable is the *dodge*: where the
+client is the first to know a bullet is coming, the hook **moves the player out of the way** rather
+than ending the run. The client's own `World.RequestEscape()` remains, as the **floor** rather than a
+phase of its own — it is reached at exactly one point in the decision
+([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §7 gate 6), when the projected damage over the horizon is
+lethal **and no admissible move avoids it**.
+
+**That merge is the ordering decision of 2026-10-13, and the reasoning is recorded here because it
+reverses the plan's original shape.** A predictive nexus is still a nexus: it ends the run, and the
+reported frustration is being forced to leave at all. The escape-only phase that used to sit at 3 was
+therefore judged of questionable value on its own, and its decision folded into the dodge as the last
+gate — one sensor, one snapshot, one frame budget, one place where the two controllers can disagree.
+The relay bridge that used to be Phase 5 is now **Phase 4** and is unchanged by any of this: it is
+additive to both, and nothing in Phase 3 waits on it.
+
+What that costs is that the largest risk now sits inside the phase that matters: the dodge rests on
+the **movement question** (RISKS §2a) — the one thing in this design with no precedent in the
+reference engine and no measurement in the captures. The mitigation is structural rather than
+optimistic: the question is answered by a spike that uses **no dodge logic at all**, and it is run
+before a solver is written (Spike 3.1). If it fails, the plan's honest stop is documented in §3
+rather than improvised at the end.
 
 ### 0.1 Why the premise is nonetheless worth building on
 
-Three measured facts make the hook decisively better than the current rule even before any dodging:
+Three measured facts make the hook decisively better than the current rule, and they are the ground
+the dodge stands on:
 
 1. **The current rule can act on stale HP.** The recorded case: an escape injected on a 1 % reading
    **151 ms after HP had already reached zero** (`nexus-20261005-023129-2000.jsonl`). The hook is
@@ -49,7 +65,8 @@ Three measured facts make the hook decisively better than the current rule even 
    state.
 2. **The current rule cannot distinguish "a hit landed" from "a hit is coming".** With one number it
    must be conservative in the direction that costs runs. The hook knows the bullet, so it can
-   distinguish them — which is what makes a *lower* effective threshold safe.
+   distinguish them — which is what lets the dodge be aimed at a predicted path rather than triggered
+   by a number, and what stops the escape from firing on the aftermath.
 3. **The dodge is genuinely achievable here.** It was not achievable through packets: the packet
    stream never re-broadcasts a projectile's position, so a packet-only dodge is dead reckoning with
    unbounded error (`work/auto-dodge-feasibility.md` §2). In-process, the true position is one field
@@ -60,7 +77,7 @@ Three measured facts make the hook decisively better than the current rule even 
 
 ## 1. Workstreams and phases
 
-Six phases. Each has a **spike** (does the mechanism work at all?) and a **deliverable** (is it
+Five phases. Each has a **spike** (does the mechanism work at all?) and a **deliverable** (is it
 built?), and each is gated on the previous one's exit criteria. The estimates are order-of-magnitude
 for a single developer working with the existing `drelay` codebase.
 
@@ -69,13 +86,20 @@ for a single developer working with the existing `drelay` codebase.
 | **0** | what exactly are we targeting, and can we prove it has not changed? | very low | 1–2 days |
 | **1** | can native C++ code get into this process, early, and survive? | **high** | 3–5 days |
 | **2** | can we observe the truth, and does our model of it match reality? | medium | 1–2 weeks |
-| **3** | can a predictive nexus beat the reactive one? | low, given 2 | 1 week |
-| **4** | can we move the player legitimately? | **highest** | 2–4 weeks |
-| **5** | does the relay see the hook, and is that useful? | low | 3–5 days |
+| **3** | **can we move the player out of the way — and escape only when we cannot?** | **highest** | 3–6 weeks |
+| **4** | does the relay see the hook, and is that useful? | low | 3–5 days |
 
-**Phases 0–3 are the recommended commitment.** They deliver the headline benefit, they are
-independently useful, and they do not depend on the movement question. Phase 4 should be entered only
-after Phase 3 is running live and has been measured against the reactive rule.
+**Five phases, because two of the six merged.** Phases 0–2 are the de-risking half and are done
+(Phase 0 but for one live experiment that does not gate the hook); Phase 3 *is* the project — the
+dodge, with the escape as its floor — and it is the only phase that carries the movement question.
+Phase 4 is additive and can slip indefinitely without touching Phase 3.
+
+**Phase 3 is entered only after Phase 2's numbers have been read**, because that is the M6 decision
+point, and it is the one place in the plan where stopping is the honest move (§4). Everything before
+it exists to make that stop cheap. Note the change of shape: the old plan could stop at a predictive
+nexus and still ship something. With the escape folded in as a floor instead of a phase, **a stop
+after Phase 2 ships nothing new** — the reactive auto-nexus remains the status quo — so at that point
+the deliverable is the measurement itself, and it has to be good enough to stand alone.
 
 ---
 
@@ -314,11 +338,11 @@ before the target methods are JITted. If that fails, the whole approach needs re
   during the collection delay and its denial proven with a refused write probe. The verdict's one
   FAIL is the `$null` exit code of §11.3. See [PHASE1-VERIFICATION.md](PHASE1-VERIFICATION.md) §11.2.
 
-- **Exit 2b (Phase 5) — a relay that dies mid-session changes nothing.** The bridge is observation:
+- **Exit 2b (Phase 4) — a relay that dies mid-session changes nothing.** The bridge is observation:
   a missing, stalled or dead relay must not change the hook's behaviour by one instruction, and the
   hook must never wait on it ([JAVA-BRIDGE.md](JAVA-BRIDGE.md) §8, [RISKS.md](RISKS.md) §2d).
-  *Moved to Phase 5's exit criteria, because it cannot be tested here and is not Phase 1's: the relay
-  is Phase 5 and absent, its **absence** is the status quo — every run so far is a no-relay run — and
+  *Moved to Phase 4's exit criteria, because it cannot be tested here and is not Phase 1's: the relay
+  is Phase 4 and absent, its **absence** is the status quo — every run so far is a no-relay run — and
   what needs proving is the relay dying **after** attach.*
 - Starting the hook against a deliberately different build **refuses and logs why**, and the game
   runs normally.
@@ -336,12 +360,17 @@ building: **does our prediction of a collision agree with the game's?**
 **This phase changes nothing about the game.** It is read-only, it is the largest single de-risking
 step in the plan, and it produces the ground truth that every later phase is tuned against.
 
-> **Status: started 2026-10-12.** The execution plan, the decision rule for the mechanism Phase 1
-> left open (`ProjDesc.GetPosition` and the live projectile set must be touched **on the game's
-> thread**, which a call detour into managed code cannot do), the instrumentation this phase needs
-> first, and the fallback if the mechanism test fails are all in
-> [PHASE2-SCOPE.md](PHASE2-SCOPE.md). This section remains the criteria; that document is how they
-> are being met.
+> **Status: closed by operator decision on 2026-10-13, with one measurement carried forward.** The
+> execution plan, the decision rule for the mechanism Phase 1 left open (`ProjDesc.GetPosition` and
+> the live projectile set must be touched **on the game's thread**, which a call detour into managed
+> code cannot do), the instrumentation this phase needed first, and the fallback if the mechanism
+> test failed are all in [PHASE2-SCOPE.md](PHASE2-SCOPE.md). Its §7 restates these criteria against
+> their actuals, and the close rests on two explicit waivers rather than on the criteria being met:
+> the sampler's p99 cost (**"ignore performance concerns for now"** — the cost work belongs with the
+> solver that shares the frame, which is now Phase 3) and the false-negative accounting, which the
+> session that produced it over-counted by asking the collision predicate on every entry instead of
+> every `true` (§4.15). That last number is the one open measurement, and Phase 3's dry-run trial is
+> where it is closed out.
 
 ### Deliverable 2.1 — the threat set
 
@@ -380,10 +409,10 @@ This gives four numbers that decide everything:
 
 | measurement | what it decides |
 |---|---|
-| **how much warning we had** (distribution) | whether an escape can be dispatched in time — this is the decision input for Phase 3's thresholds |
+| **how much warning we had** (distribution) | whether there is time to move — the input to Phase 3's dodge budget and to the timing of its escape floor |
 | **false negatives** (hit, not predicted) | whether the model is complete enough to be relied on |
 | **false positives** (predicted, no hit) | whether the dodge will be over-cautious; directly the `#ghost` rate |
-| **the per-frame cost** (p50/p99) | whether the Phase 4 solver fits the budget at all |
+| **the per-frame cost** (p50/p99) | whether the Phase 3 solver fits the budget at all |
 
 ### Exit criteria
 
@@ -394,77 +423,69 @@ This gives four numbers that decide everything:
 - **The linearity-gate log has told us what fraction of real bullets are straight**, which is the
   number that decides how good a dodge can be.
 
+*As closed on 2026-10-13: the third criterion is met — **0.695** of sampled trajectories were straight,
+over 406 077 linear and 178 611 curved sample sets — the first is the measurement the phase was gated
+on but its false-negative count is an over-count from a wrong event set, and the second is waived for
+now and moved into Phase 3 with the solver that shares the frame
+([PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.15, §7).*
+
 ### Why this phase is not optional
 
 Phase 2 is where the project can fail *cheaply*. If the sensor cannot predict collisions, no solver
-will help, and the honest answer is to stop at Phase 3 (nexus only) rather than to build a dodge on a
-model that does not match reality. Building the solver first would hide a sensor problem inside a
-tuning problem, which is exactly the failure mode that makes dodges feel haunted.
+will help, and the honest answer is to **stop before Phase 3** rather than to build a dodge on a model
+that does not match reality. Building the solver first would hide a sensor problem inside a tuning
+problem, which is exactly the failure mode that makes dodges feel haunted.
+
+**Stopping here now means stopping for real.** Under the old ordering the consolation prize was a
+predictive nexus that shipped on its own; the merge removed that, so a stop after Phase 2 leaves the
+reactive auto-nexus as the status quo, and the deliverable is the measurement itself — which is why
+§4's decision point is stated as a decision and not as a checkpoint.
 
 ---
 
-## Phase 3 — Predictive nexus (the headline deliverable)
+## Phase 3 — Dodge, with the escape as its floor
 
-**Goal.** Replace the reactive rule with one that acts on knowledge of an incoming lethal hit,
-**without moving the player at all.**
+> **Status: entered 2026-10-14, and Spike 3.1 is built but not yet measured live.** The execution
+> plan, the corrected spike order, and the measurement that reshapes the phase are in
+> [PHASE3-SCOPE.md](PHASE3-SCOPE.md). What exists now: a **fifth pinned target** (the movement
+> integrator, `World.cs:12666`) with a managed replacement on its entry, a per-frame actuator that
+> writes `GameScene.GameInput` (the mechanism this section ranks first), an opt-in and bounded
+> launcher switch for it, and `tools/steering_report.py` to read the result against the relay's own
+> wire evidence. **One correction to this section's text is load-bearing and is recorded rather than
+> quietly dropped:** the "cheapest possible way to learn whether the server validates movement" it
+> names — injecting a plausible `Move` from the relay — cannot answer Spike 3.1, because the relay
+> cannot reach the actuator this design chose and the question is not whether the server validates
+> movement (the operator settled that) but whether the hook can steer through the client's own input
+> path. [PHASE3-SCOPE.md](PHASE3-SCOPE.md) §3 is the argument, and the proxy keeps the one job that
+> is genuinely its own: witnessing whether the server accepted the movement.
 
-**Why this is a separate phase.** It needs no movement question, no server movement validation, and
-no solver. It is the smallest change that captures most of the measured benefit, and it is the direct
-answer to the reported frustration. If the project stopped here it would still be a success.
+**Goal.** Not needing the nexus, in the cases where that is possible — and calling it only when
+nothing else is.
 
-### Deliverable
+**This is the merged phase, and the merge is concrete.** The move and the escape are not two features
+with two triggers; they are one decision with two outcomes, taken once per frame
+([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5, §7):
 
-The decision from [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §7:
+| outcome | when |
+|---|---|
+| **move** | an admissible move exists that avoids lethal projected damage (gates 4–5) |
+| **escape** | the projected damage over the horizon is lethal **and no admissible move avoids it** (gate 6) |
+| nothing | everything else, logged with the reason it did nothing (gates 0–3, 7) |
 
-- project, across every live threat, the damage that **cannot be dodged** (initially: that will land
-  regardless of where the player is, which for Phase 3 means "the bullet is on a collision course and
-  there is no time to leave");
-- compute the exact damage by **calling `Entity.GetDamageTaken`** on the live player, never by
-  recomputing it ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §6);
-- if that projected damage is lethal, call **`World.RequestEscape()`** — the client's own nexus entry
-  point, which runs the client's own gates and is indistinguishable from the player pressing the key;
-- gates and asymmetry exactly as specified: `dryRun` default on, safe-area skip, per-world budget,
-  re-arm, and the two error costs weighed deliberately (§7.3).
+**Why it is one phase.** A predictive nexus is still a nexus: it ends the run, and the frustration
+that started this work is being forced to leave at all. Escape-only was judged of questionable value
+as a standalone phase (operator decision, 2026-10-13), and the two share one sensor, one snapshot and
+one frame budget — building them apart would have meant building the same plumbing twice and then
+reconciling two controllers in the same frame, which is a **verified** hazard rather than a
+hypothetical one ([RISKS.md](RISKS.md) §3d).
 
-### Configuration surface
+**Risk: highest.** Not the algorithm — the algorithm is well specified, and
+[DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §12 is explicit about what transfers from the reference
+engine and what must not be copied — but the **movement question** ([RISKS.md](RISKS.md) §2a), which
+is the one thing in this whole design with no precedent in the reference and no measurement in the
+captures. Spike 3.1 exists to answer it before any solver code is written.
 
-The existing `AutoNexus` config block, the dashboard panel and the `-Ddrelay.nexus.*` properties are
-the established interfaces (`docs/AUTONEXUS.md` §4.2). The hook's settings should present **through
-the same surfaces**, so an operator has one place to look. New keys are needed for the predictive
-mode (horizon, aggression, minimum warning) and they must be reported-back-or-rejected exactly as the
-existing settings are, because "a typo would otherwise look like a setting that simply had no effect"
-(`docs/AUTONEXUS.md` §7).
-
-### Verification
-
-- **Offline replay is not possible for the decision** (it needs live game state), so verification is:
-  the Phase 2 log plus a **deliberate paired trial**. The existing relay already timestamps both the
-  injected escape and the `ProjHit` claim; what is missing is a deliberate trial that pairs them
-  (`TIMING.md` §8 item 4). Run it: for a session, have the hook decide in dry run and log the exact
-  moment it *would* have escaped, then compare against the `HealthUpdate` trace and the death, if any.
-- **Success criterion**: for every death in the trial, either the hook had no warning (a claim-free
-  fall — expected for ~74 % of falls) or it had warning and its dry-run decision would have escaped in
-  time. **The two buckets must account for every death**, and that accounting is the honest measure of
-  the feature.
-
-### Exit criteria
-
-- Live with `dryRun=false`, the hook escapes in the cases the reactive rule could not and does not
-  escape when the reactive rule would not have.
-- The relay's `EscapeAck` join confirms the escape was accepted (`docs/AUTONEXUS.md` §5).
-- No escape is ever dispatched against stale HP.
-
----
-
-## Phase 4 — Dodge (the larger prize, entered only after Phase 3 is live)
-
-**Goal.** Not needing the nexus, in the cases where that is possible.
-
-**Risk: highest.** Not the algorithm — the algorithm is well specified and the reference engine
-proves the shape works — but the **movement question**, which is the one thing in this whole design
-with no precedent in the reference and no measurement in the captures.
-
-### Phase 4 prerequisite — scope decisions, already taken
+### Phase 3 prerequisite — scope decisions, already taken
 
 Two decisions remove work from this phase, and both are recorded because they change what "done"
 means:
@@ -485,7 +506,7 @@ means:
 `TilesPerSecond × frameSeconds`, is the constraint that matters, and it is an arithmetic question
 rather than an architectural one ([RISKS.md](RISKS.md) §2a).
 
-### Spike 4.1 — can we move at all? (do this before writing a solver)
+### Spike 3.1 — can we move at all? (do this before writing a solver)
 
 This spike uses **no dodge logic whatsoever**. It answers one question: *can the hook cause the
 player to move in a direction the server accepts?*
@@ -508,11 +529,14 @@ Because the validation is a distance-per-tick check, the spike should deliberate
 **boundary**: find the largest per-tick magnitude that is still accepted, and confirm the design's
 budget sits inside it with margin.
 
-**If this fails**: Phase 4 does not happen. Steel yourself for that outcome before starting, because
-it is a real possibility and the honest response is to stop rather than to escalate to more invasive
-techniques.
+**If this fails**: **the dodge does not exist, and with it the point of the project.** The escape
+floor of Deliverable 3.4 is the only behaviour left, and the merge decision above already recorded
+that escape-only is of questionable value on its own — so the default is to stop and document, and
+shipping the floor by itself would be a deliberate operator choice rather than a fallback this plan
+assumes. Steel yourself for that outcome before starting, because it is a real possibility and the
+honest response is to stop rather than to escalate to more invasive techniques.
 
-### Spike 4.2 — the solver, offline
+### Spike 3.2 — the solver, offline
 
 The decision is a pure function of a plain-data snapshot ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md)
 §2). That property exists **so that the solver can be tested without the game.** Build the snapshot
@@ -524,26 +548,99 @@ from a recorded trace in Phase 2's log format, and run the solver against it in 
 
 This is where the dodge's quality is actually determined, and it is the cheapest place to iterate.
 
-### Deliverable 4.3 — the live dodge
+### Deliverable 3.3 — the live dodge
 
-- Wire the solver's chosen heading to the actuation mechanism Spike 4.1 proved.
+- Wire the solver's chosen heading to the actuation mechanism Spike 3.1 proved.
 - Ship it **behind its own switch**, defaulting to a mode that logs decisions without acting.
-- Keep the Phase 3 escape running underneath as the safety floor, exactly as the reference engine
-  keeps an immediate reflex under its planner: if the solver is degraded, stale or has not decided,
-  the escape still works.
+- Keep the escape floor of Deliverable 3.4 running underneath, exactly as the reference engine keeps
+  an immediate reflex under its planner: if the solver is degraded, stale, immobile or has not
+  decided, the floor still works.
+
+### Deliverable 3.4 — the escape floor, and the precedence rule
+
+The decision is [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §7, and it is **not** a second controller:
+it is gate 6 of the same decision, evaluated in the same frame pass, after the move set has been
+tested.
+
+- project, across every live threat, the damage that **cannot be dodged**: the maximum total projected
+  damage across all bullets whose predicted paths intersect every admissible candidate's swept path
+  ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §7.2);
+- compute the exact damage by **calling `Entity.GetDamageTaken`** on the live player, never by
+  recomputing it (§6);
+- if that projected damage is lethal **and no admissible move avoids it**, call
+  **`World.RequestEscape()`** — the client's own nexus entry point, which runs the client's own gates
+  and is indistinguishable from the player pressing the key;
+- gates and asymmetry exactly as specified: `dryRun` default on, safe-area skip, per-world budget,
+  re-arm, and the two error costs weighed deliberately (§7.3).
+
+**The escape is the last gate, not the first.** That is the whole substance of the merge: the floor
+fires only when the solver can show that moving cannot help, so a dodge that has legs is never
+pre-empted by an escape that merely had a lower threshold.
+
+**Precedence is part of the deliverable, not a later fix**, because the conflict is already located
+in the client's own code — `World.RequestEscape()`'s channelled branch cancels on movement
+(`World.cs:13043-13047`), so a dodge that steers cancels an in-progress nexus cast in the same frame
+([RISKS.md](RISKS.md) §3d). The rule, written before the dodge is enabled live rather than after:
+
+1. the escape is **authoritative** — once the hook has decided to escape, the dodge emits nothing for
+   the duration of the cast;
+2. the dodge's state machine observes the client's cast flag and yields, rather than racing it;
+3. the hook knows which mode it is in from the same `Player.Totems` check the client uses — and while
+   the instant path is the normal one, the *rule* must not assume that, because the failure mode when
+   it is wrong is a cancelled, run-saving escape.
+
+The hazard is scoped to challenge runs (the `Impermanence` totem), which is exactly why a test suite
+that never equips the totem passes while the bug sits untouched.
+
+### Configuration surface
+
+The existing `AutoNexus` config block, the dashboard panel and the `-Ddrelay.nexus.*` properties are
+the established interfaces (`docs/AUTONEXUS.md` §4.2). The hook's settings should present **through
+the same surfaces**, so an operator has one place to look. New keys are needed for the dodge (horizon,
+aggression, candidate budget), for the escape floor (minimum warning), and for the precedence rule;
+they must be reported-back-or-rejected exactly as the existing settings are, because "a typo would
+otherwise look like a setting that simply had no effect" (`docs/AUTONEXUS.md` §7).
+
+### Verification
+
+- **Offline first.** The decision is a pure function of a plain-data snapshot, so the solver is tuned
+  in Spike 3.2's harness and the invariants T5, T6 and T10 are asserted there — never in a live run.
+- **Offline replay is not possible for the acting decision** (it needs live game state), so the live
+  verification is the Phase 2 log plus a **deliberate paired trial**. The existing relay already
+  timestamps both the injected escape and the `ProjHit` claim; what is missing is a deliberate trial
+  that pairs them (`TIMING.md` §8 item 4). Run it: for a session, have the hook decide in dry run and
+  log the exact moment it *would* have moved and the exact moment it *would* have escaped, then
+  compare against the `HealthUpdate` trace and the death, if any.
+- **Success criterion**: for every death in the trial, either the hook had no warning (a claim-free
+  fall — expected for ~74 % of falls) or it had warning and its dry-run decision would have survived
+  the horizon. **The two buckets must account for every death**, and that accounting is the honest
+  measure of the feature. This is also where Phase 2's over-counted false-negative number is closed
+  out.
+- **The two-controller test** ([VERIFICATION.md](VERIFICATION.md) §5.1) forces the escape and the
+  dodge to want to act in the same frame — with and without the `Impermanence` totem — and asserts the
+  precedence above.
+- **The movement boundary search** ([VERIFICATION.md](VERIFICATION.md) §5.2) turns "the server
+  validates movement" into a measured per-tick threshold, and asserts the design's budget sits inside
+  it at every `Slowed` tier.
 
 ### Exit criteria
 
-- Over a sustained live session: the dodge is *observably* dodging (the decision log shows moves that
-  avoid predicted collisions), the frame budget is respected at p99, and the death rate in the
-  claim-bearing cases (Phase 2's ~26 %) is measurably lower than the baseline recorded in Phase 3's
-  trial.
-- **A deliberate baseline run** with the dodge off, so the comparison is between two measured
-  sessions rather than between a session and an impression.
+- After Spike 3.1, the movement question has an answer with evidence — one way or the other — and the
+  budget is measured against the server's own boundary rather than derived and assumed.
+- Over a sustained live session with the dodge acting: the dodge is *observably* dodging (the decision
+  log shows moves that avoid predicted collisions), the frame budget is respected at p99, and the
+  death rate in the claim-bearing cases (Phase 2's ~26 %) is measurably lower than a **deliberate
+  baseline run** recorded with acting disabled — so the comparison is between two measured sessions
+  rather than between a session and an impression.
+- The escape fires only when the solver can show that no admissible move avoids lethal projected
+  damage, the relay's `EscapeAck` join confirms it was accepted (`docs/AUTONEXUS.md` §5), and no
+  escape is ever dispatched against stale HP.
+- The two-controller precedence holds in the live session: no cast is cancelled by the hook, and no
+  `GmKicked` arrives with a movement reason.
 
 ---
 
-## Phase 5 — The bridge
+## Phase 4 — The bridge
 
 **Goal.** Join the hook's decisions to the relay's wire observations.
 
@@ -552,8 +649,8 @@ optional if it is done at all:
 
 1. **The escape-latency join.** The hook's `escape` event and the relay's `EscapeAck` are the two
    halves of one story; joining them on `World.ClientTime` measures the end-to-end escape path, which
-   neither side can produce alone. That measurement is what makes the Phase 3 thresholds tunable
-   rather than guessed.
+   neither side can produce alone. That measurement is what makes the Phase 3 escape floor's timing —
+   and the precedence rule that goes with it — tunable rather than guessed.
 2. **The dashboard.** The existing panels are how an operator reasons about a live session
    (`docs/AUTONEXUS.md` §7). The hook's state — armed, degraded, last warning, prediction accuracy
    from Phase 2 — belongs in the same place.
@@ -576,7 +673,7 @@ optional if it is done at all:
   attached and reading live state, kill the relay: the game's exit, the hook's `frame reads` and
   `frames.csv`'s `elapsed_us` distribution must all be unchanged from a paired run without the kill,
   and the hook must never wait on the bridge. *A missing relay is already the status quo — every run
-  before Phase 5 is a no-relay run — so the absence case is the control, not the test.*
+  before Phase 4 is a no-relay run — so the absence case is the control, not the test.*
 - Hook death produces a "stalled" report within 250 ms and no crash and no spin.
 - Hook restart with a bumped epoch resyncs cleanly.
 - The escape-latency join produces a number for a live escape.
@@ -600,14 +697,14 @@ how to run it.
 | T2 | IL-hash table regenerates identically for the same build | 0 | nondeterminism in the identity |
 | T3 | a re-rented `Projectile` never inherits state | 2 | the pooling hazard — presents as "reacting to bullets that do not exist" |
 | T4 | retirement needs **two** consecutive verified absences, and a failed read is not an absence | 2 | ghost bullets, and the opposite: retiring live bullets |
-| T5 | `stand` is never rejected while durably safe | 4 | the dodge moving for no reason |
-| T6 | no emitted move is inside a bullet's disc at its arrival time | 4 | the core safety invariant |
+| T5 | `stand` is never rejected while durably safe | 3 | the dodge moving for no reason |
+| T6 | no emitted move is inside a bullet's disc at its arrival time | 3 | the core safety invariant |
 | T7 | predicted-vs-actual collision agreement, over a real log | 2 | the model being wrong |
-| T8 | hook cost p99 within budget for a long session | 1, 4 | the watchdog and the crash risk |
-| T9 | with the dodge disabled the hook changes nothing observable | 3, 4 | the tool harming the game |
-| T10 | hysteresis cannot lock a heading that has become unsafe | 4 | the specific way anti-jitter turns into a death |
+| T8 | hook cost p99 within budget for a long session | 1, 3 | the watchdog and the crash risk |
+| T9 | with the dodge disabled the hook changes nothing observable | 3 | the tool harming the game |
+| T10 | hysteresis cannot lock a heading that has become unsafe | 3 | the specific way anti-jitter turns into a death |
 | T11 | escape is never dispatched on stale HP | 3 | the measured 151 ms-after-death bug class |
-| T12 | the escape-latency join produces a number | 5 | the bridge being decorative |
+| T12 | the escape-latency join produces a number | 4 | the bridge being decorative |
 
 **T7 is the one to build first**, because it is the only test that can tell us whether the trajectory
 model is right, and it needs no live play — Phase 2's collision log is enough.
@@ -620,7 +717,7 @@ Stated here rather than buried, because each has a specific early warning sign:
 
 | if this is true | then | the early sign |
 |---|---|---|
-| movement cannot be actuated legitimately (RISKS §2a) | Phase 4 is cancelled; Phases 0–3 stand alone | Spike 4.1 fails, or the proxy-side move test gets kicked |
+| movement cannot be actuated legitimately (RISKS §2a) | Phase 3 stops, and the escape floor is **not** shipped on its own — the project rests on Phase 2's measurement | Spike 3.1 fails, or the proxy-side move test gets kicked |
 | terrain walkability cannot be called from the hook | the dodge loses its wall awareness; it will sometimes aim through walls | the offset resolution pass cannot find the accessor; the hook logs a capability loss at startup |
 | the trajectory model disagrees with reality beyond tolerance | the dodge is unsafe, and only Phase 2's T7 can see it | false negatives and false positives in the collision comparison |
 | the game's frame period is far tighter than assumed (144 fps+) | the solver budget shrinks; degrade to the outer ring sooner | Phase 1 Spike 1.3's frame timings |
@@ -660,15 +757,26 @@ Stated here rather than buried, because each has a specific early warning sign:
       ([PHASE2-SCOPE.md](PHASE2-SCOPE.md) §6.1).)*
 - [ ] **M4** — threat set maintained correctly, including pool reuse and two-strike retirement
 - [ ] **M5** — trajectory sampling working; the linearity-gate log quantifying curved-shot frequency
-- [ ] **M6** — **prediction-vs-reality measurement published**: warning distribution, false positives, false negatives, per-frame cost
-- [ ] **M7** — predictive nexus in dry run, with a paired trial accounting for every death
-- [ ] **M8** — predictive nexus live, ack-confirmed
-- [ ] **M9** — movement question answered, one way or the other, with evidence
-- [ ] **M10** — solver tuned offline; invariants T5, T6, T10 asserted
-- [ ] **M11** — dodge live behind a switch, with the escape as its safety floor
-- [ ] **M12** — bridge connected; escape-latency join producing numbers; dashboard panel live
+- [x] **M6** — **prediction-vs-reality measurement published**: warning distribution, false positives, false negatives, per-frame cost
+      *(closed by operator decision on 2026-10-13 with two recorded waivers rather than with every
+      number clean: the per-frame cost is deferred to the solver that has to share the frame, and the
+      false-negative count came from a session that asked the collision predicate on every entry
+      instead of every `true`, so it is an over-count. Both are in
+      [PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.15 and restated against the criteria in its §7; the
+      corrected counter rides on Phase 3's dry-run trial.)*
+- [ ] **M7** — movement question answered, one way or the other, with evidence
+      *(**in progress**: the mechanism is built and the build is green — a fifth pinned target,
+      a managed replacement on the movement integrator, an opt-in bounded steering switch, and
+      `tools/steering_report.py` with a fixture that asserts the good, unpatched, kicked and empty
+      cases. What is missing is the live run. [PHASE3-SCOPE.md](PHASE3-SCOPE.md) §5 is the
+      protocol.)*
+- [ ] **M8** — solver tuned offline; invariants T5, T6, T10 asserted
+- [ ] **M9** — dodge in dry run, with the escape floor wired and the paired trial accounting for every death
+- [ ] **M10** — dodge acting live behind a switch, escape fired only when no admissible move exists, ack-confirmed
+- [ ] **M11** — bridge connected; escape-latency join producing numbers; dashboard panel live
 
-**M6 is the decision point.** Everything before it is de-risking; everything after it is building.
-If M6's numbers are bad, the honest move is to stop at M8 and document why — which is a better
+**M6 is the decision point, and it has now been taken: the project proceeds to Phase 3.** Had the
+numbers been bad, the honest move would have been to stop here and publish the measurement — a better
 outcome than a dodge that cannot be trusted, and a much better outcome than one that is trusted and
-wrong.
+wrong. What the merge changed is the cost of that stop: there is no longer a console deliverable at
+this point, so a stop at M6 means a stop.

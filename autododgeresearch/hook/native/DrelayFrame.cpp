@@ -194,8 +194,26 @@ bool ReadFrameReplacementEnabled() {
     return enabled;
 }
 
-void ResolveFrameHelperInputs() {
-    g_frameHelperResolved = true;
+// Phase 3 spike 3.1's actuator switch.  `DRELAY_HOOK_MOVE_REPLACEMENT` is set by the
+// launcher's `--move-steer`, i.e. it lives in the namespace an inherited shell variable
+// cannot reach -- which matters more here than anywhere else in this file, because this
+// is the one switch that moves the player.  The *value* (`DRELAY_MOVE_STEER`) is read by
+// the managed side, which is where the behaviour lives; this flag's only job is to
+// decide whether MinHook's `jmp` lands in managed code at all.
+bool ReadMovementReplacementEnabled() {
+    static int resolved = -1;
+    static bool enabled = false;
+    if (resolved >= 0) {
+        return enabled;
+    }
+    resolved = 1;
+    char value[8] = {};
+    enabled = GetEnvironmentVariableA("DRELAY_HOOK_MOVE_REPLACEMENT", value, sizeof(value)) != 0 &&
+              value[0] == '1';
+    return enabled;
+}
+
+void ResolveFrameHelperInputs() {    g_frameHelperResolved = true;
     if (g_shared == nullptr) {
         return;
     }
@@ -686,6 +704,21 @@ static uint32_t PatchTargetsPass(bool initialPass) {
                 detour = reinterpret_cast<void*>(static_cast<uintptr_t>(replacement));
                 managedReplacement = true;
                 trampolineSlot = &g_shared->managedCollisionTrampoline;
+            }
+        } else if (strcmp(t->name, "movementIntegrator") == 0) {
+            // PHASE 3'S ACTUATOR, AND IT IS OPT-IN FOR A REASON THAT IS NOT COST.  This
+            // target is in the table for every run, so it is found and its IL hash is
+            // verified like the others; it is only *patched* when the operator asks,
+            // because a replacement here moves the player.  `DRELAY_MOVE_STEER` carries
+            // the request and the heading; see `SteeringPilot` on the managed side for
+            // what the modes mean.  With the variable unset the replacement is published
+            // anyway and does nothing but call through, so the plumbing is exercised
+            // without the game being touched.
+            const uint64_t replacement = (g_shared != nullptr) ? g_shared->managedMovementReplacement : 0;
+            if (ReadMovementReplacementEnabled() && replacement != 0) {
+                detour = reinterpret_cast<void*>(static_cast<uintptr_t>(replacement));
+                managedReplacement = true;
+                trampolineSlot = &g_shared->managedMovementTrampoline;
             }
         }
         if (detour == nullptr) {

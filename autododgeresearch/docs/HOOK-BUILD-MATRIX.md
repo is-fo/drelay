@@ -46,9 +46,9 @@ expected/actual pair), and **2** when it cannot run at all. Two of the values ab
 not script-checked — the MVID and the GUID slot — because both are properties of the *running*
 process rather than of a file on disk.
 
-## The four targets
+## The five targets
 
-Quoted from the `targetMethods` block. `ilHashVersion` is `1` for all four.
+Quoted from the `targetMethods` block. `ilHashVersion` is `1` for all five.
 
 | role | declaring type | method | arity | metadata token | RVA | IL size | IL hash | citation |
 |---|---|---|---|---|---|---|---|---|
@@ -56,9 +56,42 @@ Quoted from the `targetMethods` block. `ilHashVersion` is `1` for all four.
 | spawn | `DarzasDominion.Darza.Game.Objects.Projectile` | `ProcessProjectileData` | 16 | `0x06005214` | `0x3E4D9C` | 2014 | `8A7928BDA06EDE4F76FFE66E4C80978864E37654603D1CE3ADC83D79719DA55A` | `Objects/Projectile.cs:810` |
 | collision | `DarzasDominion.Darza.Game.Objects.Projectile` | `HitCharacter` | 0 | `0x0600521F` | `0x3E64FC` | 989 | `D6F353B8CF67A24344899064EBC13D292095508E6C1C13F36A65081F0ED108B2` | `Objects/Projectile.cs:1514` |
 | escape | `DarzasDominion.Darza.Game.World` | `RequestEscape` | 0 | `0x06002964` | `0x162E4C` | 335 | `6E3B9F4CD77B5E8AE6B060B85233B20B00E88F054DFFC4AB380C04458C030A2D` | `Game/World.cs:12984` |
+| movement integrator | `DarzasDominion.Darza.Game.World` | `hehe\ueb2c\ue5a5\uee82\ue9c5\uef68` | 2 | `0x06002961` | `0x1621B8` | 2574 | `1E41504101BED2A28539A69A46C2384E4FB24956F04EBDD199A1ED4C72737028` | `Game/World.cs:12666` |
 
 The line in the IL dump that each target was found at is recorded as `ilDumpLine`: 500932 (frame
-tick), 1978316 (spawn), 1981122 (collision), 780182 (escape).
+tick), 1978316 (spawn), 1981122 (collision), 780182 (escape), 778772 (movement integrator).
+
+### The movement target's name, and why it is written that way
+
+**The name in that row is not the name the decompiler prints, and the two cannot be searched for each
+other.** ilspycmd renders this method as `World.hehe_EB2C_E5A5_EE82_E9C5_EF68(float, float)`. The
+metadata string heap holds a *different* string of nine private-use code points (`U+EB2C`, `U+E5A5`,
+`U+EE82`, `U+E9C5`, `U+EF68` and the `hehe` prefix). A whole-file search of the 89 MB IL dump for
+`EB2C_E5A5_EE82_E9C5_EF68` returns **zero hits** — so the natural move reports "this method is not in
+this build" and is wrong.
+
+Three consequences, all of them in the tooling:
+
+- [`tools/il_targets.py`](../tools/il_targets.py) lists candidates on a type **without** relying on
+  the name: declaring type, parameter count, return and parameter types from the signature blob, IL
+  size, and the IL dump's RVA line. It never writes the record — `il_index.py` stays the one
+  authority — so target selection gained a tool without gaining a second source of truth.
+- every build log prints obfuscated names escaped (`il_index.ascii_name`), because printing the raw
+  string killed the tool with `UnicodeEncodeError: 'charmap' codec can't encode characters in
+  position 58-62`. The console code page has no glyphs for private-use code points; nothing was wrong
+  with the resolution.
+- `il_index.py --check` now compares **`known-build.json` against the generated table** and exits
+  non-zero on a mismatch. `apply_to_record` used to name the four Phase 0 keys literally, so adding
+  this target printed "5 targets" and wrote four — and the build script reads that record to build
+  the hook's compiled table. A silent truncation with every line of output correct.
+
+The row's `arity` is `2` and the signature is confirmed as `void (float, float)` from the metadata
+itself, which is what distinguishes it from the three other arity-2 methods on `World` that also take
+two `float`s; the IL dump's own body confirms the rest (code size 2574 = `0xa0e`, and locals
+`Character`, `bool`, `float32`, `Angle`, `Vector3` matching `World.cs:12666`).
+
+The five hashes are **distinct**, and `il_index.py` refuses a table in which two targets share one —
+identical hashes would mean the matching is broken.
 
 **The IL hash is the identity. The metadata token, the RVA and the dump line are diagnostics.** Three
 reasons, all of them recorded in HOOK-ARCHITECTURE §4.3 and in `il_index.py`:
@@ -74,15 +107,16 @@ reasons, all of them recorded in HOOK-ARCHITECTURE §4.3 and in `il_index.py`:
   method's IL changes, the hash stops matching and the hook refuses to install instead of patching
   the wrong function.
 
-Two further properties of the table are load-bearing. The four hashes are **distinct**, and
+Two further properties of the table are load-bearing. The five hashes are **distinct**, and
 `il_index.py` refuses a table in which two targets share one — identical hashes would mean the
 matching is broken. And the record's `role` and `citation` fields, together with the `signatureHint`
 and one-line `why` carried in `il_index.py`'s `TARGETS` list, are the human anchors of *intent*: the
 frame tick is "once per frame, after `Client.DrainColdQueue`, before `UpdateScene`"; spawn is "the
 complete threat event, delivered as arguments (no field reads)"; collision is "the local collision
 decision — the instant the server is about to be told"; escape is "the client's own nexus entry
-point — runs the client's own gates". That is what a reviewer checks after a patch (see below), not
-the hashes.
+point — runs the client's own gates"; and the movement integrator is "the input→position step: it
+reads `GameScene.GameInput` and commits `Player.Position`, so a replacement on it can both steer and
+measure". That is what a reviewer checks after a patch (see below), not the hashes.
 
 ## The hash recipe
 

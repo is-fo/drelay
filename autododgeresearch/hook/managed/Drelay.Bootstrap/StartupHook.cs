@@ -1088,6 +1088,33 @@ namespace Drelay.Bootstrap
                 }
             }
 
+            // PHASE 3'S ACTUATOR, AND IT IS PUBLISHED ON EVERY RUN RATHER THAN ONLY WHEN
+            // STEERING WAS ASKED FOR.  The address costs one JIT of a method that most runs
+            // never enter, and in exchange the shared slot, the native dispatch by target
+            // name and the trampoline handshake are exercised by every run -- instead of
+            // first being exercised by the run whose mistake would move the player.  Whether
+            // the `jmp` is aimed here at all is the launcher's decision, not this one.
+            try
+            {
+                SteeringPilot.ResolveRotation(game);
+                if (!SteeringPilot.Resolve(game))
+                {
+                    AppendLog("ERROR", "the steering pilot is NOT available: "
+                                       + SteeringPilot.UnresolvedReason
+                                       + " -- nothing else is affected, but no steering "
+                                       + "experiment can run");
+                }
+                SteeringPilot.Publish();
+                SteeringPilot.LogPlan();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("ERROR", "publishing the movement replacement threw; the movement "
+                                   + "target will not be patched and the game is unaffected: " + ex);
+                FlushLog();
+                Marshal.WriteInt64(_viewPointer, GeneratedLayout.Off_managedMovementReplacement, 0L);
+            }
+
             // Phase 2's bookkeeping rules, exercised where they run.  Last of all,
             // because nothing that follows depends on it -- and not optional, because a
             // rule that is only checked by hand is a rule that is only checked once.

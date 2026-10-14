@@ -120,9 +120,9 @@ namespace Drelay.Bootstrap
 
     /// <summary>
     /// The shared block, field for field as the native header declares it.
-    /// 440912 bytes including the reserved tail.
+    /// 440928 bytes including the reserved tail.
     /// </summary>
-    [StructLayout(LayoutKind.Explicit, Size = 440912, CharSet = CharSet.Ansi)]
+    [StructLayout(LayoutKind.Explicit, Size = 440928, CharSet = CharSet.Ansi)]
     public struct DrelayShared
     {
         [FieldOffset(0)] public uint magic;
@@ -2543,15 +2543,17 @@ namespace Drelay.Bootstrap
         [FieldOffset(178784)] public ulong managedFrameTrampoline;
         [FieldOffset(178792)] public ulong managedCollisionReplacement;
         [FieldOffset(178800)] public ulong managedCollisionTrampoline;
-        [FieldOffset(178808)] public unsafe fixed byte reserved[262104];
+        [FieldOffset(178808)] public ulong managedMovementReplacement;
+        [FieldOffset(178816)] public ulong managedMovementTrampoline;
+        [FieldOffset(178824)] public unsafe fixed byte reserved[262104];
         public const int reserved_Count = 262104;
     }
 
     /// <summary>Byte offsets and sizes, as computed from the native header.</summary>
     public static class GeneratedLayout
     {
-        public const uint SharedVersion = 5u;
-        public const int DrelaySharedSize = 440912;
+        public const uint SharedVersion = 6u;
+        public const int DrelaySharedSize = 440928;
         public const int DRELAY_ARM_ARMED = 1;
         public const int DRELAY_ARM_REFUSED = 2;
         public const int DRELAY_ARM_UNCONFIGURED = 3;
@@ -2720,6 +2722,8 @@ namespace Drelay.Bootstrap
         public const int Off_managedFrameTrampoline = 178784;
         public const int Off_managedCollisionReplacement = 178792;
         public const int Off_managedCollisionTrampoline = 178800;
-        public const int Off_reserved = 178808;
+        public const int Off_managedMovementReplacement = 178808;
+        public const int Off_managedMovementTrampoline = 178816;
+        public const int Off_reserved = 178824;
     }
 }

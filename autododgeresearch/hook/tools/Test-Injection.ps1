@@ -916,8 +916,22 @@ $sc7 = Read-RunFile $run7Dir 'selfcheck.txt'
 
 Check 'the bootstrap published the test target' (
     $boot7 -match 'TEST TARGET appended') 'expected "TEST TARGET appended" in bootstrap.log'
-Check 'the hook read a five-entry target table' (
-    $log7 -match 'target table: 5 entries from the bootstrap') 'expected the native side to load 5 targets'
+# THE COUNT IS DERIVED, NOT WRITTEN DOWN.  This said "five-entry" until Phase 3 added a
+# fifth pinned target and made it six -- which is the same class of staleness the target
+# table itself exists to prevent.  It is computed from the record plus the one test target
+# this run appends, so the assertion tracks the record rather than a number someone has to
+# remember to change.
+$pinnedTargets = 0
+$recordPath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'known-build.json'
+if (Test-Path -LiteralPath $recordPath) {
+    $record = Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json
+    $pinnedTargets = @($record.targetMethods.PSObject.Properties |
+        Where-Object { $_.Name -notlike '_*' }).Count
+}
+$expectedTable = $pinnedTargets + 1
+Check "the hook read the pinned table plus the test target ($expectedTable entries)" (
+    $log7 -match ("target table: {0} entr" -f $expectedTable)) `
+    "expected the native side to load $expectedTable targets ($pinnedTargets pinned + 1 test)"
 Check 'the target was found by IL hash in the compilation stream' (
     $log7 -match "target 'frameTick' found") 'expected "target ''frameTick'' found"'
 Check 'the target was patched' (

@@ -52,6 +52,96 @@ namespace Drelay.Bootstrap
             return (Func<object, int>)method.CreateDelegate(typeof(Func<object, int>));
         }
 
+        /// <summary>`double Get(object)` for a `double` field, with no boxing.</summary>
+        public static Func<object, double> Double(FieldInfo field)
+        {
+            DynamicMethod method = NewMethod(typeof(double), field.Name, typeof(object));
+            ILGenerator il = method.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Castclass, field.DeclaringType);
+            il.Emit(OpCodes.Ldfld, field);
+            il.Emit(OpCodes.Ret);
+            return (Func<object, double>)method.CreateDelegate(typeof(Func<object, double>));
+        }
+
+        /// <summary>
+        /// `bool Get(object)` for a `bool` field, with no boxing.
+        ///
+        /// THE `float` ONE ABOVE WAS NOT ENOUGH, AND ITS ABSENCE WAS FOUND THE EXPENSIVE
+        /// WAY. `World.PlayerDead` and `Character.SpiritMode` are `bool`, and a caller
+        /// that had only the numeric accessors reached for `FieldInfo.GetValue` instead --
+        /// which boxes on every read, on the frame path, for the exact reason this file
+        /// exists. The frame guard reads two of them per frame.
+        /// </summary>
+        public static Func<object, bool> Bool(FieldInfo field)
+        {
+            DynamicMethod method = NewMethod(typeof(bool), field.Name, typeof(object));
+            ILGenerator il = method.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Castclass, field.DeclaringType);
+            il.Emit(OpCodes.Ldfld, field);
+            il.Emit(OpCodes.Ret);
+            return (Func<object, bool>)method.CreateDelegate(typeof(Func<object, bool>));
+        }
+
+        /// <summary>
+        /// `float Get()` for a `static float` field -- `World.WorldRotation`, which is
+        /// `public static` (`World.cs:4212`) and is the camera's own rotation.
+        ///
+        /// Deliberately takes no argument, unlike every other accessor here: the field is
+        /// static, so the caller has no object to pass and inventing a dummy parameter
+        /// would let a caller pass the wrong one and still compile. The call sites wrap it
+        /// with the object-shaped lambda they need, which makes the static-ness visible at
+        /// the call site rather than hidden in a signature.
+        /// </summary>
+        public static Func<float> StaticFloat(FieldInfo field)
+        {
+            DynamicMethod method = NewMethod(typeof(float), field.Name);
+            ILGenerator il = method.GetILGenerator();
+            il.Emit(OpCodes.Ldsfld, field);
+            il.Emit(OpCodes.Ret);
+            return (Func<float>)method.CreateDelegate(typeof(Func<float>));
+        }
+
+        /// <summary>`void Set(object, bool)` for a `bool` field, with no boxing.</summary>
+        public static Action<object, bool> BoolSetter(FieldInfo field)
+        {
+            DynamicMethod method = NewSetter(typeof(bool), field.Name, typeof(object));
+            ILGenerator il = method.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Castclass, field.DeclaringType);
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Stfld, field);
+            il.Emit(OpCodes.Ret);
+            return (Action<object, bool>)method.CreateDelegate(typeof(Action<object, bool>));
+        }
+
+        /// <summary>
+        /// `void Set(object, float)` for a `float` field, with no boxing.
+        ///
+        /// THE WRITE PATH IS WHERE THE PILOT LIVES. Phase 3's actuator is three of these
+        /// per frame (the movement integrator's input), and `FieldInfo.SetValue` would box
+        /// a `float` and build an `object[]` for each; on the game's own frame thread that
+        /// is an allocation per frame per field, which is the cost PHASE2-SCOPE.md
+        /// section 4.6 measured the hard way.
+        ///
+        /// This setter is also what makes the actuator possible for a *value type* field:
+        /// `MoveAngle` is an inline `Angle` struct, and the receiver here is the boxed
+        /// `Angle` itself, so `castclass` unboxes in place and `stfld` writes straight into
+        /// it. No copy, no constructor call, no `GamePoint`.
+        /// </summary>
+        public static Action<object, float> FloatSetter(FieldInfo field)
+        {
+            DynamicMethod method = NewSetter(typeof(float), field.Name, typeof(object));
+            ILGenerator il = method.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Castclass, field.DeclaringType);
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Stfld, field);
+            il.Emit(OpCodes.Ret);
+            return (Action<object, float>)method.CreateDelegate(typeof(Action<object, float>));
+        }
+
         /// <summary>`object Get(object)` for a reference field.</summary>
         public static Func<object, object> Reference(FieldInfo field)
         {
@@ -101,6 +191,19 @@ namespace Drelay.Bootstrap
             // getter emitted without it would throw at invoke time rather than at build.
             return new DynamicMethod("DrelayField_" + what,
                                      returnType, parameters,
+                                     typeof(FieldAccessor).Module,
+                                     skipVisibility: true);
+        }
+
+        /// <summary>
+        /// The setter counterpart. `void`-returning and with a `void` first parameter slot,
+        /// so the two helpers cannot be confused by a caller that reached for the wrong
+        /// one: a getter has no second parameter and this one has no return.
+        /// </summary>
+        private static DynamicMethod NewSetter(Type valueType, string what, Type ownerType)
+        {
+            return new DynamicMethod("DrelaySet_" + what,
+                                     typeof(void), new[] { ownerType, valueType },
                                      typeof(FieldAccessor).Module,
                                      skipVisibility: true);
         }
