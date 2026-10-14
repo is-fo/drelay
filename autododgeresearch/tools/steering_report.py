@@ -233,9 +233,21 @@ def parse_run(run_dir):
     # The status lines, from whichever file carries them. hook.log first; the bootstrap log
     # is scanned only if hook.log did not answer, so a run whose native log is truncated
     # still resolves.
+    #
+    # THE PUBLISH LINE IS READ HERE AS WELL AS BY hook.log's OWN LOOP, and the duplication is
+    # the fix for a bug that hid behind a green fixture. `managed movement replacement
+    # published at ...` is written by `SteeringPilot.Publish`, which runs on the resolve
+    # callback and therefore logs through `HookEntry` with the `[INFO] boot:` prefix -- so it
+    # lands in BOOTSTRAP.log, and a reader that looked for it only in hook.log reported
+    # `published None` for every real run while its fixture, which put the line in hook.log,
+    # passed. Guarded with `is None` so a native-side occurrence still wins.
     for text in (read_text(hook) if os.path.isfile(hook) else "",
                  read_text(boot) if os.path.isfile(boot) else ""):
         for line in text.splitlines():
+            if out["published"] is None:
+                m = RE_PUBLISHED.search(line)
+                if m:
+                    out["published"] = m.group("addr")
             if out["armed"] is None and "steering pilot is" in line:
                 out["armed_line"] = line.strip()
                 if "NOT available" in line:
