@@ -420,17 +420,75 @@ recorded here as *not attributable to this phase*, which is as far as the eviden
 
 ---
 
+## 5.2 The budget, measured from the client's own telemetry — **done, offline**
+
+Phase 3's second exit criterion is that the budget is *measured rather than derived and assumed*.
+It is now measured, from data that was already on disk, and the tool is
+[`tools/move_budget.py`](../tools/move_budget.py) with a fixture
+([`tools/tests/test_move_budget.py`](../tools/tests/test_move_budget.py), 13 checks).
+
+**The idea, in one sentence.** `GmMove` (id 74 / `0x4A`) carries the position and the client's own
+clock, the relay has logged thousands of them from real play, and **every one of them is a packet the
+server accepted** — so the population of consecutive-packet displacements is the client's own
+distribution of *legal* movement, and its p99 is a legal step by the server's own admission.
+
+**Three captures, 7 611 packets, 7 531 walking steps.** The clock check is the thing that makes the
+numbers trustworthy, and it is a check rather than a hope: the client's `Time` field and the relay's
+wall clock advance at **ratio 1.0000 on a typical pair, over ~7 500 pairs**, which is two independent
+clocks agreeing for ten minutes. A mis-decoded varint cannot hide in that, and the fixture proves the
+tool refuses to report a speed when one is fed to it.
+
+| measurement | value |
+|---|---|
+| tick between Move packets (median) | **200 ms** |
+| walking step, typical while moving | **1.44 world units per tick** |
+| walking step, p99 | **1.96 world units per tick** |
+| walking step, p99.9 | 2.18–3.13 (session-dependent) |
+| teleports excluded (≥ 20 units) | 24 of 7 555 steps |
+
+**And it agrees with the resolved speed law, which is a check on both.** The law is
+`3.5 + 5.0·(SPD+10)/75` tiles/s — 3.5 at SPD 0, 8.5 at the cap ([CLIENT-FINDINGS.md](CLIENT-FINDINGS.md)
+§2.9). Over a 200 ms tick that is **0.70 to 1.70 units per tick if a world unit is a tile**, and the
+measured mode is 1.44 with a p99 of 1.96. The population sits exactly where the law says it should:
+inside the cap at p99, with the p95 *speeds* overshooting it explained by the `Speedy` tier multiplier
+the law applies and by pairs whose tick ran short. **Two independent routes to the same number.**
+
+**What that means for the dodge, concretely.** `DODGE-ALGORITHM.md` §5.2's budget
+`b = playerSpeed · frameSeconds` is a call to the client's own law (§6's rule), which returns client
+units; the measured legal step is in the same units; so the candidate radii `{0.35, 0.7, 1.0}·b` are
+bounded by a number the server has already accepted thousands of times. **The dodge does not need to
+know where the server's cliff is** — only where the legal ground is, and this is that.
+
+**Two honest limits, both recorded rather than smoothed over.**
+
+1. **This is a lower bound on the server's tolerance, not the cliff.** Finding the cliff needs
+   deliberate overspend, which §3 defers and gives the reasons for.
+2. **The tile scale is still not proven.** The agreement above holds *if* a world unit is a tile; it
+   is consistent with that and nothing more. It does not matter to the solver, because the budget, the
+   positions, the radii and the speed law are all in client units and the rule is to call the law
+   rather than trust a resolved constant.
+
+**One measurement this incidentally produced, and it is worth keeping:** the client's `Move` packets
+are **200 ms apart, not one per frame**, which contradicts `CLIENT-MAP.md` §6.4's "at most once per
+frame" in the direction of *fewer*. The client's emission is tied to the server's update cadence, so
+this is a second, independent reading of the server tick — and it is 200 ms, which is the same number
+`DODGE-ALGORITHM.md` §4.3 refuses to import from the reference engine's 5 Hz assumption. **The tick is
+5 Hz here too, and that is now measured rather than inherited.** It does not change the design (the
+budget is per frame, and the frame is what `--move-steer`'s displacement log measures), but it is
+recorded because it corrects a document.
+
+---
+
 ## 6. What comes next, in order
 
 1. **Spike 3.1's live run** (§5 runs 1–2). This is M7 and it gates everything below: if movement
    cannot be actuated, the dodge does not exist and the honest outcome is a stop
    ([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Phase 3 "If this fails").
-2. **The budget, from the client's own law.** `DODGE-ALGORITHM.md` §5.2's `b = playerSpeed ×
-   frameSeconds` needs `playerSpeed`, which is `PlayerFunctions.TilesPerSecond` **called** with the
-   live tiers. The spike's displacement log gives the realised per-frame distance directly, which is
-   the same number from the other end: **measure the law rather than resolve its constants**, because
-   a resolved constant that disagrees with the live tier is exactly the bug
-   [CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.3 warns about.
+2. ✅ **The budget, measured from the client's own accepted telemetry** (§5.2): `tools/move_budget.py`,
+   7 611 real `GmMove` packets, 3.5–8.5 tiles/s resolved law against 1.44 units per 200 ms measured
+   mode, and a clock check that validates the decode at ratio 1.0000 over ~7 500 pairs. **What is
+   left is the per-frame confirmation** — the live sweep's displacement log — which is the same
+   quantity read from the other end.
 3. ✅ **The escape floor's mechanism, built and waiting for its run** (§5 run 3, §9).
 4. **The cost work Phase 2 waived**, with the solver that shares the frame: cull before sampling
    ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §8), the sampler's `p99` back under its slice, and the
@@ -488,7 +546,7 @@ has built:
 | criterion | state | instrument |
 |---|---|---|
 | **after Spike 3.1, the movement question has an answer with evidence** | **built, not yet measured**: the actuator, the target, the switches, the logging and the block are in place and the build is green | `--move-steer sweep`, then `tools\steering_report.py` |
-| the budget is measured against the client's own law rather than derived and assumed | not started; §6 item 2 | the spike's per-frame displacement |
+| the budget is measured against the client's own law rather than derived and assumed | **measured offline (§5.2)**: 7 611 real `GmMove` packets give a 200 ms tick, a 1.44-unit typical walking step and a 1.96-unit p99, and they agree with the resolved `3.5 + 5.0·(SPD+10)/75` law at one world unit per tile. The per-frame confirmation rides on the live sweep | `tools/move_budget.py` (with `tools/tests/test_move_budget.py`) |
 | the dodge is *observably* dodging (decision log shows moves that avoid predicted collisions) | not started | the solver, Spike 3.2 |
 | the frame budget is respected at p99 | **carried from Phase 2's waiver**; the spike's cost is the floor | `frames.csv`, the cost histogram |
 | the death rate in the claim-bearing cases is measurably lower than a deliberate baseline run | not started; needs a paired trial | `TIMING.md` §8 item 4's requirement |
