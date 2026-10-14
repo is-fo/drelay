@@ -633,15 +633,95 @@ namespace Drelay.Bootstrap
         /// <summary>
         /// Write the steering input. This is the whole actuator: three field writes into
         /// the object the client's own integrator reads one line later.
+        ///
+        /// **NO MANAGED CALL HERE, AND THE HONEST REASON IS NOT THAT ONE WAS PROVEN
+        /// GUILTY.** The first version wrote `MoveAngle` with `FieldInfo.SetValue(input,
+        /// boxedAngle)`, which is the obvious way and the wrong one: for an inline value-type
+        /// field the runtime copies the boxed payload through its own type-token-driven
+        /// helper, and that helper is a managed-to-managed call reached from inside this
+        /// replacement's frame -- the frame MinHook's `jmp` created. That was *suspected* when
+        /// the first two live runs died inside `coreclr.dll` a second after the pilot began,
+        /// and the suspicion was **wrong**: the third run, with steering switched off and this
+        /// target never patched, produced the same fatal error, and the operator identified
+        /// the trigger -- closing the game by hand. See PHASE3-SCOPE.md section 5.1.
+        ///
+        /// What replaces it is the same emitted `stfld` the sensor and the collision hook have
+        /// used for thousands of frames: `FieldAccessor.FloatSetter` compiles
+        /// `castclass Angle; stfld Radians` once, at resolve, and every later call is one
+        /// `stfld` on an object already in hand. So the change is kept, on its merits rather
+        /// than on a diagnosis -- it removes a boxed argument, a type-token copy and the
+        /// reflection dispatcher from a frame path, and it makes this pilot's access pattern
+        /// the one that already has a hundred thousand frames of evidence behind it. The
+        /// reasoning is left visible because a "fix" whose premise was wrong is exactly the
+        /// kind of thing that gets re-litigated later.
         /// </summary>
         [MethodImpl(MethodImplOptions.NoInlining)]
         private static void WriteInput(object input, float angle)
         {
             _commandedRadians = angle;
             _setMoveAngleRadians(_boxedAngle, angle);
-            _inputMoveAngleField.SetValue(input, _boxedAngle);
             _setMoving(input, true);
             _setMoveSpeed(input, 1f);
+        }
+
+        /// <summary>
+        /// Force every lazy runtime operation the frame path needs to happen NOW, before the
+        /// patch goes live -- the discipline `PublishFrameReplacement` states for the same
+        /// reason, applied to this pilot's own first-use hazards.
+        ///
+        /// THE HAZARD THIS ADDRESSES IS NOT HYPOTHETICAL. A crash two live runs deep in the
+        /// same CLR address is consistent with a first-use operation happening *during* a
+        /// patched frame: `Angle`'s type initializer, the JIT of the emitted accessors, and
+        /// the boxing of the `Angle` the setter writes into are all one-time work, and if any
+        /// of them is still pending when the replacement first runs, it happens with this
+        /// replacement's caller frame underneath it. Doing them here moves the cost to the
+        /// resolve callback, which is where a class initializer and a JIT are ordinary work,
+        /// and it makes a failure a refusal at startup instead of a death mid-session.
+        /// </summary>
+        internal static void Warm()
+        {
+            try
+            {
+                // The box is created here rather than at first write, and created the way the
+                // frame path will use it.
+                _boxedAngle = _boxedAngle ?? Activator.CreateInstance(_angleType);
+
+                // Every emitted accessor is invoked once. The receiver is a throwaway object of
+                // the right type and the values are written and read back, so this exercises
+                // exactly the instructions the frame path executes -- the `castclass`, the
+                // `ldfld`, the `stfld` -- without needing a live world.
+                object input = RuntimeHelpers.GetUninitializedObject(_gameSceneInputField.DeclaringType);
+                _setMoving(input, true);
+                _setMoveSpeed(input, 1f);
+                _setMoveAngleRadians(_boxedAngle, 0.25f);
+                float readBack = _getMoveAngleRadians(_boxedAngle);
+                bool matches = readBack == 0.25f;
+
+                HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
+                    "steering pilot warmed before the patch: the Angle type is initialised, the "
+                    + "emitted accessors are compiled, and a write-read round trip through the "
+                    + "box gave {0:0.####} ({1})", readBack, matches ? "match" : "MISMATCH"));
+                if (!matches)
+                {
+                    // A write-read mismatch is not a warning: it means the accessor this pilot
+                    // steers with does not address the field the client reads.
+                    _enabled = false;
+                    _unresolvedReason = "the warmed accessor did not read back what it wrote";
+                    HookEntry.AppendLog("ERROR", "the steering pilot is DISARMED: " + _unresolvedReason);
+                }
+                HookEntry.FlushLog();
+            }
+            catch (Exception ex)
+            {
+                // Not fatal to the run: the pilot reports itself unusable and the replacement,
+                // if patched, does nothing but call through.
+                _enabled = false;
+                _unresolvedReason = "warm-up failed: " + ex.GetType().Name + ": " + ex.Message;
+                HookEntry.AppendLog("ERROR", "the steering pilot FAILED its warm-up and is "
+                                             + "disarmed, so no steering will be attempted: "
+                                             + _unresolvedReason);
+                HookEntry.FlushLog();
+            }
         }
 
         /// <summary>
@@ -951,7 +1031,7 @@ namespace Drelay.Bootstrap
             {
                 "BeforeOriginal", "WriteInput", "PhaseAngle", "AdvancePhase", "ReleaseInput",
                 "Accumulate", "EmitPhaseSummary", "EmitRunSummary", "LogFrame", "ParsePlan",
-                "BuildStatus", "Missing", "Resolve",
+                "BuildStatus", "Missing", "Resolve", "Warm",
             };
             for (int i = 0; i < names.Length; i++)
             {

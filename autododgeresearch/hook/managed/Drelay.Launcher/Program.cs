@@ -127,6 +127,27 @@ namespace Drelay.Launcher
         //     environment unchanged and let the hook read it.
         public string MoveSteer;
 
+        // PHASE 3'S ESCALATION TEST: call `World.RequestEscape()` once, under hook control.
+        //
+        // WHY IT IS A SWITCH AND NOT PART OF THE DODGE.  The escape is Phase 3's floor --
+        // reached only when the projected damage is lethal and no admissible move avoids it
+        // -- but the *call itself* has never been measured, and the 2026-10-13 run is the
+        // receipt: `escape MISSING never compiled`, because nothing ever called it, so the
+        // JIT never compiled it and the detour never saw it. A floor nobody has stood on is
+        // not a floor. This switch tests the actuator alone, with no threat set and no
+        // solver behind it, which is why it can be tested before the dodge exists.
+        //
+        // SECONDS, NOT FRAMES, AND MEASURED FROM THE FIRST FRAME WITH A WORLD.  Frames are
+        // the client's variable-rate loop and would make the delay depend on the frame rate;
+        // wall clock from run start would make it depend on how long the operator took to get
+        // into a zone. From "the world exists" it is the one origin the operator controls.
+        //
+        // IT IMPLIES `--frame-replacement`, because that is where the call is made from, and
+        // it is a fatal combination to get wrong silently: a run that asked for the escape
+        // test and did not install the frame replacement would report "the test never armed"
+        // and read as a client refusal. TryParse adds the flag and says so.
+        public double EscapeTestSeconds = -1.0;
+
         // How long the hook keeps recording after it patches the frame tick, in
         // seconds.  Passed to the hook as `DRELAY_HOOK_LIVE_MS`.
         //
@@ -174,6 +195,24 @@ namespace Drelay.Launcher
                 case "--frame-helper": options.FrameHelper = true; break;
                 case "--frame-replacement": options.FrameReplacement = true; break;
                 case "--move-steer": options.MoveSteer = Next(args, ref i); break;
+                case "--escape-test":
+                {
+                    string raw = Next(args, ref i);
+                    if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                         out double seconds) || seconds < 0.0)
+                    {
+                        error = "--escape-test needs a non-negative number of seconds, got '" + raw + "'";
+                        return false;
+                    }
+                    options.EscapeTestSeconds = seconds;
+                    // THE DEPENDENCY IS ADDED RATHER THAN LEFT TO THE OPERATOR.  The call is
+                    // made from the frame replacement; without it there is no call, and the
+                    // run's own log would say "the test never armed" -- which is exactly what
+                    // a client that refused to escape looks like. Making the operator pass
+                    // both flags would be a way to get that wrong once and misread a session.
+                    options.FrameReplacement = true;
+                    break;
+                }
                     case "--help":
                     case "-h":
                         error = "help";
@@ -189,6 +228,18 @@ namespace Drelay.Launcher
                         else if (a.StartsWith("--collect-delay=", StringComparison.Ordinal)) { options.CollectDelayMs = int.Parse(a.Substring(16), CultureInfo.InvariantCulture); }
                         else if (a.StartsWith("--live-seconds=", StringComparison.Ordinal)) { options.LiveSeconds = int.Parse(a.Substring(15), CultureInfo.InvariantCulture); }
                         else if (a.StartsWith("--move-steer=", StringComparison.Ordinal)) { options.MoveSteer = a.Substring(13); }
+                        else if (a.StartsWith("--escape-test=", StringComparison.Ordinal))
+                        {
+                            string raw = a.Substring(14);
+                            if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                                 out double seconds) || seconds < 0.0)
+                            {
+                                error = "--escape-test needs a non-negative number of seconds, got '" + raw + "'";
+                                return false;
+                            }
+                            options.EscapeTestSeconds = seconds;
+                            options.FrameReplacement = true;
+                        }
                         else if (a.StartsWith("--", StringComparison.Ordinal))
                         {
                             error = "unknown option: " + a;
@@ -622,6 +673,18 @@ namespace Drelay.Launcher
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
                 variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", options.MoveSteer));
             }
+            if (options.EscapeTestSeconds >= 0.0)
+            {
+                // Same two-name split as `--move-steer`, and for the same reason: the
+                // *flag* that decides whether managed code is entered lives in the
+                // namespace the launcher owns and deletes inherited values from
+                // (`--escape-test` sets `--frame-replacement`, so that name is already
+                // set above), and the *parameter* travels under its own name for the
+                // managed side to read.
+                variables.Add(new KeyValuePair<string, string>(
+                    "DRELAY_ESCAPE_TEST_SEC",
+                    options.EscapeTestSeconds.ToString("0.###", CultureInfo.InvariantCulture)));
+            }
             if (options.Off)
             {
                 // With the off switch set, the startup hook is not installed at
@@ -813,6 +876,14 @@ namespace Drelay.Launcher
                                                        commanded-vs-observed pairs
                        The player WILL move. Do not use it in a run whose result
                        matters, and never while a nexus cast is in progress.
+  --escape-test SEC    PHASE 3'S FLOOR TEST: call World.RequestEscape() once, from
+                       inside the game, SEC seconds after the world first exists.
+                       This is the client's own nexus entry point, so it runs the
+                       client's own gates -- in a safe area it is a legitimate no-op,
+                       and whether it sent GmEscape is a wire fact to read from the
+                       relay log. Implies --frame-replacement, because that is where
+                       the call is made from. It fires ONCE and then stops.
+                       Example: --escape-test 25   (a normal run, then a nexus)
   --verbose            print the environment that was removed, and diagnostics
   --help               this text
 

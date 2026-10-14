@@ -75,6 +75,21 @@ RE_RELAY_MOVE = re.compile(r"C->S\] .*?len=(?P<len>\d+) id=0x4A Move\s+(?P<hex>[
 RE_RELAY_KICK = re.compile(r"id=0x(?:B9|185)\b.*?Kicked", re.IGNORECASE)
 RE_RELAY_KICKED_EVENT = re.compile(r'"kickedReason"\s*:\s*"([^"]*)"')
 
+# THE ESCAPE, WHICH IS PHASE 3'S FLOOR AND A DIFFERENT EXPERIMENT FROM THE STEERING ONE.
+# `GmEscape` is game id 66 (`0x42`) and `GmEscapeCastState` is 290 (`0x122`); both are
+# client->server. The server's answer is `EscapeAck` (158, `0x9E`), which is what turns
+# "the client sent it" into "the server took it" -- docs/AUTONEXUS.md section 5 is the join.
+# The ids come from `src/main/java/networking/packets/GmPacketType.java` rather than from a
+# document, so a build that renumbers them fails the reader rather than the run.
+RE_RELAY_ESCAPE = re.compile(r"C->S\] .*?id=0x(?:42|122) (?:Escape|EscapeCastState)\b", re.IGNORECASE)
+RE_RELAY_ESCAPE_ACK = re.compile(r"S->C\] .*?id=0x9E (?:EscapeAck)\b", re.IGNORECASE)
+
+RE_ESCAPE_ARMED = re.compile(r"escape test armed: the world exists")
+RE_ESCAPE_CALLED = re.compile(r"escape test: calling World\.RequestEscape\(\) now")
+RE_ESCAPE_RETURNED = re.compile(r"escape test: World\.RequestEscape\(\) RETURNED after (\d+) ms")
+RE_ESCAPE_THREW = re.compile(r"escape test: World\.RequestEscape\(\) THREW")
+RE_ESCAPE_UNAVAILABLE = re.compile(r"escape test is NOT available")
+
 # Direction words the client's own kick reasons use. A kick for a reason that has nothing
 # to do with movement (an authentication failure, a server restart) is not evidence about
 # the actuator, and treating it as such would be a false positive in the other direction.
@@ -113,6 +128,14 @@ def parse_run(run_dir):
         "not_patched": None,
         "missing": False,
         "rejected": False,
+        "escape": {
+            "armed": False,
+            "called": False,
+            "returned_ms": None,
+            "threw": False,
+            "unavailable": False,
+            "requested": False,
+        },
         "notes": [],
     }
 
@@ -160,18 +183,21 @@ def parse_run(run_dir):
                     "mode": m.group("mode"),
                 }
                 continue
-            if "steering pilot is" in line:
-                out["armed_line"] = line.strip()
-                if "ARMED" in line:
-                    out["armed"] = "armed"
-                elif "IDLE" in line:
-                    out["armed"] = "idle"
-                else:
-                    out["armed"] = "unavailable"
-                continue
             if RE_REJECTED.search(line):
                 out["rejected"] = True
 
+    # ---------------------------------------------------------------------------------
+    # hook.log -- and the pilot's own status line, which lives HERE and not in the
+    # bootstrap log.
+    #
+    # THAT SPLIT WAS FOUND BY THE FIXTURE, AND IT WOULD HAVE MADE THIS REPORT USELESS.
+    # `SteeringPilot.LogPlan` is called from the resolve callback and writes through
+    # `HookEntry.AppendLog`, which is the NATIVE log -- so `the steering pilot is ARMED`
+    # lands in `hook.log`, while the escape test's status (logged from the same place) also
+    # lands there. A reader that only opened `bootstrap.log` would find no pilot line at all
+    # and fail every steering run for the wrong reason. Both files are read, and hook.log
+    # wins because it is where these lines actually are.
+    # ---------------------------------------------------------------------------------
     if not os.path.isfile(hook):
         out["notes"].append("hook.log is missing from %s" % run_dir)
     else:
@@ -190,6 +216,42 @@ def parse_run(run_dir):
                 continue
             if RE_MISSING.search(line) or ("movementIntegrator" in line and "MISSING" in line):
                 out["missing"] = True
+
+    # The status lines, from whichever file carries them. hook.log first; the bootstrap log
+    # is scanned only if hook.log did not answer, so a run whose native log is truncated
+    # still resolves.
+    for text in (read_text(hook) if os.path.isfile(hook) else "",
+                 read_text(boot) if os.path.isfile(boot) else ""):
+        for line in text.splitlines():
+            if out["armed"] is None and "steering pilot is" in line:
+                out["armed_line"] = line.strip()
+                if "NOT available" in line:
+                    out["armed"] = "unavailable"
+                elif "ARMED" in line:
+                    out["armed"] = "armed"
+                elif "IDLE" in line:
+                    out["armed"] = "idle"
+            if RE_ESCAPE_ARMED.search(line):
+                out["escape"]["armed"] = True
+                out["escape"]["requested"] = True
+            if RE_ESCAPE_CALLED.search(line):
+                out["escape"]["called"] = True
+            m = RE_ESCAPE_RETURNED.search(line)
+            if m:
+                out["escape"]["returned_ms"] = int(m.group(1))
+            if RE_ESCAPE_THREW.search(line):
+                out["escape"]["threw"] = True
+            if RE_ESCAPE_UNAVAILABLE.search(line):
+                out["escape"]["unavailable"] = True
+                out["escape"]["requested"] = True
+
+    # AN EMPTY LOG SET IS NOT "A RUN THAT ASKED FOR NOTHING". Both files absent or empty means
+    # there is no evidence at all, and `parse_run` must be able to say which of those it is --
+    # a run that legitimately asked for neither experiment still has a hook.log full of
+    # install lines and a bootstrap.log full of resolve lines.
+    hook_text = read_text(hook) if os.path.isfile(hook) else ""
+    boot_text = read_text(boot) if os.path.isfile(boot) else ""
+    out["unreadable"] = (len(hook_text.strip()) == 0 and len(boot_text.strip()) == 0)
     return out
 
 
@@ -200,6 +262,8 @@ def parse_relay(path):
         "kicks": [],
         "kicked_reasons": [],
         "calls": [],
+        "escape_request": 0,
+        "escape_ack": 0,
         "notes": [],
     }
     if not path:
@@ -236,6 +300,10 @@ def parse_relay(path):
         m = RE_RELAY_KICKED_EVENT.search(line)
         if m:
             out["kicked_reasons"].append(m.group(1))
+        if RE_RELAY_ESCAPE.search(line):
+            out["escape_request"] += 1
+        if RE_RELAY_ESCAPE_ACK.search(line):
+            out["escape_ack"] += 1
     return out
 
 
@@ -268,91 +336,124 @@ def main(argv=None):
 
     checks = []
 
-    # -- the run happened at all, before anything is interpreted ------------------------
-    if run["missing"] or run["not_patched"]:
-        checks.append(("the movement target was PATCHED", False,
-                       "it was matched by IL hash and left unpatched -- no steering was possible. "
-                       "Pass --move-steer to the launcher; the patch is opt-in"))
-    elif run["patched"]:
-        checks.append(("the movement target was PATCHED", True, "at " + run["patched"]))
-    elif run["published"]:
-        checks.append(("the movement target was PATCHED", False,
-                       "the replacement was published (0x%s) but no patch line was seen" % run["published"]))
+    # ------------------------------------------------------------------------------------
+    # THE TWO EXPERIMENTS ARE INDEPENDENT, AND THE REPORT HAS TO SAY SO.
+    #
+    # `--move-steer` and `--escape-test` are separate switches on purpose (see
+    # PHASE3-SCOPE.md sections 4.6 and 6.3): one steers the player and one calls the client's
+    # own nexus entry point. A run that asked for only one of them must not be failed for not
+    # doing the other -- and the failure mode that creates is not cosmetic, because it would
+    # report a perfectly good escape-floor result as a failed steering run. So the steering
+    # block runs only when a steering plan was actually armed, and the escape block only when
+    # an escape test was actually requested.
+    # ------------------------------------------------------------------------------------
+    steering_requested = run["armed"] == "armed"
+    if not steering_requested:
+        if run["unreadable"]:
+            checks.append(("the run's logs are readable", False,
+                           "hook.log and bootstrap.log are both empty or missing in %s -- "
+                           "nothing can be concluded from this run" % args.run_dir))
+        elif run["armed"] is None:
+            # No pilot status line, but the logs exist: this is what a run without
+            # `--move-steer` looks like, and it is not a failure. The movement target is still
+            # published and verified on every run; only the patch is opt-in.
+            checks.append(("this run did not ask for steering", True,
+                           "no pilot status line, which is what a run without --move-steer "
+                           "looks like"))
+        else:
+            checks.append(("this run did not ask for steering", True,
+                           run["armed_line"] or "pilot is idle"))
     else:
-        checks.append(("the movement target was PATCHED", False,
-                       "no publication and no patch line -- the bootstrap may not have resolved"))
+        # -- the run happened at all, before anything is interpreted ----------------------
+        if run["not_patched"]:
+            checks.append(("the movement target was PATCHED", False,
+                           "it was matched by IL hash and left unpatched -- no steering was possible"))
+        elif run["missing"]:
+            checks.append(("the movement target was PATCHED", False,
+                           "the movement target was never compiled in this run, so nothing could "
+                           "have been patched; the pilot cannot have written anything"))
+        elif run["patched"]:
+            checks.append(("the movement target was PATCHED", True, "at " + run["patched"]))
+        elif run["published"]:
+            checks.append(("the movement target was PATCHED", False,
+                           "the replacement was published (0x%s) but no patch line was seen"
+                           % run["published"]))
+        else:
+            checks.append(("the movement target was PATCHED", False,
+                           "no publication and no patch line -- the bootstrap may not have resolved"))
 
-    if run["rejected"]:
-        checks.append(("the mode was understood", False,
-                       "the pilot reported a rejected or empty plan; see bootstrap.log's plan lines"))
-    elif run["armed"] == "armed":
-        checks.append(("the mode was understood", True, run["armed_line"] or ""))
-    elif run["armed"] == "idle":
-        checks.append(("the mode was understood", False,
-                       "the pilot resolved and is IDLE: DRELAY_MOVE_STEER never reached it. "
-                       "Use the launcher's --move-steer, not a shell variable with the same name"))
-    else:
-        checks.append(("the mode was understood", False, run["armed_line"] or "no pilot line found"))
+        if run["rejected"]:
+            checks.append(("the mode was understood", False,
+                           "the pilot reported a rejected or empty plan; see the plan lines"))
+        else:
+            checks.append(("the mode was understood", True, run["armed_line"] or ""))
 
     # -- A: the write landed -------------------------------------------------------------
-    if run["frames"]:
-        worst = max(abs(f["wrote"] - f["read"]) for f in run["frames"])
-        checks.append(("A the input landed (read-back == written)", worst < 1e-4,
-                       "worst |written - read back| = %.7f rad over %d logged frame(s)"
-                       % (worst, len(run["frames"]))))
-    else:
-        checks.append(("A the input landed (read-back == written)", False,
-                       "no 'steer frame' lines -- the replacement was not entered, or the pilot "
-                       "was idle. Check the PATCHED check above first"))
+    if steering_requested:
+        if run["frames"]:
+            worst = max(abs(f["wrote"] - f["read"]) for f in run["frames"])
+            checks.append(("A the input landed (read-back == written)", worst < 1e-4,
+                           "worst |written - read back| = %.7f rad over %d logged frame(s)"
+                           % (worst, len(run["frames"]))))
+        else:
+            checks.append(("A the input landed (read-back == written)", False,
+                           "no 'steer frame' lines -- the replacement was not entered. Check the "
+                           "PATCHED check above first"))
 
     # -- B: the integrator acted ---------------------------------------------------------
-    if run["phases"]:
-        moved = sum(p["moved"] for p in run["phases"])
-        total_frames = run["summary"]["frames"] if run["summary"] else None
-        if total_frames:
-            share = moved / float(total_frames)
-            checks.append(("B the integrator acted on the input", share > 0.5,
-                           "%d of %d frame(s) moved (%.0f%%)" % (moved, total_frames, 100 * share)))
+    if steering_requested:
+        if run["phases"]:
+            moved = sum(p["moved"] for p in run["phases"])
+            total_frames = run["summary"]["frames"] if run["summary"] else None
+            if total_frames:
+                share = moved / float(total_frames)
+                checks.append(("B the integrator acted on the input", share > 0.5,
+                               "%d of %d frame(s) moved (%.0f%%)" % (moved, total_frames, 100 * share)))
+            else:
+                checks.append(("B the integrator acted on the input", moved > 0,
+                               "%d frame(s) moved (no summary line for a denominator)" % moved))
         else:
-            checks.append(("B the integrator acted on the input", moved > 0,
-                           "%d frame(s) moved (no summary line for a denominator)" % moved))
-    else:
-        checks.append(("B the integrator acted on the input", False,
-                       "no phase summaries -- the plan did not run to its first phase boundary"))
+            checks.append(("B the integrator acted on the input", False,
+                           "no phase summaries -- the plan did not run to its first phase boundary"))
 
     # -- C: the direction was obeyed -----------------------------------------------------
-    if run["phases"]:
-        cosines = [p["mean_cos"] for p in run["phases"] if not math.isnan(p["mean_cos"])]
-        mean_cos = sum(cosines) / len(cosines) if cosines else float("nan")
-        # In sweep mode the commanded value is an *input* angle and the observed one is a world
-        # heading, so their absolute difference is the transform, not an error. What must hold in
-        # both modes is that the observed heading MOVES WITH the commanded one -- so the check is
-        # that the deltas between consecutive phases agree with the commanded deltas.
-        deltas = []
-        for a, b in zip(run["phases"], run["phases"][1:]):
-            deltas.append(angle_delta_deg(b["observed"], a["observed"]))
-        cmd_deltas = []
-        for a, b in zip(run["phases"], run["phases"][1:]):
-            cmd_deltas.append(angle_delta_deg(b["target"], a["target"]))
-        consistent = True
-        if len(cmd_deltas) >= 3:
-            residuals = [abs(angle_delta_deg(d, c)) for d, c in zip(deltas, cmd_deltas)]
-            residuals = [r for r in residuals if not math.isnan(r)]
-            consistent = bool(residuals) and max(residuals) < 60.0
-            checks.append(("C the direction was obeyed (mapping)", consistent,
-                           "per-phase observed-minus-commanded deltas %s deg; worst residual %.0f deg"
-                           % (["%.0f" % d for d in deltas], max(residuals) if residuals else float("nan"))))
+    if steering_requested:
+        if run["phases"]:
+            cosines = [p["mean_cos"] for p in run["phases"] if not math.isnan(p["mean_cos"])]
+            mean_cos = sum(cosines) / len(cosines) if cosines else float("nan")
+            # In sweep mode the commanded value is an *input* angle and the observed one is a
+            # world heading, so their absolute difference is the transform, not an error. What
+            # must hold in both modes is that the observed heading MOVES WITH the commanded one
+            # -- so the check is that the deltas between consecutive phases agree with the
+            # commanded deltas.
+            deltas = []
+            for a, b in zip(run["phases"], run["phases"][1:]):
+                deltas.append(angle_delta_deg(b["observed"], a["observed"]))
+            cmd_deltas = []
+            for a, b in zip(run["phases"], run["phases"][1:]):
+                cmd_deltas.append(angle_delta_deg(b["target"], a["target"]))
+            if len(cmd_deltas) >= 3:
+                residuals = [abs(angle_delta_deg(d, c)) for d, c in zip(deltas, cmd_deltas)]
+                residuals = [r for r in residuals if not math.isnan(r)]
+                consistent = bool(residuals) and max(residuals) < 60.0
+                checks.append(("C the direction was obeyed (mapping)", consistent,
+                               "per-phase observed-minus-commanded deltas %s deg; worst residual "
+                               "%.0f deg"
+                               % (["%.0f" % d for d in deltas],
+                                  max(residuals) if residuals else float("nan"))))
+            else:
+                checks.append(("C the direction was obeyed (mean cosine)",
+                               mean_cos > 0.8 if not math.isnan(mean_cos) else False,
+                               "mean cos(observed - commanded) = %.3f over %d phase(s)"
+                               % (mean_cos, len(cosines))))
+            if not math.isnan(mean_cos):
+                checks.append(("C' the per-phase alignment (world frame; only meaningful for hold)",
+                               mean_cos > 0.8,
+                               "mean cos = %.3f" % mean_cos))
         else:
-            checks.append(("C the direction was obeyed (mean cosine)", mean_cos > 0.8 if not math.isnan(mean_cos) else False,
-                           "mean cos(observed - commanded) = %.3f over %d phase(s)" % (mean_cos, len(cosines))))
-        if not math.isnan(mean_cos):
-            checks.append(("C' the per-phase alignment (world frame; only meaningful for hold)",
-                           mean_cos > 0.8,
-                           "mean cos = %.3f" % mean_cos))
-    else:
-        checks.append(("C the direction was obeyed", False, "no phases to compare"))
+            checks.append(("C the direction was obeyed", False, "no phases to compare"))
 
-    # -- D: the server did not object ----------------------------------------------------
+    # -- D and E: the wire, which both experiments share -----------------------------------
     if args.relay_log is None:
         checks.append(("D the server did not object (GmKicked)", False,
                        "no relay log given: the client's own position cannot witness this. "
@@ -381,6 +482,65 @@ def main(argv=None):
                        "no Move packets matched in the relay log -- wrong log, or the client was "
                        "not in a world"))
 
+    # -- F: the escape floor, when an operator asked for it --------------------------------
+    #
+    # THIS IS A DIFFERENT EXPERIMENT FROM THE STEERING ONE, and it is allowed to be the only
+    # thing a run did. `--escape-test` calls the client's own `World.RequestEscape()` once,
+    # which is Phase 3's floor (DODGE-ALGORITHM.md section 7). What makes it worth a check of
+    # its own is that the call has never been made: the 2026-10-13 run reported `escape
+    # MISSING never compiled`, because nothing ever called it. So the four states below are
+    # four different results, and collapsing them would lose the whole point:
+    #
+    #   never armed       the world never existed for the delay, or the frame replacement
+    #                     was not installed -- the test did not run
+    #   armed, not called the clock started but the delay had not elapsed when the run ended
+    #   called, returned  the call was made and the client's own gates ran; whether it SENT
+    #                     `GmEscape` is the wire check below
+    #   called, threw     the call was made and the client refused it -- still not "never
+    #                     reached it", which is why EscapeTest latches and logs before the call
+    esc = run["escape"]
+    if not esc["requested"]:
+        checks.append(("F the escape floor (not requested this run)", True,
+                       "no --escape-test: World.RequestEscape was not called by the hook"))
+    else:
+        if esc["unavailable"]:
+            checks.append(("F the escape request was understood", False,
+                           "the hook could not resolve World.RequestEscape on this build; see "
+                           "bootstrap.log for the reason"))
+        elif esc["called"]:
+            checks.append(("F the escape call was MADE and RETURNED", esc["returned_ms"] is not None,
+                           "World.RequestEscape() returned after %s ms"
+                           % (esc["returned_ms"] if esc["returned_ms"] is not None
+                              else "? -- the call was reached but its return line is missing")))
+        elif esc["armed"]:
+            checks.append(("F the escape call was MADE and RETURNED", False,
+                           "the test armed and the delay had not elapsed when the run ended; "
+                           "raise --live-seconds or lower --escape-test"))
+        else:
+            checks.append(("F the escape call was MADE and RETURNED", False,
+                           "the test never armed -- no world existed, or the frame replacement "
+                           "was not installed (--escape-test implies --frame-replacement)"))
+
+        if esc["threw"]:
+            checks.append(("F' the client accepted the call", False,
+                           "World.RequestEscape() threw -- see bootstrap.log"))
+        # The wire half. Only meaningful when the call happened and a relay log was given,
+        # because the client sending nothing is a legitimate outcome in a safe area.
+        if args.relay_log is None:
+            checks.append(("F'' the escape reached the wire", False,
+                           "no relay log given: whether the client sent GmEscape, started a "
+                           "cast or did nothing is a wire fact and cannot be read in-process. "
+                           "Pass the session log as the second argument"))
+        elif esc["called"]:
+            checks.append(("F'' the escape reached the wire (GmEscape / cast state)",
+                           relay["escape_request"],
+                           "GmEscape (0x42) or GmEscapeCastState (0x122) seen %d time(s); "
+                           "EscapeAck (0x9E) seen %d time(s)"
+                           % (relay["escape_request"], relay["escape_ack"])))
+        else:
+            checks.append(("F'' the escape reached the wire", False,
+                           "the call never happened, so nothing can have reached the wire"))
+
     # ------------------------------------------------------------------------------------
     # Output
     # ------------------------------------------------------------------------------------
@@ -390,6 +550,7 @@ def main(argv=None):
             "frame_lines": len(run["frames"]),
             "relay": {k: v for k, v in relay.items() if k != "moves"},
             "move_packets": len(relay["moves"]),
+            "escape": run["escape"],
             "checks": [{"what": w, "ok": ok, "detail": d} for w, ok, d in checks],
         }, indent=2))
         return 0
@@ -402,8 +563,17 @@ def main(argv=None):
         print("  hook     : published %s, patched %s, not-patched %s, missing %s"
               % (run["published"], run["patched"], run["not_patched"], run["missing"]))
         if args.relay_log:
-            print("  relay    : %d Move packet(s), %d Kicked line(s) -- %s"
-                  % (len(relay["moves"]), len(relay["kicks"]), args.relay_log))
+            print("  relay    : %d Move packet(s), %d escape request(s), %d escape ack(s), "
+                  "%d Kicked line(s) -- %s"
+                  % (len(relay["moves"]), relay["escape_request"], relay["escape_ack"],
+                     len(relay["kicks"]), args.relay_log))
+            if relay["escape_request"] > 1:
+                # THE HANDSHAKE ALSO ASKS TO ESCAPE, ONCE, WITH AN EMPTY `GmEscape` at
+                # login. So a count above one is not automatically a defect -- but it is
+                # the first thing to look at, because "the hook escaped twice" and "the
+                # login handshake plus the hook" are different results with the same total.
+                print("             note: more than one escape request; the empty `GmEscape` at "
+                      "login is one of them, so attribute the extra one before concluding")
         for note in run["notes"] + relay["notes"]:
             print("  note     : " + note)
         print("")
@@ -429,6 +599,15 @@ def main(argv=None):
     else:
         print("VERDICT: %d check(s) did not pass. Read them in order: the first failure is almost "
               "always the cause of the rest." % failed)
+
+    # The two experiments are independent, so a run that answered one of them is not a failed
+    # run. Saying so explicitly stops the escape checks' failures from reading as a verdict on
+    # the steering, and the other way round.
+    if run["escape"]["requested"] and run["escape"]["called"] and not run["escape"]["threw"]:
+        print("       the ESCAPE test was reached and returned -- see the F'' line for whether "
+              "it left the machine")
+    if run["phases"]:
+        print("       the STEERING test produced %d phase(s)" % len(run["phases"]))
     return 1 if failed else 0
 
 

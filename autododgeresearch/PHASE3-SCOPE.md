@@ -311,9 +311,12 @@ Drelay.Launcher.exe --game "<install>" --live-seconds 180 --move-steer sweep:240
 
 # 2. HOLD -- the shape the solver uses, one world heading, bounded.
 Drelay.Launcher.exe --game "<install>" --live-seconds 120 --move-steer hold:90:600
+
+# 3. ESCAPE -- the floor itself, called once under hook control (§6 item 3).
+Drelay.Launcher.exe --game "<install>" --live-seconds 60 --escape-test 25
 ```
 
-With the relay running for both, so the wire evidence exists:
+With the relay running for each, so the wire evidence exists:
 
 ```
 java -cp drelay.jar networking.Launcher ...      # the operator's usual relay invocation
@@ -325,6 +328,22 @@ and nothing else. The analysis is:
 ```
 python autododgeresearch\tools\steering_report.py <run-dir> [relay-session.log]
 ```
+
+The report handles both experiments and tells them apart: a run that asked for only one of them is
+not failed for the other, which matters because a good escape result reported as a failed steering
+run would be worse than no report at all.
+
+**About run 3.** `--escape-test 25` calls `World.RequestEscape()` once, 25 seconds after the world
+first exists — the client's own nexus entry point, so the client's own gates run. **In a safe area it
+is a legitimate no-op**, and the report says which of the four outcomes happened rather than guessing:
+never armed, armed but the delay had not elapsed, called and returned, or called and threw. Whether it
+*left the machine* is the relay's answer — `GmEscape` (id 66 / `0x42`) or the escape-cast-state pair
+(290 / `0x122`), with `EscapeAck` (158 / `0x9E`) as the server's acceptance. **Expect one escape
+request at login**, so a count of two means one of them is the hook's and one is the handshake; the
+report flags that rather than calling it a defect.
+
+Run 3 is **independent of runs 1–2** and can be taken on its own. It needs the character in a world
+for 25 seconds; a town is fine (the no-op is a result), a run in progress is better.
 
 **Optional, and now cheap:** the Phase 0 `GmHit`-drop trial (drop the outbound `GmHit` for exactly
 one hit and see whether the server still decrements Health) needs no hook and can ride along with
@@ -339,14 +358,68 @@ either run. It does not gate anything; it closes an open Phase 0 item.
 - the original movement tick is called on **every** path, including every failure path, so the worst
   case is a player who does not move rather than a player who cannot;
 - `sweep` and `hold` are **bounded** by frame counts, and `hold` without a count runs until the
-  session ends, which the switch's own help text says out loud.
+  session ends, which the switch's own help text says out loud;
+- the escape test fires **once** and then latches, so it cannot become a nexus key held down — which
+  in the ordinary path is an escape every cooldown and, with the `Impermanence` totem, a cast that
+  re-arms for ever. It logs *before* it calls, so a fault inside the call still leaves the attempt on
+  record rather than reading as "the test never armed".
+
+---
+
+## 5.1 Reading a run's `crash.txt` — which is not a crash report about the run
+
+**The first three Phase 3 live runs each left a `crash.txt`, and the operator's own reading of them
+was right and this document's first reading was wrong: the game was closed by hand, and that is when
+the file appears.**
+
+The reason is in the reporter's own header (`hook/native/DrelayCrash.cpp`), and it is the same
+distinction `PHASE1-VERIFICATION.md` §5 and `PHASE1-HANDOFF.md` §"Two things in crash.txt" already
+record for earlier rounds:
+
+- a `crash.txt` is written by a **vectored exception handler**, so it only records exceptions that
+  reach it. A **`COR_E_EXECUTIONENGINE` (`0x80131506`)** is not one: coreclr terminates the process
+  through `TerminateProcess`, which raises nothing, so *the handler cannot see it* and the file that
+  exists is **not** evidence about it;
+- the authoritative record of a fatal CLR error is therefore the **Windows event log** — `.NET
+  Runtime` id 1023, *"the process was terminated due to an internal error in the .NET Runtime at IP
+  0x… with exit code 0x80131506"*, plus `Application Error` id 1000 naming `coreclr.dll`. That is
+  what the three runs of 2026-10-14 have:
+  `02:33:50`, `02:35:52` and `02:46:26`, all `coreclr.dll`, all `0x80131506`;
+- **the third of those is the control that settles it.** That run had steering switched off —
+  `DRELAY_MOVE_STEER` unset, the pilot logging *"resolved all 15 field(s) and is IDLE"* — and
+  `movementIntegrator` **was never patched** (`1 of 5 target(s) patched`, `frameTick` only). It still
+  wrote a complete evidence set: 295 successful frame reads, `phase 1 complete`, `summary.txt`,
+  `selfcheck.txt`, `offsets.csv`, `frames.csv`. **So the close-time fatal error is not the pilot, not
+  the movement replacement, and not this phase's work** — it is the hook's long-standing
+  close/shutdown behaviour, which `PHASE1-VERIFICATION.md` §5 describes as a teardown-time dispatch
+  on a module that is going away, with no `Drelay.Hook.dll` frame on the faulting stack.
+
+**Two consequences for reading Phase 3's runs, and both matter more than the fault itself:**
+
+1. **a `crash.txt` in a run directory says nothing about whether that run succeeded.** Read
+   `hook.log`'s own ending (`phase 1 complete`, `N target(s) patched`), the pilot's phase summaries,
+   and the relay log. This is the same rule the project already applies to `crash.txt` in the Phase 1
+   and Phase 2 rounds;
+2. **the steering run's first two attempts were not failures of the steering.** Their `hook.log`s
+   show the movement target patched and the plan's first phase begun; the fatal error belongs to the
+   close. What was *not* obtained is the measured evidence, because the operator closed the game
+   before the phases completed — so §5's protocol stands, with the runs given enough time.
+
+**The one open question this leaves**, and the cheap way to close it: whether the close-time fatal
+error is the hook's doing at all. `PHASE1-VERIFICATION.md` §5 asks for exactly this control —
+`DRELAY_NO_PATCH=1`, close the game, compare the event log — and it is still the right test. **If a
+run with the hook present but nothing patched, and a run with the hook absent entirely, both produce
+the same event-log entry on close, then the entry is a property of the game and its runtime, and this
+document's only obligation is to stop calling it a Phase 3 result.** Until that is measured, it is
+recorded here as *not attributable to this phase*, which is as far as the evidence goes.
+
 
 ---
 
 ## 6. What comes next, in order
 
-1. **Spike 3.1's live run** (§5). This is M7 and it gates everything below: if movement cannot be
-   actuated, the dodge does not exist and the honest outcome is a stop
+1. **Spike 3.1's live run** (§5 runs 1–2). This is M7 and it gates everything below: if movement
+   cannot be actuated, the dodge does not exist and the honest outcome is a stop
    ([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Phase 3 "If this fails").
 2. **The budget, from the client's own law.** `DODGE-ALGORITHM.md` §5.2's `b = playerSpeed ×
    frameSeconds` needs `playerSpeed`, which is `PlayerFunctions.TilesPerSecond` **called** with the
@@ -354,15 +427,7 @@ either run. It does not gate anything; it closes an open Phase 0 item.
    the same number from the other end: **measure the law rather than resolve its constants**, because
    a resolved constant that disagrees with the live tier is exactly the bug
    [CLIENT-FINDINGS.md](CLIENT-FINDINGS.md) §5.3 warns about.
-3. **The escape floor's mechanism, verified before it is needed.** `World.RequestEscape` was reported
-   `MISSING` in the 2026-10-13 run and the reason is now known: **nothing called it** — the operator
-   never pressed the nexus key — and its "same-sized neighbour" warnings are other 335-byte methods.
-   Its replacement does not need the game to call it; it needs a callable address, and the plan
-   already records the two ways to get one
-   ([MANAGED-ENTRY-HANDOFF.md](MANAGED-ENTRY-HANDOFF.md) §0.2, [HOOK-ARCHITECTURE.md](HOOK-ARCHITECTURE.md)
-   §5.2). **A `--escape-test` arm of the same live run proves the path end to end** and is worth
-   doing while the operator is already in a session — the escape is the floor under everything else,
-   and a floor that has never been entered is a floor nobody should stand on.
+3. ✅ **The escape floor's mechanism, built and waiting for its run** (§5 run 3, §9).
 4. **The cost work Phase 2 waived**, with the solver that shares the frame: cull before sampling
    ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §8), the sampler's `p99` back under its slice, and the
    histogram that places an outlier instead of counting it.
@@ -372,6 +437,42 @@ either run. It does not gate anything; it closes an open Phase 0 item.
 6. **Deliverable 3.3/3.4 — the live dodge and the escape floor**, behind their own switch, dry run
    by default, with the paired trial ([VERIFICATION.md](VERIFICATION.md) §5) accounting for every
    death in the two buckets §2 makes unavoidable.
+
+### 9. The escape floor's mechanism, and why it is a run of its own
+
+**The problem the last live run exposed.** `escape` was reported `MISSING` on 2026-10-13 — *"never
+compiled in the discovery window"* — and the reason is now known and is not a defect in the pinned
+identity: **nothing called it.** The operator never pressed the nexus key, and no zone change called
+it either, so the JIT never compiled `World.RequestEscape` and the detour never saw it. The
+"same-sized neighbour" warning the run printed is other 335-byte methods, which is the two-case
+middle ground `docs/HOOK-BUILD-MATRIX.md` describes.
+
+That has a consequence the plan did not draw out. **The floor of Phase 3 is the one part of the
+deliverable that can be reached without the decision that eventually calls it**, because
+`RequestEscape` is a `public void` instance method: it needs a `MethodInfo` and a `World`, not a
+compiled body and not a patch. So it can be tested *now*, before any solver exists to need it, and
+that is what `--escape-test SEC` does:
+
+- the call is made from the **frame replacement**, which is a managed method on the game's thread
+  ([MANAGED-ENTRY-HANDOFF.md](MANAGED-ENTRY-HANDOFF.md) §0.2), and it goes through reflection so a
+  failure lands at the call rather than at resolve;
+- it fires **once**, `SEC` seconds after the world first exists — wall clock from "the world exists"
+  rather than from run start, so the delay does not depend on how long the operator took to get into
+  a zone;
+- it **does not require a non-safe area.** `RequestEscape` is a legitimate no-op in a safe area
+  ([VERIFICATION.md](VERIFICATION.md) §5.1 makes that a case the two-controller test has to exercise),
+  so firing there is information rather than a mistake, and the report names which outcome happened;
+- four outcomes are distinguished rather than collapsed: **never armed**, **armed but the delay had
+  not elapsed**, **called and returned**, **called and threw**. Only the first is a failed test.
+
+**What it establishes, and what it does not.** It establishes that the hook can *reach* the client's
+nexus entry point and that the client's own gates run — and, with the relay, whether a
+`GmEscape` (or the cast-state pair) actually left the machine and whether the server acknowledged it.
+It does **not** establish that escaping was the right decision, and it is not Deliverable 3.4: gate 6
+of [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §7 — project the undodgeable damage, call
+`Entity.GetDamageTaken`, escape only when no admissible move avoids it — is still to be built. What
+it removes is the possibility of discovering, at the end of the dodge work, that the floor cannot be
+called at all.
 
 ---
 
@@ -387,7 +488,7 @@ has built:
 | the dodge is *observably* dodging (decision log shows moves that avoid predicted collisions) | not started | the solver, Spike 3.2 |
 | the frame budget is respected at p99 | **carried from Phase 2's waiver**; the spike's cost is the floor | `frames.csv`, the cost histogram |
 | the death rate in the claim-bearing cases is measurably lower than a deliberate baseline run | not started; needs a paired trial | `TIMING.md` §8 item 4's requirement |
-| the escape fires only when no admissible move avoids lethal projected damage, ack-confirmed | **the escalation target is not compiled at all today** — `escape` was `MISSING` on 2026-10-13 because nothing called it | §6 item 3, then the relay's `EscapeAck` join |
+| the escape fires only when no admissible move avoids lethal projected damage, ack-confirmed | **the escalation target is not compiled at all today** — `escape` was `MISSING` on 2026-10-13 because nothing called it. **The actuator is built and tested in isolation** (§9) and awaits §5 run 3; the *decision* (gate 6, Deliverable 3.4) is not started | `--escape-test`, then the relay's `GmEscape`/`EscapeAck` join (`tools/steering_report.py` checks F and F'') |
 | the two-controller precedence holds live: no cast cancelled, no movement `GmKicked` | not started | [VERIFICATION.md](VERIFICATION.md) §5.1, with and without the `Impermanence` totem |
 
 ---

@@ -1106,6 +1106,10 @@ namespace Drelay.Bootstrap
                 }
                 SteeringPilot.Publish();
                 SteeringPilot.LogPlan();
+                // THE WARM-UP RUNS AFTER PUBLISH AND BEFORE THE PATCH GOES LIVE. `Publish` is
+                // called on the resolve callback, which is before the native side enables any
+                // hook -- so a first-use failure here is a refusal, not a crash in a frame.
+                SteeringPilot.Warm();
             }
             catch (Exception ex)
             {
@@ -1113,6 +1117,31 @@ namespace Drelay.Bootstrap
                                    + "target will not be patched and the game is unaffected: " + ex);
                 FlushLog();
                 Marshal.WriteInt64(_viewPointer, GeneratedLayout.Off_managedMovementReplacement, 0L);
+            }
+
+            // PHASE 3'S ESCALATION TEST — the floor itself, made enterable on demand.
+            //
+            // `World.RequestEscape` was reported MISSING in the 2026-10-13 run for the one
+            // reason a target can be missing without anything being wrong: nothing called it,
+            // so the JIT never compiled it. That makes the floor the one part of the
+            // deliverable that can be built, tested and observed *without* the decision that
+            // eventually calls it -- so it is tested alone, before the solver exists to need
+            // it. See EscapeTest.cs for what it does and what it refuses to do.
+            try
+            {
+                if (!EscapeTest.Resolve(game))
+                {
+                    AppendLog("ERROR", "the escape test is not available: "
+                                       + EscapeTest.UnresolvedReason
+                                       + " -- nothing else is affected");
+                }
+                EscapeTest.LogPlan();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("ERROR", "resolving the escape test threw; it will not run and nothing "
+                                   + "else is affected: " + ex);
+                FlushLog();
             }
 
             // Phase 2's bookkeeping rules, exercised where they run.  Last of all,
@@ -1535,6 +1564,14 @@ namespace Drelay.Bootstrap
         {
             _frameReplacementCalls = _frameReplacementCalls + 1;
 
+            // THE ESCALATION TEST, AND IT IS OUTSIDE THE SENSOR'S SWITCH ON PURPOSE.  It is an
+            // actuator test rather than a read: it calls `World.RequestEscape()` once, after a
+            // delay, and it must be runnable without paying for the sensor's own read path --
+            // otherwise the one experiment that establishes whether the escape floor can be
+            // reached at all would depend on the cost work Phase 2 waived. `EscapeTest.OnFrame`
+            // returns immediately when the switch is unset, which is every run but its own.
+            EscapeTest.OnFrame();
+
             // THE SENSOR, WHEN ASKED FOR.  This is the read that Phase 2's numbers come
             // from: the live-object dictionary, filtered to projectiles, turned into the
             // threat set.  Gated because it is the expensive part and every other run --
@@ -1672,6 +1709,12 @@ namespace Drelay.Bootstrap
             PreparePrivate("FrameReplacementSensor");
             PreparePrivate("FrameReplacementCallOriginal");
             PreparePrivate("FrameHelperChecksum");
+            // The escape test is called from the frame replacement's sensor path, so its
+            // frame-time method is warmed here for the same reason everything else on that
+            // path is: a method compiled on its first call is compiled from inside a patched
+            // game frame. `Resolve` deliberately is not warmed -- it runs on the resolve
+            // callback, where a JIT is ordinary work.
+            PrepareStatic(typeof(EscapeTest), "OnFrame");
             MethodInfo dispatch = typeof(StraightTrajectoryProbe).GetMethod(
                 "GetPosition", BindingFlags.Public | BindingFlags.Instance);
             if (dispatch != null)
@@ -1700,6 +1743,22 @@ namespace Drelay.Bootstrap
         private static void PreparePrivate(string name)
         {
             MethodInfo m = typeof(HookEntry).GetMethod(name, BindingFlags.NonPublic | BindingFlags.Static);
+            if (m != null)
+            {
+                RuntimeHelpers.PrepareMethod(m.MethodHandle);
+            }
+        }
+
+        /// <summary>
+        /// The same, for a frame-path method that lives on another class. `PreparePrivate`
+        /// only ever looks at `HookEntry`, so a helper's public static entry point needs its
+        /// own lookup rather than a widened version of that one -- widening it would let a
+        /// typo in a name silently prepare nothing on a class it was not meant to search.
+        /// </summary>
+        private static void PrepareStatic(Type owner, string name)
+        {
+            MethodInfo m = owner.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic
+                                                 | BindingFlags.Static);
             if (m != null)
             {
                 RuntimeHelpers.PrepareMethod(m.MethodHandle);
