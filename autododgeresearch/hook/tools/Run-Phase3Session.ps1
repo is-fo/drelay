@@ -86,10 +86,42 @@ param(
     [int]    $EscapeAfterSeconds = 25,
     [string] $RelayLog,
     [string] $CaseDir,
-    [string] $AnalyseOnly
+    [string] $AnalyseOnly,
+    [string] $DrelayRoot
 )
 
-$ErrorActionPreference = 'Stop'
+# ---------------------------------------------------------------------------
+# THIS SCRIPT MUST SURVIVE A FAILURE, WHICH IT DID NOT.
+#
+# The first version ran with `$ErrorActionPreference = 'Stop'` and wrapped the launch in
+# `& $launcher @argv`. The launcher writes its own errors and returns non-zero, and a
+# *native* non-zero exit under `Stop` is raised as a terminating error -- so the script
+# died on the launch line, printed nothing about why, and stopped before it analysed
+# anything. That is exactly what the operator saw: "prints stuff but exits very quickly".
+# A diagnostic tool that quits at the first failure cannot diagnose one, so failures are
+# collected and reported here instead.
+# ---------------------------------------------------------------------------
+$ErrorActionPreference = 'Continue'
+
+# A LAUNCHER CANNOT CREATE A RUN DIRECTORY IN A CONFINED SHELL, AND THE FAILURE LOOKS LIKE
+# NOTHING AT ALL. When this script is run from the agent harness, `Directory.CreateDirectory`
+# for the run directory throws `UnauthorizedAccessException` inside the launcher, which
+# prints one `FAILED:` line and exits 1 -- before the game starts. The check below is the
+# difference between that and a verdict that says so.
+function Test-RunRoot {
+    param([string] $Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) {
+            New-Item -ItemType Directory -Force -Path $Path -ErrorAction Stop | Out-Null
+        }
+        $probe = Join-Path $Path ('.phase3-write-probe-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $probe -ErrorAction Stop | Out-Null
+        Remove-Item -LiteralPath $probe -Force -ErrorAction Stop
+        return $null
+    } catch {
+        return $_.Exception.Message
+    }
+}
 
 $repo = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
 $out = Join-Path $repo 'autododgeresearch\hook\out'
@@ -136,11 +168,29 @@ $toRun = if ($Experiment -eq 'All') { @('Sweep', 'Hold', 'Escape') } else { @($E
 $launchedRuns = New-Object System.Collections.Generic.List[string]
 
 if ($AnalyseOnly) {
-    if (-not (Test-Path -LiteralPath $AnalyseOnly)) { throw "no run directory at $AnalyseOnly" }
+    if (-not (Test-Path -LiteralPath $AnalyseOnly)) {
+        Write-Host "no run directory at $AnalyseOnly" -ForegroundColor Red
+        exit 2
+    }
     $launchedRuns.Add((Get-Item -LiteralPath $AnalyseOnly).FullName) | Out-Null
     Write-Host "analysing     : $AnalyseOnly" -ForegroundColor Yellow
 } else {
-    if (-not (Test-Path -LiteralPath $launcher)) { throw "no launcher at $launcher -- run hook\build.ps1 first" }
+    if (-not (Test-Path -LiteralPath $launcher)) {
+        Write-Host "no launcher at $launcher -- run hook\build.ps1 first" -ForegroundColor Red
+        exit 2
+    }
+
+    # PRE-FLIGHT, AND IT IS THE CHECK THAT WAS MISSING. A run root this process cannot write
+    # to makes the launcher fail before the game starts, and the only symptom is one line the
+    # caller may not read. Catching it here names the problem instead.
+    $rootProblem = Test-RunRoot $RunRoot
+    if ($rootProblem) {
+        Write-Host "the run root is not writable: $RunRoot" -ForegroundColor Red
+        Write-Host "  $rootProblem" -ForegroundColor Red
+        Write-Host "  Pass -RunRoot <a directory this shell can create in>, e.g." -ForegroundColor Yellow
+        Write-Host "  -RunRoot (Join-Path `$env:LOCALAPPDATA 'drelay\hook')" -ForegroundColor Yellow
+        exit 2
+    }
 
     foreach ($which in $toRun) {
         Write-Host ""
@@ -151,18 +201,29 @@ if ($AnalyseOnly) {
         Write-Host "  Get into a world and stay there. Closing the game early is the one way to" -ForegroundColor Yellow
         Write-Host "  waste the run: the phases need the seconds they ask for." -ForegroundColor Yellow
 
-        # THE RUN ROOT IS PASSED, NOT INHERITED. A harness-launched run cannot create its own
-        # directory under %LOCALAPPDATA% (the agent sandbox confines child processes to the
-        # workspace), and the launcher already has the switch for it.
+        # THE RUN ROOT IS PASSED, NOT INHERITED. A confined shell cannot let the launcher create
+        # its own directory under %LOCALAPPDATA%, and the launcher already has the switch.
         $argv = @('--game', $GamePath, '--live-seconds', "$Seconds", '--runroot', $RunRoot)
         $argv += Get-SteerArgument $which
         Write-Host "  command     : Drelay.Launcher.exe $($argv -join ' ')" -ForegroundColor DarkGray
+        Write-Host "  The launcher stays attached and streams the hook's log. Close the game when" -ForegroundColor DarkGray
+        Write-Host "  the character has finished walking." -ForegroundColor DarkGray
 
-        # `--no-wait` would return before the evidence exists; the launcher waits for the game
-        # and prints the tail itself, which is also the operator's live view of the hook.
         $before = @(Get-ChildItem -LiteralPath $RunRoot -Directory -ErrorAction SilentlyContinue |
                     Select-Object -ExpandProperty Name)
-        & $launcher @argv
+
+        # THE LAUNCHER IS ALLOWED TO FAIL WITHOUT TAKING THIS SCRIPT WITH IT. It returns
+        # non-zero on a refusal (a fingerprint mismatch, a denied run root), and that refusal is
+        # the most useful thing in the transcript.
+        & $launcher @argv 2>&1 | Tee-Object -Variable launcherOutput | Out-Null
+        $launcherExit = $LASTEXITCODE
+        foreach ($line in $launcherOutput) { Write-Host "  | $line" -ForegroundColor DarkGray }
+        if ($launcherExit -ne 0) {
+            Add-Check "$which launched" 'FAIL' "the launcher exited $launcherExit (see its own lines above)"
+        } else {
+            Add-Check "$which launched and the game was closed" 'PASS' "launcher exit 0"
+        }
+
         $after = @(Get-ChildItem -LiteralPath $RunRoot -Directory -ErrorAction SilentlyContinue |
                    Select-Object -ExpandProperty Name)
         $new = @($after | Where-Object { $_ -notin $before })
@@ -171,7 +232,7 @@ if ($AnalyseOnly) {
             $launchedRuns.Add((Join-Path $RunRoot $newest)) | Out-Null
             Write-Host "  run dir     : $(Join-Path $RunRoot $newest)" -ForegroundColor DarkGray
         } else {
-            Add-Check "$which produced a run directory" 'FAIL' 'no new directory under the run root'
+            Add-Check "$which produced a run directory" 'FAIL' "no new directory under $RunRoot"
         }
     }
 }
@@ -208,7 +269,19 @@ $patched = $joined -match 'PASS the movement target was PATCHED'
 $noKick = $joined -match 'PASS D the server did not object'
 $escapeCalled = $joined -match 'PASS F the escape call was MADE and RETURNED'
 $escapeWire = $joined -match "PASS F'' the escape reached the wire"
-$escapeAsked = $joined -notmatch 'PASS F the escape floor \(not requested this run\)'
+# NOT-ASKED IS ONLY A FINDING WHEN THERE WAS A RUN TO ASK OF. This read
+# `$joined -notmatch '...not requested...'`, so an EMPTY report -- a launch that failed, or no run
+# directory at all -- matched nothing and was therefore taken as "the escape was requested", and
+# the verdict grew two escape checks that could only fail. A negative test against an empty set is
+# not a negative result; it is no result.
+$escapeAsked = ($launchedRuns.Count -gt 0) -and
+               ($joined -notmatch 'PASS F the escape floor \(not requested this run\)')
+
+if ($launchedRuns.Count -eq 0) {
+    Add-Check 'at least one run was produced and analysed' 'FAIL' `
+        'nothing was launched or nothing was found to analyse -- the checks below cannot be read'
+    Add-Check 'the launcher ran the game' 'FAIL' 'see the launcher output above'
+}
 
 Add-Check 'the movement replacement was patched' $(if ($patched) { 'PASS' } else { 'FAIL' }) `
     'the hook wrote GameScene.GameInput from the game''s own call'

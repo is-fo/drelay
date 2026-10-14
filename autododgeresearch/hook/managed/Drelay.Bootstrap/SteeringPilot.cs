@@ -728,45 +728,45 @@ namespace Drelay.Bootstrap
         /// dereferenced `World.Player` and `Player.Position` on every frame of every live run
         /// since Phase 1, so those two are the oracle for this build rather than a second guess.
         /// </summary>
+        /// <summary>
+        /// The one thing that has to happen before the patch: the `Angle` type initializer, and
+        /// a write-read round trip through the emitted accessors with the box as the receiver.
+        ///
+        /// IT USED TO BUILD A THROWAWAY `GameInput` TO EXERCISE THOSE ACCESSORS, AND THAT IS WHAT
+        /// KILLED EVERY STEERING RUN. `GameInput` is `public abstract class GameInput : Node`
+        /// (`GameInput.cs:8`), so the receiver could not be constructed, and the warm-up threw
+        /// `MemberAccessException: Cannot create an abstract class` -- which disarmed the pilot
+        /// before it ever steered. The character did not move in the 02:59:48 sweep or the
+        /// 03:04:04 hold for that reason and no other.
+        ///
+        /// The lesson is not "find a concrete subclass". It is that **a first-use check must not
+        /// need an object the hook cannot legitimately build**, and this version needs exactly
+        /// one object: the `Angle` box the pilot already owns.
+        ///
+        /// WHAT WAS TRIED AND REMOVED, because it took the game down at startup: an explicit
+        /// `RuntimeHelpers.PrepareMethod` over every method of this class and every emitted
+        /// accessor. It had a defensible reason -- a `DynamicMethod`'s body is JIT-compiled on
+        /// first call, and the first call is inside a patched frame -- but that call is already
+        /// compiled at resolve by `FieldAccessor`'s own `CreateDelegate`, and `PrepareMethod` on
+        /// a delegate's `Method` is not the harmless no-op it looks like for a method the runtime
+        /// never handed back as a `RuntimeMethodHandle`. The 03:17-03:19 runs died inside this
+        /// method with an access violation before its own log line. **A pre-compile step that
+        /// nothing needs is not free.**
+        /// </summary>
         internal static void Warm()
         {
             try
             {
                 _boxedAngle = _boxedAngle ?? Activator.CreateInstance(_angleType);
 
-                // The JIT of every accessor, without needing an instance of anything.
-                Prepare(typeof(SteeringPilot), nameof(BeforeOriginal));
-                Prepare(typeof(SteeringPilot), nameof(WriteInput));
-                Prepare(typeof(SteeringPilot), "PhaseAngle");
-                Prepare(typeof(SteeringPilot), "AdvancePhase");
-                Prepare(typeof(SteeringPilot), "Accumulate");
-                Prepare(typeof(SteeringPilot), "LogFrame");
-                Prepare(typeof(SteeringPilot), "ReleaseInput");
-                Prepare(typeof(SteeringPilot), "EmitPhaseSummary");
-                Prepare(typeof(SteeringPilot), "EmitRunSummary");
-                // The delegates' own methods, prepared explicitly: each is a `DynamicMethod`
-                // whose body the JIT compiles on first call, and that first call would
-                // otherwise be inside a patched frame.
-                Delegate[] accessors =
-                {
-                    _setMoving, _setMoveSpeed, _setMoveAngleRadians,
-                    _getMoveAngleRadians, _getWorldRotationStatic,
-                };
-                foreach (Delegate d in accessors)
-                {
-                    Prepare(d?.Method);
-                }
-
                 // The round trip, through the emitted accessors, with the box as the receiver:
-                // this is the actuator's own instruction, and a mismatch means the accessor the
-                // pilot steers with does not address the field the client reads.
+                // this is the actuator's own instruction.
                 _setMoveAngleRadians(_boxedAngle, 0.25f);
                 float readBack = _getMoveAngleRadians(_boxedAngle);
 
                 HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
-                    "steering pilot warmed before the patch: the Angle type is initialised, the "
-                    + "emitted accessors are compiled, and a write-read round trip through the "
-                    + "box gave {0:0.####}", readBack));
+                    "steering pilot warmed before the patch: the Angle type is initialised and a "
+                    + "write-read round trip through the box gave {0:0.####}", readBack));
 
                 if (readBack != 0.25f)
                 {

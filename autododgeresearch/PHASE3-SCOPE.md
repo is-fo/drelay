@@ -341,12 +341,39 @@ python autododgeresearch\tools\steering_report.py <run-dir> [relay-session.log]
 .\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -AnalyseOnly <run-dir> -RelayLog <relay.log>
 ```
 
-`Run-Phase3Session.ps1` launches the experiment, reads the report for each run, writes the checks
-and the raw report to `hook\obj\cases\phase3-session\verdict.txt`, exits non-zero if any check
-failed, and repeats the one thing a reader most needs not to misread: **a `crash.txt` and an
-event-log `0x80131506` at the moment the game is closed are expected and are not this run's result**
-(§5.1). Its success path is exercised offline by `tools/tests/make_phase3_run.py`, so the runner has
-been seen to say YES as well as NO.
+`Run-Phase3Session.ps1` launches the experiment, **stays attached** (the launcher waits for the game
+and streams the hook's log live), reads the report for each run, writes the checks and the raw report
+to `hook\obj\cases\phase3-session\verdict.txt`, exits non-zero if any check failed, and repeats the
+one thing a reader most needs not to misread: **a `crash.txt` and an event-log `0x80131506` at the
+moment the game is closed are expected and are not this run's result** (§5.1).
+
+**It worked badly at first, and both faults are worth keeping visible.**
+
+1. **It could die silently, which is the worst thing a diagnostic can do.** The first version ran
+   with `$ErrorActionPreference = 'Stop'` and invoked the launcher directly; the launcher writes its
+   own errors and returns non-zero, and a non-zero native exit under `Stop` is a terminating error --
+   so the script stopped on the launch line, printed nothing about why, and never analysed. That is
+   what "prints stuff but exits very quickly" was. Failures are now collected and reported, the
+   launcher's own lines are echoed, and its exit code is a check of its own.
+2. **One inverted test grew checks out of nothing.** `$escapeAsked` read
+   `$joined -notmatch '...not requested this run'`, so an empty report matched nothing and was taken
+   as "the escape was requested", adding two escape checks that could only fail. A negative test
+   against an empty set is not a negative result; it is no result. It is now gated on there having
+   been a run.
+3. **A run root the launcher cannot write to looks like nothing at all.** In a confined shell
+   `Directory.CreateDirectory` throws inside the launcher, which prints one `FAILED:` line and exits
+   1 before the game starts. There is a write probe at the start now, and it names the fix.
+
+**And the reason the game seemed not to open at all, which was neither of the above:** the runs of
+03:17–03:19 *did* start the game, install the hook and arm the pilot -- and then died inside
+`SteeringPilot.Warm`, which had grown a `RuntimeHelpers.PrepareMethod` pass over every method and
+every emitted accessor. That pass had a defensible reason (a `DynamicMethod`'s body is JIT-compiled
+on first call, and the first call would be inside a patched frame) but no need: `FieldAccessor`
+already compiles the delegate at resolve, and `PrepareMethod` on a `DynamicMethod`'s `Method` is not
+the harmless no-op it looks like. It is removed, and the warm-up is back to the one thing it exists
+for -- the `Angle` type initializer and a write-read round trip through the accessors, against the
+pilot's own `Angle` box. **A pre-compile step that nothing needs is not free; it took the game down
+before the first frame.**
 
 The report handles both experiments and tells them apart: a run that asked for only one of them is
 not failed for the other, which matters because a good escape result reported as a failed steering
