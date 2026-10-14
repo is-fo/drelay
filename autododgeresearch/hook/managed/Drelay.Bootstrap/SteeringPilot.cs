@@ -700,7 +700,22 @@ namespace Drelay.Bootstrap
                 // the right type and the values are written and read back, so this exercises
                 // exactly the instructions the frame path executes -- the `castclass`, the
                 // `ldfld`, the `stfld` -- without needing a live world.
-                object input = RuntimeHelpers.GetUninitializedObject(_gameSceneInputField.DeclaringType);
+                //
+                // THE RECEIVER'S TYPE IS THE FIELD'S TYPE, NOT THE FIELD'S DECLARING TYPE, and
+                // that distinction is a bug this line had. `_gameSceneInputField` is declared on
+                // `GameScene` and its TYPE is `GameInput`, and an uninitialised `GameScene` is
+                // not a `GameInput` -- so the emitted `castclass` threw:
+                //
+                //   InvalidCastException: Unable to cast object of type
+                //   'DarzasDominion.Darza.Scenes.GameScene' to type
+                //   'DarzasDominion.Darza.Game.UI.GameInput'
+                //
+                // which the catch below turned into "the pilot FAILED its warm-up and is
+                // disarmed". That is the right failure -- loud, at startup, before the patch --
+                // and it is why the warm-up exists: without it the same cast would have
+                // happened inside a patched frame, once per frame, in a `try` that reports one
+                // line and carries on. The live run of 2026-10-14 02:54 found it.
+                object input = RuntimeHelpers.GetUninitializedObject(_gameSceneInputField.FieldType);
                 _setMoving(input, true);
                 _setMoveSpeed(input, 1f);
                 _setMoveAngleRadians(_boxedAngle, 0.25f);
