@@ -210,8 +210,18 @@ namespace Drelay.Bootstrap
         /// <summary>Whether a steering experiment is actually being run.</summary>
         public static bool Enabled => _enabled;
 
-        /// <summary>One line per frame is a lot of log; every 60 is about a second at 60 Hz.</summary>
-        private const int LogEveryFrames = 60;
+        /// <summary>
+        /// One line per frame is a lot of log; every 15 is a quarter-second at 60 Hz.
+        ///
+        /// IT WAS 60, AND THE FIRST TWO LIVE RUNS ARE WHY IT IS NOT. Both were closed by hand
+        /// about two seconds after the patch went live, and at 60 frames between lines -- with
+        /// the first line at frame 60 -- they produced **zero** `steer frame` lines between
+        /// them. The report could then only say "the replacement was not entered", which is
+        /// the wrong reading of a run that had armed and begun its first phase. A spike whose
+        /// evidence arrives one second after it starts has to log faster than that; the cost
+        /// is one line a quarter-second for the seconds it runs.
+        /// </summary>
+        private const int LogEveryFrames = 15;
 
         /// <summary>
         /// Frames of live world before a phase may start, so the first phase is not

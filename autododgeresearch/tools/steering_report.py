@@ -65,10 +65,23 @@ RE_SUMMARY = re.compile(
     r"skipped: no-player (?P<noplayer>\d+), dead-or-safe (?P<dead>\d+) \| mode '(?P<mode>[^']*)'")
 
 RE_ARMED = re.compile(r"resolve\[7\].*steering pilot is (ARMED|IDLE|NOT available)(?P<rest>.*)")
-RE_PUBLISHED = re.compile(r"managed movement replacement published at 0x(?P<addr>[0-9A-F]+)")
-RE_PATCHED = re.compile(r"PATCHED 'movementIntegrator' at (?P<addr>0x[0-9A-F]+)")
-RE_NOTPATCHED = re.compile(r"target 'movementIntegrator' verified at (?P<addr>0x[0-9A-F]+) and NOT patched")
-RE_MISSING = re.compile(r"movementIntegrator\s+MISSING")
+# The address shapes are taken from REAL hook.log lines, not from what looks natural, and
+# that distinction cost a false pass. The native log prints addresses bare -- `at
+# 00007FFF9C112233` -- while this reader's first version required an `0x` prefix, and the
+# fixture that "verified" it used hand-written lines that had one. So the reader was green
+# against its own fixture and matched nothing in a real run, which is the worst kind of test:
+# one that agrees with the author instead of with the artefact. `0x?` accepts both, and the
+# fixture now carries the exact lines a run produces.
+RE_PUBLISHED = re.compile(
+    r"managed movement replacement published at (?:0x)?(?P<addr>[0-9A-F]{6,})")
+RE_PATCHED = re.compile(
+    r"PATCHED 'movementIntegrator' at (?:0x)?(?P<addr>[0-9A-F]{6,})")
+RE_NOTPATCHED = re.compile(
+    r"target 'movementIntegrator' verified at (?:0x)?(?P<addr>[0-9A-F]{6,}) and NOT patched")
+# Anchored on the error line's own shape, because the *summary* line also names the target
+# (`movementIntegrator FOUND ... if it were MISSING`) and a loose pattern would read a
+# successful match as a miss.
+RE_MISSING = re.compile(r"^\s*\[ERROR\]\s+movementIntegrator\s+MISSING")
 RE_REJECTED = re.compile(r"unrecognised DRELAY_MOVE_STEER mode|the steering pilot is ARMED but")
 
 RE_RELAY_MOVE = re.compile(r"C->S\] .*?len=(?P<len>\d+) id=0x4A Move\s+(?P<hex>[0-9A-Fa-f]+)")

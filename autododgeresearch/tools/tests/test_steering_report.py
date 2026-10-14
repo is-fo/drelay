@@ -26,13 +26,13 @@ ROOT = os.path.dirname(TOOLS)
 REPORT = os.path.join(TOOLS, "steering_report.py")
 
 RUN_LOG = """[INFO ] target table: 5 entries from the bootstrap
-[INFO ] managed movement replacement published at 0x7FFF9ADD8C90; the native side jumps straight into it only when --move-steer asked for it
+[INFO ] managed movement replacement published at 00007FFF9DC9B2D0; the native side jumps straight into it only when --move-steer asked for it
 {patched}
 [INFO ] phase 1 complete
 """
 
-PATCHED = "[INFO ] PATCHED 'movementIntegrator' at 0x7FFF9C112233 (trampoline 0x7FFF9A850F40)"
-NOT_PATCHED = ("[INFO ] target 'movementIntegrator' verified at 0x7FFF9C112233 and NOT patched: "
+PATCHED = "[INFO ] PATCHED 'movementIntegrator' at 00007FFF9EFB3100 (trampoline 00007FFF9D300F80)"
+NOT_PATCHED = ("[INFO ] target 'movementIntegrator' verified at 00007FFF9EFB14A0 and NOT patched: "
                "its detour body is Phase 2's (this spike patches one target on purpose)")
 
 BOOT_HEAD = """[INFO] boot: resolve[7] offsets resolved; publishing the count
@@ -134,9 +134,11 @@ def write_case(root, name, boot, hook, relay):
     return d, relay_path
 
 
-def run_report(d, relay):
-    proc = subprocess.run([sys.executable, REPORT, d, relay],
-                          capture_output=True, text=True)
+def run_report(d, relay=None):
+    argv = [sys.executable, REPORT, d]
+    if relay:
+        argv.append(relay)
+    proc = subprocess.run(argv, capture_output=True, text=True)
     if os.environ.get("STEERING_FIXTURE_VERBOSE") == "1":
         print("---- %s (exit %d) ----" % (d, proc.returncode))
         print(proc.stdout)
@@ -155,6 +157,36 @@ def main():
             failures.append(what)
 
     try:
+        # ---------------------------------------------------------------------------------
+        # FIRST, THE REAL LINES. Golden lines captured verbatim from the operator's run of
+        # 2026-10-14 (`tools/tests/golden/hook-log-lines.txt`), because the fixture's own
+        # hand-written lines once had an `0x` prefix the native log does not print -- so the
+        # reader was green here and matched nothing in a real run. A fixture is only as good
+        # as its resemblance to the artefact, and hand-writing that resemblance is how it
+        # drifts. Lines prefixed `PILOT:` are outside the golden set (they are the pilot's
+        # own lines from a run that reached phase 1, appended here so the golden case can
+        # exercise the steering checks too) and are dropped for the patch-only assertion.
+        # ---------------------------------------------------------------------------------
+        golden_path = os.path.join(HERE, "golden", "hook-log-lines.txt")
+        golden_all = open(golden_path, encoding="utf-8").read()
+        golden = "\n".join(line for line in golden_all.splitlines()
+                           if not line.startswith("PILOT:")).strip() + "\n"
+        d = os.path.join(root, "golden")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "hook.log"), "w", encoding="utf-8") as fh:
+            fh.write(golden)
+        with open(os.path.join(d, "bootstrap.log"), "w", encoding="utf-8") as fh:
+            fh.write("")
+        code, out = run_report(d, None)
+        # The assertion is that the ADDRESSES WERE READ, not that a steering plan ran: the
+        # golden lines are a patch line and a publish line, and a report that cannot parse
+        # them is a report that would call any real run "never patched". The address is
+        # printed in the parse summary, so its presence is the check.
+        check("golden: the patch address is read",
+              "patched 00007FFF9EFB3100" in out,
+              "the golden lines are the operator's own (%d line(s)); a reader that cannot see "
+              "them cannot see any run" % len(golden.strip().splitlines()))
+
         d, r = write_case(root, "good", build_boot(True), RUN_LOG.format(patched=PATCHED), RELAY_GOOD)
         code, out = run_report(d, r)
         check("good: exits 0", code == 0, "exit %d" % code)

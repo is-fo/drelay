@@ -276,8 +276,12 @@ player.
 **The player moves under hook control, in the commanded direction, the server does not kick, and the
 client's own movement accounting stays sane.** Concretely, from a `sweep` run:
 
-1. every phase reports `moved on N frame(s)` with `N` comparable to the phase's length — the input
-   landed and the integrator acted on it;
+1. **every phase reports `moved on N frame(s)` with `N` comparable to the phase's length** — the
+   input landed and the integrator acted on it. **The run has to last long enough for a phase to
+   end**: `sweep:240` needs 240 frames per phase (about four seconds each, eight phases, so a little
+   over half a minute), and `hold:90:600` needs 600 (ten seconds). The first two live attempts were
+   closed about two seconds after the patch went live, which is why they show a patched target, an
+   armed plan, and no phase summary: the plan had not reached its first boundary;
 2. the per-phase `observed heading` advances with the commanded angle, one quarter-turn at a time;
 3. the **read-back** in the frame lines equals the value written — the write reached the field the
    client reads, rather than a copy;
