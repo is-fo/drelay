@@ -674,60 +674,6 @@ namespace Drelay.Bootstrap
             _setMoveSpeed(input, 1f);
         }
 
-        /// <summary>JIT one method of this class by name, if it is there.</summary>
-        private static void Prepare(Type owner, string name)
-        {
-            MethodInfo m = owner.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic
-                                                 | BindingFlags.Static);
-            Prepare(m);
-        }
-
-        private static void Prepare(MethodInfo m)
-        {
-            if (m == null)
-            {
-                return;
-            }
-            try
-            {
-                RuntimeHelpers.PrepareMethod(m.MethodHandle);
-            }
-            catch
-            {
-                // A method that cannot be prepared is not a reason to refuse: `PrepareMethod`
-                // is an optimisation against compiling inside a patched frame, and the frame
-                // path is correct without it.
-            }
-        }
-
-        /// <summary>
-        /// Force every lazy runtime operation the frame path needs to happen NOW, before the
-        /// patch goes live -- the discipline `PublishFrameReplacement` states for the same
-        /// reason, applied to this pilot's own first-use hazards.
-        ///
-        /// IT USED TO BUILD A THROWAWAY `GameInput` TO EXERCISE THE ACCESSORS, AND THAT IS WHAT
-        /// KILLED EVERY STEERING RUN. `GameInput` is `public abstract class GameInput : Node`
-        /// (`GameInput.cs:8`), so the receiver could not be constructed, and the warm-up threw
-        /// `MemberAccessException: Cannot create an abstract class` -- which disarmed the pilot
-        /// before it ever steered. The character did not move in the 02:59:48 sweep or the
-        /// 03:04:04 hold for that reason and no other. The first fix (a concrete field TYPE
-        /// instead of the declaring type) failed the same way, because the field's type IS the
-        /// abstract class.
-        ///
-        /// The lesson is not "find a concrete subclass". It is that **a first-use check must not
-        /// need an object the hook cannot legitimately build**. Everything on this pilot's frame
-        /// path is therefore exercised here against objects the pilot already owns:
-        ///
-        ///   * the emitted accessors are `PrepareMethod`d rather than called -- the JIT is the
-        ///     one-time cost, and it does not need a receiver;
-        ///   * the `Angle` box is created here, so its type initializer runs now;
-        ///   * the box's write-read round trip goes through the emitted setter and getter, which
-        ///     DO need a receiver -- and the box itself is that receiver.
-        ///
-        /// The offsets that matter are not re-derived here at all: the native frame read has
-        /// dereferenced `World.Player` and `Player.Position` on every frame of every live run
-        /// since Phase 1, so those two are the oracle for this build rather than a second guess.
-        /// </summary>
         /// <summary>
         /// The one thing that has to happen before the patch: the `Angle` type initializer, and
         /// a write-read round trip through the emitted accessors with the box as the receiver.
@@ -740,18 +686,22 @@ namespace Drelay.Bootstrap
         /// 03:04:04 hold for that reason and no other.
         ///
         /// The lesson is not "find a concrete subclass". It is that **a first-use check must not
-        /// need an object the hook cannot legitimately build**, and this version needs exactly
-        /// one object: the `Angle` box the pilot already owns.
+        /// need an object the hook cannot legitimately build**, and this version needs exactly one
+        /// object: the `Angle` box the pilot already owns.
         ///
         /// WHAT WAS TRIED AND REMOVED, because it took the game down at startup: an explicit
-        /// `RuntimeHelpers.PrepareMethod` over every method of this class and every emitted
-        /// accessor. It had a defensible reason -- a `DynamicMethod`'s body is JIT-compiled on
-        /// first call, and the first call is inside a patched frame -- but that call is already
-        /// compiled at resolve by `FieldAccessor`'s own `CreateDelegate`, and `PrepareMethod` on
-        /// a delegate's `Method` is not the harmless no-op it looks like for a method the runtime
-        /// never handed back as a `RuntimeMethodHandle`. The 03:17-03:19 runs died inside this
-        /// method with an access violation before its own log line. **A pre-compile step that
-        /// nothing needs is not free.**
+        /// `RuntimeHelpers.PrepareMethod` over every emitted accessor's `Method`. It had a
+        /// defensible reason -- a `DynamicMethod`'s body is JIT-compiled on first call, and the
+        /// first call is inside a patched frame -- and no need: `FieldAccessor` already compiles
+        /// each delegate at resolve with `CreateDelegate`, and preparing a `DynamicMethod`'s
+        /// `Method` is not the harmless no-op it looks like. The 03:17-03:19 runs died on that
+        /// line, inside this method, before its own log line:
+        ///
+        ///     exception 0xC0000005 at System.Private.CoreLib.dll, read of 00007FFF3E800010
+        ///
+        /// **A pre-compile step that nothing needs is not free.** The static-method preparation
+        /// in `PreparePilotPath` is a different thing and stays: those are ordinary methods with
+        /// real handles, and they have been prepared on every run since the first build.
         /// </summary>
         internal static void Warm()
         {
@@ -1084,13 +1034,19 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
-        /// JIT everything the pilot's frame path touches, before the patch goes live.
+        /// Prepare the pilot's own static methods before the patch goes live, so the frame path
+        /// is not compiled from inside a patched frame.
         ///
-        /// `PrepareMethod` covers the method named and nothing it calls, so every callee on
-        /// this path is named explicitly.  The path also touches the reflection *fields*
-        /// rather than their accessor delegates -- `_inputMoveAngleField.SetValue` is a
-        /// framework method, and the boxed-`Angle` copy it performs is not something
-        /// `PrepareMethod` can reach.
+        /// THESE ARE ORDINARY METHODS, WHICH IS WHY THIS ONE IS SAFE. The warm-up's removed pass
+        /// called `PrepareMethod` on the emitted accessors' `Method` -- a `DynamicMethod`, whose
+        /// handle the runtime is not obliged to accept -- and that is what died at startup. Every
+        /// name in the list below resolves to a normally declared static method with a real
+        /// `RuntimeMethodHandle`, and this has run on every launch since the first build of the
+        /// pilot.
+        ///
+        /// `PrepareMethod` covers the method named and nothing it calls, so the callees on the
+        /// frame path are named explicitly. The accessor delegates are not in the list because
+        /// `FieldAccessor` compiles each of them at resolve, where `CreateDelegate` is called.
         /// </summary>
         private static void PreparePilotPath()
         {
