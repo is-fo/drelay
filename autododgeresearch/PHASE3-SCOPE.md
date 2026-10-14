@@ -333,6 +333,21 @@ and nothing else. The analysis is:
 python autododgeresearch\tools\steering_report.py <run-dir> [relay-session.log]
 ```
 
+**Or run the whole thing as one command**, which is what the runner is for:
+
+```powershell
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -Experiment Sweep -Seconds 240
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -Experiment All   -Seconds 240 -RelayLog <relay.log>
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -AnalyseOnly <run-dir> -RelayLog <relay.log>
+```
+
+`Run-Phase3Session.ps1` launches the experiment, reads the report for each run, writes the checks
+and the raw report to `hook\obj\cases\phase3-session\verdict.txt`, exits non-zero if any check
+failed, and repeats the one thing a reader most needs not to misread: **a `crash.txt` and an
+event-log `0x80131506` at the moment the game is closed are expected and are not this run's result**
+(§5.1). Its success path is exercised offline by `tools/tests/make_phase3_run.py`, so the runner has
+been seen to say YES as well as NO.
+
 The report handles both experiments and tells them apart: a run that asked for only one of them is
 not failed for the other, which matters because a good escape result reported as a failed steering
 run would be worse than no report at all.

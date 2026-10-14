@@ -37,6 +37,31 @@ If a native build fails with `LNK1104: cannot open file ...Drelay.Hook.dll`, a l
 process is holding it — kill any `DarzasDominion` or `Drelay.Launcher` first. It is not the
 documented retry-once quirk.
 
+### Running a Phase 3 session
+
+One command, and it needs a person at the keyboard — the character has to be in a world, and the
+client's menus cannot be driven from outside. **The character will walk on its own** during the
+steering experiments, so run it somewhere it does not matter.
+
+```powershell
+# the whole spike in one sitting: calibration sweep, then a held heading, then the nexus floor
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -Experiment All -Seconds 240 -RelayLog <relay.log>
+
+# or one experiment at a time
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -Experiment Sweep  -Seconds 240
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -Experiment Hold   -Seconds 180
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -Experiment Escape -Seconds 120
+
+# re-read a run that has already been played
+.\autododgeresearch\hook\tools\Run-Phase3Session.ps1 -AnalyseOnly <run-dir> -RelayLog <relay.log>
+```
+
+It writes the checks and the raw report to `hook\obj\cases\phase3-session\verdict.txt` and exits
+non-zero if any check failed. **Let the run last as long as the phases need** — `sweep:240` is about
+35 s of gameplay for its eight phases and `hold` 600 frames is about 10 s; a run closed early reports
+"no phase summary" and proves nothing. The protocol, the escape test and what each outcome means are
+in [`PHASE3-SCOPE.md`](PHASE3-SCOPE.md) §5.
+
 ### Running the Phase 2 session
 
 One command, and it needs a person at the keyboard: the sensor only has anything to read once a
