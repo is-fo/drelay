@@ -674,65 +674,107 @@ namespace Drelay.Bootstrap
             _setMoveSpeed(input, 1f);
         }
 
+        /// <summary>JIT one method of this class by name, if it is there.</summary>
+        private static void Prepare(Type owner, string name)
+        {
+            MethodInfo m = owner.GetMethod(name, BindingFlags.Public | BindingFlags.NonPublic
+                                                 | BindingFlags.Static);
+            Prepare(m);
+        }
+
+        private static void Prepare(MethodInfo m)
+        {
+            if (m == null)
+            {
+                return;
+            }
+            try
+            {
+                RuntimeHelpers.PrepareMethod(m.MethodHandle);
+            }
+            catch
+            {
+                // A method that cannot be prepared is not a reason to refuse: `PrepareMethod`
+                // is an optimisation against compiling inside a patched frame, and the frame
+                // path is correct without it.
+            }
+        }
+
         /// <summary>
         /// Force every lazy runtime operation the frame path needs to happen NOW, before the
         /// patch goes live -- the discipline `PublishFrameReplacement` states for the same
         /// reason, applied to this pilot's own first-use hazards.
         ///
-        /// THE HAZARD THIS ADDRESSES IS NOT HYPOTHETICAL. A crash two live runs deep in the
-        /// same CLR address is consistent with a first-use operation happening *during* a
-        /// patched frame: `Angle`'s type initializer, the JIT of the emitted accessors, and
-        /// the boxing of the `Angle` the setter writes into are all one-time work, and if any
-        /// of them is still pending when the replacement first runs, it happens with this
-        /// replacement's caller frame underneath it. Doing them here moves the cost to the
-        /// resolve callback, which is where a class initializer and a JIT are ordinary work,
-        /// and it makes a failure a refusal at startup instead of a death mid-session.
+        /// IT USED TO BUILD A THROWAWAY `GameInput` TO EXERCISE THE ACCESSORS, AND THAT IS WHAT
+        /// KILLED EVERY STEERING RUN. `GameInput` is `public abstract class GameInput : Node`
+        /// (`GameInput.cs:8`), so the receiver could not be constructed, and the warm-up threw
+        /// `MemberAccessException: Cannot create an abstract class` -- which disarmed the pilot
+        /// before it ever steered. The character did not move in the 02:59:48 sweep or the
+        /// 03:04:04 hold for that reason and no other. The first fix (a concrete field TYPE
+        /// instead of the declaring type) failed the same way, because the field's type IS the
+        /// abstract class.
+        ///
+        /// The lesson is not "find a concrete subclass". It is that **a first-use check must not
+        /// need an object the hook cannot legitimately build**. Everything on this pilot's frame
+        /// path is therefore exercised here against objects the pilot already owns:
+        ///
+        ///   * the emitted accessors are `PrepareMethod`d rather than called -- the JIT is the
+        ///     one-time cost, and it does not need a receiver;
+        ///   * the `Angle` box is created here, so its type initializer runs now;
+        ///   * the box's write-read round trip goes through the emitted setter and getter, which
+        ///     DO need a receiver -- and the box itself is that receiver.
+        ///
+        /// The offsets that matter are not re-derived here at all: the native frame read has
+        /// dereferenced `World.Player` and `Player.Position` on every frame of every live run
+        /// since Phase 1, so those two are the oracle for this build rather than a second guess.
         /// </summary>
         internal static void Warm()
         {
             try
             {
-                // The box is created here rather than at first write, and created the way the
-                // frame path will use it.
                 _boxedAngle = _boxedAngle ?? Activator.CreateInstance(_angleType);
 
-                // Every emitted accessor is invoked once. The receiver is a throwaway object of
-                // the right type and the values are written and read back, so this exercises
-                // exactly the instructions the frame path executes -- the `castclass`, the
-                // `ldfld`, the `stfld` -- without needing a live world.
-                //
-                // THE RECEIVER'S TYPE IS THE FIELD'S TYPE, NOT THE FIELD'S DECLARING TYPE, and
-                // that distinction is a bug this line had. `_gameSceneInputField` is declared on
-                // `GameScene` and its TYPE is `GameInput`, and an uninitialised `GameScene` is
-                // not a `GameInput` -- so the emitted `castclass` threw:
-                //
-                //   InvalidCastException: Unable to cast object of type
-                //   'DarzasDominion.Darza.Scenes.GameScene' to type
-                //   'DarzasDominion.Darza.Game.UI.GameInput'
-                //
-                // which the catch below turned into "the pilot FAILED its warm-up and is
-                // disarmed". That is the right failure -- loud, at startup, before the patch --
-                // and it is why the warm-up exists: without it the same cast would have
-                // happened inside a patched frame, once per frame, in a `try` that reports one
-                // line and carries on. The live run of 2026-10-14 02:54 found it.
-                object input = RuntimeHelpers.GetUninitializedObject(_gameSceneInputField.FieldType);
-                _setMoving(input, true);
-                _setMoveSpeed(input, 1f);
+                // The JIT of every accessor, without needing an instance of anything.
+                Prepare(typeof(SteeringPilot), nameof(BeforeOriginal));
+                Prepare(typeof(SteeringPilot), nameof(WriteInput));
+                Prepare(typeof(SteeringPilot), "PhaseAngle");
+                Prepare(typeof(SteeringPilot), "AdvancePhase");
+                Prepare(typeof(SteeringPilot), "Accumulate");
+                Prepare(typeof(SteeringPilot), "LogFrame");
+                Prepare(typeof(SteeringPilot), "ReleaseInput");
+                Prepare(typeof(SteeringPilot), "EmitPhaseSummary");
+                Prepare(typeof(SteeringPilot), "EmitRunSummary");
+                // The delegates' own methods, prepared explicitly: each is a `DynamicMethod`
+                // whose body the JIT compiles on first call, and that first call would
+                // otherwise be inside a patched frame.
+                Delegate[] accessors =
+                {
+                    _setMoving, _setMoveSpeed, _setMoveAngleRadians,
+                    _getMoveAngleRadians, _getWorldRotationStatic,
+                };
+                foreach (Delegate d in accessors)
+                {
+                    Prepare(d?.Method);
+                }
+
+                // The round trip, through the emitted accessors, with the box as the receiver:
+                // this is the actuator's own instruction, and a mismatch means the accessor the
+                // pilot steers with does not address the field the client reads.
                 _setMoveAngleRadians(_boxedAngle, 0.25f);
                 float readBack = _getMoveAngleRadians(_boxedAngle);
-                bool matches = readBack == 0.25f;
 
                 HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
                     "steering pilot warmed before the patch: the Angle type is initialised, the "
                     + "emitted accessors are compiled, and a write-read round trip through the "
-                    + "box gave {0:0.####} ({1})", readBack, matches ? "match" : "MISMATCH"));
-                if (!matches)
+                    + "box gave {0:0.####}", readBack));
+
+                if (readBack != 0.25f)
                 {
-                    // A write-read mismatch is not a warning: it means the accessor this pilot
-                    // steers with does not address the field the client reads.
                     _enabled = false;
-                    _unresolvedReason = "the warmed accessor did not read back what it wrote";
-                    HookEntry.AppendLog("ERROR", "the steering pilot is DISARMED: " + _unresolvedReason);
+                    _unresolvedReason = "the write-read round trip gave " + readBack.ToString("0.####",
+                        CultureInfo.InvariantCulture) + ", not 0.25";
+                    HookEntry.AppendLog("ERROR", "the steering pilot is DISARMED and will not steer: "
+                                                 + _unresolvedReason);
                 }
                 HookEntry.FlushLog();
             }
