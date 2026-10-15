@@ -2787,6 +2787,22 @@ volley" is read off a file. **`bootstrap.log` carries the settings line, which n
 `path enable=... target=... cap=... danger=... pad=... wp=.../... dwell=...s`** — a run that does not
 print it is a run whose path cannot be identified.
 
+**AND THE OBJECTIVE IS ONE COMMAND TO CHECK.** It used to be six commands and a table read by eye,
+which is how a regression gets missed:
+
+```powershell
+.\autododgeresearch\tools\Test-DodgeObjective.ps1
+# OBJECTIVE: 18 of 18 check(s) hold.
+```
+
+It runs every clause this objective names — the SIDESTEP/OUTRUN inversion on all five recordings, the
+path's columns in the dump, F/T5/T6/T10/PATH on all five, the six scenarios green with the dodge still
+moving, and the mean decision inside the budget — and prints the number behind each. It reads the
+per-frame **stage clock** rather than the harness's `costUs` for the budget check, because the latter
+carries the harness's own collector (§15.11). **The acting command is `-Experiment Dodge`, not
+`-DodgeAct`** — `-Dodge` is the dry run, and the runner now refuses the wrong name with the right one
+in the message, and warns when the acting run has no `-Trace`.
+
 ### 15.8 Where every number in this section came from
 
 | number | where |
