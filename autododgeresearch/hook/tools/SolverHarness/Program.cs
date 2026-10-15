@@ -307,6 +307,13 @@ namespace Drelay.SolverHarness
                     case "pathtarget": config.PathTargetSeconds = v; break;
                     case "pathdwell": config.PathHysteresisDwellSeconds = v; break;
                     case "pathwp": config.PathWaypointUnits = v; break;
+                    // THE PROJECTED-DANGER TERM. `projected=0` is the off-switch and restores the
+                    // section 15 behaviour exactly, which is the A/B the next measurement needs.
+                    case "projected": config.WeightProjectedDanger = v; break;
+                    // THE AXIAL PENALTY -- the term this task is about. `axial=0` is the off-switch.
+                    case "axial": config.WeightAxial = v; break;
+                    case "projseconds": config.ProjectedSeconds = v; break;
+                    case "projsamples": config.ProjectedSamples = (int)v; break;
                     case "wpfraction": config.PathWaypointFraction = v; break;
                     case "horizon": config.HorizonMs = v; break;
                     case "trust": config.TrustSeconds = v; break;
@@ -922,7 +929,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // comes before any further change: a distribution over outcomes cannot name a cause.
             if (decision.Action == DodgeAction.Move && decision.CandidateIndex >= 0)
             {
-                float[] terms = new float[11];
+                float[] terms = new float[13];
                 _solver.DescribeChosen(snapshot, decision.CandidateIndex, terms);
                 var parts = new System.Collections.Generic.List<string>();
                 for (int ti = 0; ti < terms.Length; ti++)
@@ -935,7 +942,20 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 // dodge chose is a breakdown of a frame, not of a decision.
                 Console.WriteLine("  chosen  : heading=" + F(Deg(decision.HeadingRadians))
                                   + " scale=" + F(decision.SpeedScale) + " "
-                                  + string.Join(" ", parts));
+                                  + string.Join(" ", parts)
+                                  + " | fieldReady=" + _solver.Path.FieldReady
+                                  + " danger(t=0.4) at player " 
+                                  + F(_solver.Path.Danger(frame.PlayerX, frame.PlayerY, 0.4f))
+                                  + " at +2u " 
+                                  + F(_solver.Path.Danger(frame.PlayerX + 2.0f, frame.PlayerY, 0.4f))
+                                  + " ON-BULLET(t=0) " 
+                                  + F(snapshot.Threats.Count > 0
+                                      ? _solver.Path.Danger(snapshot.Threats[0].Xs[0], snapshot.Threats[0].Ys[0], 0.0f)
+                                      : -1.0f)
+                                  + " ON-BULLET(t=0.6) " 
+                                  + F(snapshot.Threats.Count > 0
+                                      ? _solver.Path.Danger(snapshot.Threats[0].XAt(20), snapshot.Threats[0].YAt(20), 0.6f)
+                                      : -1.0f));
             }
             foreach (CandidateResult c in candidates)
             {

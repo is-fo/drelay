@@ -228,6 +228,7 @@ namespace Drelay.Bootstrap
         private float _length;
         private float _cost;
         private bool _fresh;
+        private bool _fieldReady;
         private readonly PathStats _stats = new PathStats();
 
         public PathPlanner(DodgeConfig config)
@@ -243,6 +244,40 @@ namespace Drelay.Bootstrap
         public void Configure(DodgeConfig config)
         {
             _config = config;
+        }
+
+        /// <summary>
+        /// True when the last <see cref="Plan"/> left a danger field that a reader may use.
+        ///
+        /// IT IS NOT "THE PATH EXISTS" AND THE DIFFERENCE MATTERS. A path can fail for reasons that
+        /// have nothing to do with the danger field -- an unreachable target, a blocked start -- while
+        /// the field is perfectly well built, and a caller asking "is there danger in front of me"
+        /// must not be told no because the route to a goal behind a wall could not be found. It is
+        /// true when the frame had a grid and at least one threat to put in the envelope.
+        /// </summary>
+        public bool FieldReady => _fieldReady;
+
+        /// <summary>
+        /// The half-width of the patch a projected-danger probe reads around a future position.
+        ///
+        /// IT IS THE COLLISION DISC AND NOT A TUNING FUDGE. The danger field is non-zero only within
+        /// `player radius + bullet radius + pad` of a bullet's body, so a probe read at a single point
+        /// asks "is a bullet exactly here", which is the wrong question and answered no everywhere. At
+        /// this radius the nine reads of a 3x3 patch ask "is a bullet near here", which is the
+        /// question that decides whether a step leads somewhere better.
+        ///
+        /// It is built from the last frame's envelope -- the pad and the player's own radius -- so it
+        /// tracks the game's own geometry rather than a constant, and it falls back to the configured
+        /// pad alone when no envelope exists.
+        /// </summary>
+        public float ProbeRadius
+        {
+            // The FIRST threat's tight radius stands for the frame's, which is honest here: the tight
+            // radius is `player.Radius + threat.Radius + pad`, and the threat radius varies by a
+            // couple of tenths across a session's bullets while the player's half is constant. Taking
+            // one number per frame keeps the probe the same size for every candidate of that frame,
+            // which is what makes the term comparable across the ring.
+            get { return _threatCount > 0 ? _threatNear[0] : 0.5f; }
         }
 
         /// <summary>The planner's counters. Read by the harness; reset by <see cref="ResetCounters"/>.</summary>
@@ -284,6 +319,29 @@ namespace Drelay.Bootstrap
         /// is meaningful only immediately after one.
         /// </summary>
         public float DebugDangerAt(float x, float y, float seconds)
+        {
+            return DangerAt(x, y, seconds);
+        }
+
+        /// <summary>
+        /// The danger field's value at a point and time, in `[0,1]`, for the SOLVER as well as the
+        /// instrument.
+        ///
+        /// THE FIELD IS THE PLANNER'S MOST USEFUL EXPORT AND THE PATH IS ONLY ITS FIRST CUSTOMER.
+        /// `SPIKE3.2-OFFLINE-SOLVER.md` section 15.5 measured why the first version was only a partial
+        /// fix: the retreat is paid for by `resolve` and `clearance`, which are both right about one
+        /// step, and a waypoint is a DIRECTION -- so a preference built on it cannot say "this step is
+        /// bad because of the step after it", which is the sentence the whole task starts from.
+        ///
+        /// This answers that sentence directly for any point and any time, so
+        /// `DodgeSolver.ProjectedDanger` can ask it about where a candidate LEADS. It is the same
+        /// one-clock question `PlanWalk` asks, from the same samples and the same envelope, so a
+        /// candidate scored this way is scored on the model's own geometry and not on a second one.
+        ///
+        /// It reads the envelope built by the last `Plan`, so it is meaningful only after one; with no
+        /// threats, no grid or the planner disabled it returns 0 and costs a loop over an empty array.
+        /// </summary>
+        public float Danger(float x, float y, float seconds)
         {
             return DangerAt(x, y, seconds);
         }
@@ -397,6 +455,7 @@ namespace Drelay.Bootstrap
             long startTicks = System.Diagnostics.Stopwatch.GetTimestamp();
 
             _nodes = 0;
+            _fieldReady = false;
             _length = 0.0f;
             _cost = 0.0f;
             _fresh = false;
@@ -666,6 +725,10 @@ namespace Drelay.Bootstrap
             }
 
             BuildDangerEnvelope(snapshot, playerRadius);
+            // THE FIELD IS READY EVEN WHEN THE PATH IS NOT. See `FieldReady`: a frame with threats in
+            // it has a danger field whether or not a route to the goal could be found, and the
+            // projected-danger term is a question about the field.
+            _fieldReady = _threatCount > 0;
             return true;
         }
 

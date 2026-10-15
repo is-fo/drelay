@@ -2505,6 +2505,9 @@ namespace Drelay.Bootstrap
                     clearance = -_config.ClearComfort;
                 }
                 float resolve = r.Resolve;
+                // THE STATE THIS STEP LEADS TO, WHICH IS THE THING THE SCORE COULD NOT SEE.
+                // See `ProjectedDanger` and SPIKE3.2-OFFLINE-SOLVER.md section 15.6.
+                float projected = ProjectedDanger(player, r, budget);
 
                 r.Score =
                     (_config.WeightResolve * resolve)
@@ -2515,6 +2518,8 @@ namespace Drelay.Bootstrap
                     + (_config.WeightPath * path)
                     + (_config.WeightHeading * heading)
                     + (_config.WeightLateral * lateral)
+                    - (_config.WeightAxial * Axialness(snapshot, player, r))
+                    - (_config.WeightProjectedDanger * projected)
                     - (_config.WeightMove * move)
                     + (_config.WeightStandBias * stand);
                 _results[i] = r;
@@ -2540,11 +2545,11 @@ namespace Drelay.Bootstrap
         /// </summary>
         public void DescribeChosen(DodgeSnapshot snapshot, int index, float[] into)
         {
-            if (into == null || into.Length < 11)
+            if (into == null || into.Length < 13)
             {
                 return;
             }
-            for (int i = 0; i < 11; i++)
+            for (int i = 0; i < 13; i++)
             {
                 into[i] = 0.0f;
             }
@@ -2558,6 +2563,7 @@ namespace Drelay.Bootstrap
             float path = PathProgress(r.HeadingRadians, r.Distance, budget);
             float heading = _hasPreviousHeading ? Dot(r.HeadingRadians, _previousHeading) : 0.0f;
             float lateral = snapshot != null ? Lateralness(snapshot, _lastPlayer, r) : 0.0f;
+            float axial = snapshot != null ? Axialness(snapshot, _lastPlayer, r) : 0.0f;
             float move = budget > 0.0f ? r.Distance / budget : 0.0f;
             float stand = r.Distance <= 1e-6f ? 1.0f : 0.0f;
             float clearance = r.Clearance;
@@ -2577,14 +2583,16 @@ namespace Drelay.Bootstrap
             into[7] = _config.WeightLateral * lateral;
             into[8] = -(_config.WeightMove * move);
             into[9] = _config.WeightStandBias * stand;
-            into[10] = r.Score;
+            into[10] = -(_config.WeightAxial * axial);
+            into[11] = -(_config.WeightProjectedDanger * ProjectedDanger(_lastPlayer, r, budget));
+            into[12] = r.Score;
         }
 
         /// <summary>The candidate names of <see cref="DescribeChosen"/>'s terms, in its own order.</summary>
         public static readonly string[] ScoreTermNames =
         {
             "resolve", "clearance", "durability", "intent", "goal", "path", "heading",
-            "lateral", "move", "stand", "score",
+            "lateral", "move", "stand", "axial", "projected", "score",
         };
 
         /// <summary>
@@ -2612,6 +2620,82 @@ namespace Drelay.Bootstrap
             }
             float v = durabilitySeconds / window;
             return v > 1.0f ? 1.0f : v;
+        }
+
+        /// <summary>
+        /// How dangerous the state a candidate LEADS TO is, on the planner's own spacetime danger
+        /// field. In `[0,1]`, and 0 whenever the field has nothing to say.
+        ///
+        /// WHY THIS IS THE TERM THE TASK ACTUALLY NEEDED, AND WHY THE WAYPOINT WAS NOT ENOUGH.
+        /// `SPIKE3.2-OFFLINE-SOLVER.md` section 15.5 measured the shipped path term and found it only
+        /// a partial fix, with the reason in the terms themselves: the retreat is paid for by `resolve`
+        /// and `clearance`, and BOTH OF THEM ARE RIGHT about one step -- a retreat really does
+        /// increase the distance to a bullet's corridor, and really does clear corridors. A waypoint
+        /// is a DIRECTION, so a preference built on it cannot outvote them on a frame where the goal
+        /// ray is itself walkable and clear, which is most of them.
+        ///
+        /// The sentence this answers is the one `HANDOFF-DIRECTED-DODGE.md` opens with: "nothing in the
+        /// candidate set can express 'this step is bad because of the step after it'." So this asks the
+        /// question about the step after: take the candidate's own velocity -- the player's
+        /// displacement to the candidate, carried on -- and read the danger field along the next
+        /// `ProjectedSeconds` of it, at the times the character would be there. A retreat that carries
+        /// the character into the second bullet now costs; a sidestep into the clear does not.
+        ///
+        /// IT IS A PREFERENCE AND NOT A GATE, exactly like `WeightPath`: the admissible set is the
+        /// safety boundary and nothing here can admit, refuse or move a candidate. The field it reads
+        /// is the same envelope the search uses, built once per frame, so this is a second consumer of
+        /// one measurement rather than a second model.
+        /// </summary>
+        private float ProjectedDanger(PlayerView player, CandidateResult r, float budget)
+        {
+            int samples = _config.ProjectedSamples;
+            float seconds = _config.ProjectedSeconds;
+            if (samples < 1 || seconds <= 0.0f || r.Distance <= 1e-6f || budget <= 0.0f)
+            {
+                return 0.0f;   // `stand` has no direction to carry, which is what `stand` is for
+            }
+            if (!_planner.FieldReady)
+            {
+                return 0.0f;   // no grid or no violence this frame: no field, and so no opinion
+            }
+
+            float speed = budget / (_frameSeconds > 0.0f ? _frameSeconds : (1.0f / 60.0f));
+            float dx = (r.X - player.X) / r.Distance;
+            float dy = (r.Y - player.Y) / r.Distance;
+            float total = 0.0f;
+            for (int s = 1; s <= samples; s++)
+            {
+                float t = (seconds * s) / samples;
+                float distance = speed * t;
+                float x = player.X + (dx * distance);
+                float y = player.Y + (dy * distance);
+                // THE REGION AND NOT THE POINT, AND THE FIRST VERSION OF THIS GOT IT WRONG IN A WAY
+                // THE INSTRUMENT CAUGHT. `Danger` is non-zero only within about `player radius +
+                // bullet radius + pad` of a bullet's BODY -- 0.9 units on these recordings -- and a
+                // point eight units ahead is nowhere near any bullet's body at the instant the
+                // character is there. So the term read 0 for every candidate of every frame, and the
+                // sweep over its weight (0, 0.9, 1.5, 2.5) produced four byte-identical direction
+                // histograms -- the exact signature this project keeps recording: a term that is
+                // absent and a term that does nothing print the same thing.
+                //
+                // The question is "is there a bullet NEAR where I will be", and "near" in a world of
+                // 0.4-unit discs is the collision radius. The probe is a 3x3 patch at that radius.
+                float reach = _planner.ProbeRadius;
+                float worst = 0.0f;
+                for (int ox = -1; ox <= 1; ox++)
+                {
+                    for (int oy = -1; oy <= 1; oy++)
+                    {
+                        float d = _planner.Danger(x + (ox * reach), y + (oy * reach), t);
+                        if (d > worst)
+                        {
+                            worst = d;
+                        }
+                    }
+                }
+                total += worst;
+            }
+            return total / samples;
         }
 
         /// <summary>
@@ -2693,8 +2777,7 @@ namespace Drelay.Bootstrap
         /// leaves every option open.
         /// </summary>
         private static float Lateralness(DodgeSnapshot snapshot, PlayerView player, CandidateResult r)
-        {
-            if (r.Distance <= 1e-6f)
+        {            if (r.Distance <= 1e-6f)
             {
                 return 0.0f;
             }
@@ -2736,6 +2819,71 @@ namespace Drelay.Bootstrap
             float hy = (float)Math.Sin(r.HeadingRadians);
             float a = Math.Abs((hx * -toY) + (hy * toX));
             return a * a;   // squared so that a nearly-radial move scores near zero
+        }
+
+        /// <summary>
+        /// `dot(heading, the line to the nearest threat)` squared -- how AXIAL the move is. The
+        /// missing twin of <see cref="Lateralness"/>, and the one the task is actually about.
+        ///
+        /// WHY A PENALTY ON AXIS AND NOT A BONUS ON SIDESTEP. `Lateralness` already rewards moving
+        /// across the nearest threat, and it distributes over the ring: a move that is perfectly
+        /// lateral scores 1, an axial one scores 0. On its own that should be enough, and it is not,
+        /// because of what the axial directions are. `HANDOFF-DIRECTED-DODGE.md` section 3 names both:
+        /// OUTRUN is along the line away from the muzzle and TOWARD is along it into the muzzle, and
+        /// **they are the same direction to `Lateralness`, which scores them both zero.** Worse, the
+        /// model does not treat them the same: `resolve` and `clearance` pay for the retreat, because
+        /// a retreat really does increase the distance to a bullet's corridor, while a move toward the
+        /// muzzle clears nothing. So the retreat wins on safety and the walk-into-the-shooter wins on
+        /// the goal, and the dodge oscillates between two mistakes that are one mistake.
+        ///
+        /// THIS TERM IS SYMMETRIC IN THE TWO AXIAL DIRECTIONS AND THAT IS THE POINT. It cannot prefer
+        /// "toward" over "away" or the reverse, so it cannot trade one defect for the other -- which is
+        /// exactly what raising `WeightGoal` does (section 15.3: OUTRUN 30.5 % -> 24.4 % while TOWARD
+        /// rises 20.7 % -> 29.8 %). It removes the axial band from the menu and leaves the ring's
+        /// sixty degrees of sidestep either side to be decided by the goal and the safety terms.
+        /// </summary>
+        private static float Axialness(DodgeSnapshot snapshot, PlayerView player, CandidateResult r)
+        {
+            if (r.Distance <= 1e-6f)
+            {
+                return 0.0f;   // `stand` has no axis, which is what `stand` is for
+            }
+            float nearest = float.MaxValue;
+            float toX = 0.0f, toY = 0.0f;
+            bool found = false;
+            for (int i = 0; i < snapshot.Threats.Count; i++)
+            {
+                Trajectory t = snapshot.Threats[i];
+                if (t.Count <= 0)
+                {
+                    continue;
+                }
+                float dx = t.Xs[0] - player.X;
+                float dy = t.Ys[0] - player.Y;
+                float d2 = (dx * dx) + (dy * dy);
+                if (d2 < nearest)
+                {
+                    nearest = d2;
+                    toX = dx;
+                    toY = dy;
+                    found = true;
+                }
+            }
+            if (!found)
+            {
+                return 0.0f;
+            }
+            float len = (float)Math.Sqrt(nearest);
+            if (len < 1e-6f)
+            {
+                return 0.0f;   // standing on the muzzle: there is no line, so there is no axis
+            }
+            toX /= len;
+            toY /= len;
+            float hx = (float)Math.Cos(r.HeadingRadians);
+            float hy = (float)Math.Sin(r.HeadingRadians);
+            float a = (hx * toX) + (hy * toY);
+            return a * a;   // squared, so the squaring matches `Lateralness`'s and the two sum to 1
         }
 
         private static float Dot(float aRadians, float bRadians)

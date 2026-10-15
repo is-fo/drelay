@@ -206,16 +206,25 @@ if __name__ == '__main__':
     # be hardcoded to `work/dd-win`, which is not a directory any capture writes; a report that reads
     # a path nobody produced is one `FileNotFoundError` away from being silently skipped, and the
     # before/after columns this exists to print are exactly two directories.
-    dec_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, 'work', 'dd-before')
-    runs = [('20261015-021911-p20152', 'p20152'), ('20261015-024717-p5824', 'p5824'),
-            ('20261015-032549-p26684', 'p26684'), ('20261015-151232-p5424', 'p5424'),
-            ('20261015-153805-p26156', 'p26156')]
-    for d, tag in runs:
-        path = os.path.join(dec_dir, 'dec-%s.txt' % tag)
-        if not os.path.exists(path):
-            # A MISSING DUMP IS NAMED RATHER THAN CRASHED ON. The five recordings are captured by one
-            # script and a reader who pointed this at a half-finished directory needs to know which
-            # of the five is absent, not to read a stack trace about the first one.
-            print('== %s: no decision dump at %s -- run Capture-DodgeDecisions.ps1\n' % (tag, path))
-            continue
-        main(os.path.join(base, d), path)
+    #
+    # AND A SECOND ARGUMENT SELECTS THE RUN. The five recordings were the only input for long enough
+    # that their names were compiled in, which meant the ONE session that matters most -- the
+    # operator's own live one -- could not be measured at all: its run directory is named for the
+    # timestamp and its dump is not `dec-<recording>.txt`. `--run <run-dir> <dec-dump>` reports on
+    # any trace, and the five-recording table stays the default.
+    if len(sys.argv) >= 4 and sys.argv[1] == '--run':
+        main(sys.argv[2], sys.argv[3])
+    else:
+        dec_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(here, 'work', 'dd-before')
+        runs = [('20261015-021911-p20152', 'p20152'), ('20261015-024717-p5824', 'p5824'),
+                ('20261015-032549-p26684', 'p26684'), ('20261015-151232-p5424', 'p5424'),
+                ('20261015-153805-p26156', 'p26156')]
+        for d, tag in runs:
+            path = os.path.join(dec_dir, 'dec-%s.txt' % tag)
+            if not os.path.exists(path):
+                # A MISSING DUMP IS NAMED RATHER THAN CRASHED ON. The five recordings are captured by
+                # one script and a reader who pointed this at a half-finished directory needs to know
+                # which of the five is absent, not to read a stack trace about the first one.
+                print('== %s: no decision dump at %s -- run Capture-DodgeDecisions.ps1\n' % (tag, path))
+                continue
+            main(os.path.join(base, d), path)

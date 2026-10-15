@@ -638,6 +638,48 @@ namespace Drelay.Bootstrap
         public float WeightStandBias;
 
         /// <summary>
+        /// What the danger of the state a move LEADS TO costs, per unit of the danger field's own
+        /// `[0,1]` scale.
+        ///
+        /// THE TERM `SPIKE3.2-OFFLINE-SOLVER.md` SECTION 15.6 NAMES AS THE NEXT STEP, and the reason
+        /// the pathfinder alone was only a partial fix. Section 15.5's term breakdown measured the
+        /// retreat as paid for by `resolve` and `clearance` -- both of which are RIGHT about one step,
+        /// because a retreat really does increase the distance to a bullet's corridor and really does
+        /// clear corridors. A waypoint is a direction, so it cannot outvote them; a term that asks
+        /// about where the candidate LEADS can. See `DodgeSolver.ProjectedDanger`.
+        /// </summary>
+        public float WeightProjectedDanger;
+
+        /// <summary>
+        /// What moving ALONG the line to the nearest threat costs, squared and unitless. The
+        /// penalty twin of `WeightLateral`, and the term `HANDOFF-DIRECTED-DODGE.md` section 3 is
+        /// about: OUTRUN and TOWARD are the same direction to `Lateralness` and it scores both
+        /// zero, while the safety terms pay for the retreat and the goal pays for walking at the
+        /// shooter. This removes the axial band from the menu symmetrically. See
+        /// `DodgeSolver.Axialness`.
+        /// </summary>
+        public float WeightAxial;
+
+        /// <summary>
+        /// How far ahead a candidate's own velocity is projected when the state it leads to is scored,
+        /// in seconds.
+        ///
+        /// Eight tenths of a second is about fourteen frames of re-decision at 60 Hz: long enough that
+        /// a retreat into a closing bullet is visible in the term, short enough that the projection is
+        /// still a statement about the move being made rather than about a world nobody can see.
+        /// </summary>
+        public float ProjectedSeconds;
+
+        /// <summary>
+        /// Samples along that projection; the danger field is read at each and the MEAN is the term.
+        ///
+        /// The mean rather than the maximum on purpose: a maximum saturates at 1 for any direction
+        /// that crosses any corridor at any point, which is most of the ring on a busy frame, and a
+        /// term that reads 0 or 1 for everything ranks nothing. The mean keeps the gradient.
+        /// </summary>
+        public int ProjectedSamples;
+
+        /// <summary>
         /// How much of the move carries the character toward the PATH's waypoint rather than along
         /// the goal ray. See `HANDOFF-DIRECTED-DODGE.md` section 4.
         ///
@@ -877,6 +919,22 @@ namespace Drelay.Bootstrap
             c.WeightGoal = 0.90f;
             c.ClearComfort = 1.0f;
 
+            // --- THE PROJECTED-DANGER TERM (SPIKE3.2-OFFLINE-SOLVER.md section 15.6) ---------
+            //
+            // ZERO WOULD BE THE SAFE STARTING VALUE AND IT IS NOT THE ONE THAT SHIPS. A term nobody
+            // turns on is a term nobody measures, and section 15.5's breakdown is the measurement that
+            // says where the retreat has to be answered: `resolve` and `clearance` pay for it and both
+            // are right about one step, so the term that answers it has to be about the step after.
+            //
+            // 0.9 SITS BELOW `resolve` (1.5) ON PURPOSE -- clearing a corridor still beats keeping a
+            // line, which is the same ordering `WeightGoal` was given for the same reason -- and above
+            // `move`, so that a step which walks into the next bullet is not preferred for being
+            // short. `DRELAY_DODGE_W_PROJECTED=0` restores the section 15 behaviour exactly.
+            c.WeightAxial = 1.00f;
+            c.WeightProjectedDanger = 0.00f;
+            c.ProjectedSeconds = 0.8f;
+            c.ProjectedSamples = 3;
+
             // --- THE PATH (HANDOFF-DIRECTED-DODGE.md section 4) -----------------------------
             //
             // AND THE GOAL TERM FALLS WHEN THE PATH IS ON, WHICH IS THE WHOLE POINT OF THE PAIR. The
@@ -1059,6 +1117,12 @@ namespace Drelay.Bootstrap
             c.WeightMove = Float("DRELAY_DODGE_W_MOVE", c.WeightMove);
             c.WeightStandBias = Float("DRELAY_DODGE_W_STAND", c.WeightStandBias);
             c.WeightGoal = Float("DRELAY_DODGE_W_GOAL", c.WeightGoal);
+            // THE PROJECTED-DANGER TERM'S THREE KNOBS. Zero is legal for the weight -- it is the
+            // off-switch -- and it is the only one of the three that may be zero.
+            c.WeightAxial = FloatAllowZero("DRELAY_DODGE_W_AXIAL", c.WeightAxial);
+            c.WeightProjectedDanger = FloatAllowZero("DRELAY_DODGE_W_PROJECTED", c.WeightProjectedDanger);
+            c.ProjectedSeconds = Float("DRELAY_DODGE_PROJECTED_S", c.ProjectedSeconds);
+            c.ProjectedSamples = Int("DRELAY_DODGE_PROJECTED_SAMPLES", c.ProjectedSamples);
             // THE PATH'S OWN KNOBS. `DRELAY_DODGE_PATH=0` is the off-switch and it restores the
             // pre-path score exactly, which is what makes the change A/B-able on a live session
             // rather than only on a replayed recording.
@@ -1175,11 +1239,13 @@ namespace Drelay.Bootstrap
         public string DescribeWeights()
         {
             return string.Format(CultureInfo.InvariantCulture,
-                "weights resolve={0} clear={1} durable={2} intent={3} goal={4} path={5} heading={6} "
-                + "lateral={7} move={8} stand={9} hyst={10}/{11}s dryRun={12}",
+                "weights resolve={0} clear={1} durable={2} intent={3} goal={4} path={5} axial={6} "
+                + "projected={7} heading={8} lateral={9} move={10} stand={11} hyst={12}/{13}s "
+                + "dryRun={14} lookahead={15}s x{16}",
                 WeightResolve, WeightClearance, WeightDurability, WeightIntent, WeightGoal, WeightPath,
-                WeightHeading, WeightLateral, WeightMove, WeightStandBias, HysteresisMargin,
-                HysteresisDwellSeconds, DryRun);
+                WeightAxial, WeightProjectedDanger, WeightHeading, WeightLateral, WeightMove,
+                WeightStandBias, HysteresisMargin, HysteresisDwellSeconds, DryRun, ProjectedSeconds,
+                ProjectedSamples);
         }
 
         /// <summary>

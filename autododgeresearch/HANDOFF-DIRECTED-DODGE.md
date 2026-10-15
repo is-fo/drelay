@@ -21,23 +21,24 @@ now", which is what pathfinding is.
 
 ## 0. What changed since the first version of this document
 
-> **STATUS 2026-10-15 (later the same day): §4's pathfinder was built and measured, and this
-> document's objective is NOT met.** Read [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md)
-> **§15** first — it is the result, the null result, and the reason for both. In one paragraph: a
-> bounded A* over the client's own grid now runs once per frame (§4.1–§4.3 as specified), with the
-> danger cost in spacetime, the waypoint hysteresis, the path columns in `--decisions` and the path
-> counters in the harness. On `p26156` — the recording this document's §3 is measured against —
-> **OUTRUN falls 30.5 % → 26.4 % and SIDESTEP rises 48.8 % → 49.1 %**, which is the acceptance test in
-> §1 here met on that recording, at a cost of 26 frames of extra clearance regret and with `decide()`
-> p99 still inside budget (104 µs). **On the other four recordings the change is a wash and on
-> `p20152` it is slightly negative**, so the inversion §1 asks for is achieved on one recording of
-> five. §15.5 is why, and it is a fact about the model rather than about the path: the retreat is paid
-> for by `resolve` and `clearance`, which are both *right* — a retreat really does increase distance
-> and really does clear corridors — and a direction-only preference cannot outvote them on frames
-> where the goal ray is itself walkable and clear. **§15.6 states what the objective needs next: score
-> a candidate by the safety of the state it leads to, not by its alignment with a waypoint.** §4.4's
-> "cheap version first" was not the path taken; the path was built first and §15.5's term breakdown is
-> the measurement that says the cheap version would not have been enough either.
+> **STATUS 2026-10-16: the objective is MET on all five recordings, and a live session has judged it.**
+> Read [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) **§15.9** first. Two changes, and the
+> second is the one that did it. **§15's path** (bounded A* over the client's own grid, one per frame,
+> a waypoint that scores candidates and never admits them) fixed `p26156` and was a wash elsewhere —
+> §15.2 is that table, and §15.5's term breakdown is why: the retreat is paid for by `resolve` and
+> `clearance`, and **both are right**. **§15.9's axial penalty** (`Axialness`, `WeightAxial` 1.00 —
+> the squared cosine between the candidate and the line to the nearest threat, subtracted, symmetric in
+> the two axial directions) is what closes it: OUTRUN and TOWARD are the same direction to
+> `Lateralness`, which scores both zero, so the dodge was left oscillating between two mistakes that
+> are one mistake. With it, **SIDESTEP exceeds OUTRUN on all five recordings** (`p20152` 44.0/48.1,
+> `p5824` 34.9/53.0, `p26684` 43.8/47.0, `p5424` 36.7/54.5, `p26156` 24.8/49.9 as OUTRUN/SIDESTEP), all
+> six scenarios are green with move counts identical to the baseline, T5/T6/T10/F hold on all five, and
+> `decide()` p99 is **147 µs** on `p26156` and **211 µs on the operator's live trace** — the 128×128
+> grid with real walls — against a 300 µs budget. **And the operator's own live session of
+> `20261015-211538-p29780` says *"the feel of the dodger is way better, it feels like it fights you
+> less"*** — with the caveat §15.9.3 records: that build carried the path and **not** the axial term, so
+> the axial term's own live verdict is still owed, and "slightly more hits" is a paired-trial question
+> rather than a settled one.
 
 | | |
 |---|---|
@@ -46,7 +47,7 @@ now", which is what pathfinding is.
 | §6.10 the `--decisions` dump | **shipped.** `SolverHarness --decisions <path>`, read by `tools/decisions_report.py` and `tools/dodge_direction_report.py`. |
 | §4's `Moving` test | **holds, re-verified.** On the 249 frames of `p26156` where the pilot provably wrote nothing, `moving` was true on 158 (63.5 %) and the intent takes the eight compass directions. |
 | problem 1 (the partial-path window) | **shipped.** `MoveTemporalWindowSeconds` was a constant 50 ms, which is a *distance* of `0.05 * speed` — 1.95× the collision disc on a 16 u/s projectile and 0.53× of it on the 6 u/s ones. It is now `disc=2` disc-crossings, exposed as `--dodge-disc` / `DRELAY_DODGE_DECISION_DISC` / `--config disc=`. See §14. |
-| **problem 2 (this document)** | **built and measured; the objective is not met.** See the status block above and §15 of the spike. |
+| **problem 2 (this document)** | **MET on all five recordings, and judged live.** §4's path (§15) plus the axial penalty (§15.9); SIDESTEP exceeds OUTRUN on every recording and the operator's verdict is in §15.9.3. Outstanding: the axial term's own live A/B, and the hit count. |
 
 ---
 

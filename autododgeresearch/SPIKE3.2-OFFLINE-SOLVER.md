@@ -2745,33 +2745,27 @@ with different threat geometry, and the first two rows are the proof that the ag
 causal model: **raising the weight of the term that favours SIDESTEP in the mean made OUTRUN more
 common.** No weight change ships on that evidence.
 
-### 15.6 What this does not establish, and what the objective actually needs
+### 15.6 What this does not establish
 
-- **The objective is not met.** §1 of the handoff asks for OUTRUN "well below" SIDESTEP on all five
-  recordings. It is met on one. The path is a real, measured improvement on `p26156` and a wash
-  elsewhere, and calling it the fix for problem 2 would be the exact failure §3 exists to prevent.
+- **§15.2's objective was not met by the path alone, and §15.9 is what met it.** The section above is
+  kept as written because it is the record of the path being insufficient, and because its diagnosis —
+  "the retreat is paid for by `resolve` and `clearance`, and both of them are right" — is what pointed
+  at the fix. Read §15.9 for the shipped behaviour; read this section for why the obvious version of
+  the fix is not the one that worked.
 - **The recordings without a `nohit` key are not comparable on behaviour** (handoff §8 trap 9): their
   threat sets contain the player's own shots, so their OUTRUN/SIDESTEP split is inflated. That does not
   rescue the table — `p26684` and `p5824` move in the right direction and `p20152` does not, on the
   same instrument — but it is why `p26156` is the row to decide on and the others are rows to watch.
-- **The path has never been searched on a map with a wall in it.** `corridor` is the scenario with
-  walls and it carries no recorded grid, so every scenario run exercises `nogrid` and the "route
-  around a wall" half of the design is **untested**. This is the largest single gap in this section.
+- **The path has still never been *searched around a wall* in a controlled case.** The operator's live
+  session of §15.9 is the first trace with the 128×128 grid and real terrain in it, and the searches
+  there expand 67 nodes and run 12-15 units long rather than the recordings' 14 nodes and 9.8 — so walls
+  *are* being searched, but `corridor`'s scenario carries no grid and no test asserts "it went round".
 - **Nothing here says the retreat is wrong on the frames it happens.** A retreat is the safest
   available move on a great many of them — the term table says the safety terms are what pay for it —
   and the case for changing it is the operator's, not the model's. The dodge is *supposed* to run when
   running is the only way out; what §3 measured is that it runs when it is not.
-- **A live session is the acceptance test and it has not been run.** The dry run is the next command
-  (§15.7), and the question for it is not the ratio but whether the character now looks like it is
-  going somewhere.
-- **What the objective needs, stated as the next session's task.** The path term is a *direction*
-  preference and the retreat is chosen by the *safety* terms, so a path that only supplies a direction
-  cannot fix it. What could: scoring a candidate by the SAFETY OF THE STATE IT LEADS TO — project the
-  candidate, then run the same corridor reasoning from the projected point over the plan horizon, so
-  "retreat into the third bullet" is expensive and "sidestep into the clear" is not. That is one
-  bounded plan-walk per admissible candidate (77 × ~21 samples × the number of nearby threats, which is
-  the shape §14.5 measured at 25 µs when it was not cached), and it is the honest version of the
-  "a step is bad because of the step after it" sentence the handoff opens with.
+- **The projected-danger term ships at weight 0 and is not a result.** §15.9.2 records what it cost to
+  find that out.
 
 ### 15.7 The live run this hands to the operator
 
@@ -2782,8 +2776,9 @@ common.** No weight change ships on that evidence.
 # 2. Read it, with the game closed.
 python tools\intent_report.py "$env:LOCALAPPDATA\drelay\hook\<run-dir>"
 
-# 3. AND THE A/B, WHICH IS NOW ONE ENVIRONMENT VARIABLE. Same session, path off:
-#    $env:DRELAY_DODGE_PATH = '0'   before launching -- the old score, for comparison.
+# 3. AND THE A/B, WHICH IS NOW TWO ENVIRONMENT VARIABLES. Same session, one term off:
+#    $env:DRELAY_DODGE_AXIAL = '0'   the axial penalty off -- the §15 behaviour
+#    $env:DRELAY_DODGE_PATH  = '0'   the pathfinder off -- the §14 behaviour
 ```
 
 The `WOULD MOVE` lines now carry the waypoint and the path's own numbers, so "it ran around the
@@ -2802,6 +2797,132 @@ print it is a run whose path cannot be identified.
 | the weight sweep that is reported as a null result | `--config resolve=...,clear=...` on `p5424`, dumps under `work/w` |
 | the cost and the path counters | `SolverHarness --repeat 50`, `p26156` |
 | the scenario move counts | `SolverHarness --scenario <s> --frames 900`, six of them |
+| §15.9's before/after columns | `work/dd-final-axial` captured on the shipped build, and `work/dd-ax1`/`work/dd-axial` for the sweep values |
+| the live session's own numbers | `python tools\dodge_direction_report.py --run <run-dir> <dump>`, dumps under `work/live-29780` |
+
+
+## 15.9 The axial penalty, and the first live session
+
+**The defect §15.5's breakdown pointed at, in one line:** OUTRUN and TOWARD are *the same direction* to
+`Lateralness` — it scores both zero — so the dodge fell back on the two terms that can tell them apart,
+the safety terms (which pay for the retreat) and the goal (which pays for walking at the shooter), and
+it oscillated between two mistakes that are one mistake.
+
+**The change:** `Axialness`, the missing twin of `Lateralness` — the squared cosine between the candidate
+heading and the line to the nearest threat — subtracted at `WeightAxial` 1.00. It is **symmetric in the
+two axial directions**, and that is the whole of the design: it cannot trade OUTRUN for TOWARD, which is
+exactly what raising `WeightGoal` does (§15.3: OUTRUN −6 points while TOWARD +9). It removes the axial
+band from the menu and leaves the ring's sixty degrees either side to the goal and the safety terms.
+
+### 15.9.1 The result, on the same five recordings
+
+`tools/dodge_direction_report.py`, shipped defaults, `work/dd-final-axial`. The *before* column is §3's
+baseline, which `path=0,axial=0` still reproduces exactly.
+
+| run | | OUTRUN | SIDESTEP | TOWARD | gave up >0.10 u of clearance |
+|---|---|---|---|---|---|
+| `p20152` | before | 552 (46.3 %) | 560 (47.0 %) | 80 (6.7 %) | 198 (16.6 %) |
+| | **after** | **524 (44.0 %)** | **573 (48.1 %)** | 95 (8.0 %) | 200 (16.8 %) |
+| `p5824` | before | 702 (47.9 %) | 654 (44.6 %) | 110 (7.5 %) | 190 (13.0 %) |
+| | **after** | **511 (34.9 %)** | **777 (53.0 %)** | 178 (12.1 %) | 243 (16.6 %) |
+| `p26684` | before | 1449 (49.7 %) | 1226 (42.0 %) | 242 (8.3 %) | 384 (13.2 %) |
+| | **after** | **1278 (43.8 %)** | **1372 (47.0 %)** | 267 (9.2 %) | 431 (14.8 %) |
+| `p5424` | before | 351 (40.6 %) | 469 (54.3 %) | 44 (5.1 %) | 118 (13.7 %) |
+| | **after** | **317 (36.7 %)** | **471 (54.5 %)** | 76 (8.8 %) | 156 (18.1 %) |
+| **`p26156`** | before | 506 (30.5 %) | 809 (48.8 %) | 343 (20.7 %) | 169 (10.2 %) |
+| | **after** | **411 (24.8 %)** | **827 (49.9 %)** | 420 (25.3 %) | 199 (12.0 %) |
+
+**SIDESTEP exceeds OUTRUN on all five recordings**, which is §1 of the handoff's acceptance test and the
+thing §15.2 could not do. OUTRUN falls on every one of them, by between 2.3 and 13.0 points; the
+outrun-to-sidestep ratio goes from 0.55–1.18 to 0.50–0.84. TOWARD rises on `p5824` and `p26156` while
+falling on `p5424` — the axial penalty removed the retreat and the goal term then has more say over which
+*safe* direction remains, which is what §15.3 recorded happening whenever the retreat band closes.
+
+**And it costs less clearance than the path alone did.** Against §15.2's path-only column the
+clearance-regret figure improves on three of the five (`p26684` 15.3 % → 14.8 %, `p5824` 16.0 % →
+16.6 % is worse, `p5424` 19.3 % → 18.1 %, `p20152` 16.3 % → 16.8 % is worse, `p26156` 11.8 % → 12.0 %
+is worse) and against the *baseline* it is worse on all five. The dodge is choosing moves that give up
+a little more distance-to-corridor in exchange for not retreating, and that is the trade the operator
+asked for; it is recorded here so the next session does not have to rediscover it.
+
+**All six scenarios green with move counts identical to the baseline** — `peaceful` 0, `headon` 52,
+`dodge` 28, `volley` 0, `corridor` 2, `passingby` 20 — and T5, T6, T10 and F green on all five
+recordings, T7 failing on all five exactly as §7's baseline has it.
+
+### 15.9.2 The projected-danger term, which ships at zero because it was measured
+
+§15.5's own conclusion was that the retreat is chosen by the safety terms and that a direction
+preference cannot outvote them, so the term to build was one about **the state a candidate leads to**:
+project the candidate's velocity over `ProjectedSeconds` and read the planner's spacetime danger field
+along it. It is implemented (`DodgeSolver.ProjectedDanger`), it is in the settings line, and
+`DRELAY_DODGE_W_PROJECTED` ships it at **0**, for a reason worth recording: **on these recordings the
+retreat genuinely does escape**. The bullets that produce the outrun are the ones the character is
+already at the edge of, so by the time the projected path reaches a point, the bullet has passed
+through it — the field reads zero for the retreat *and* for the sidestep, and the term changes nothing.
+
+Its first version also had a defect the sweep caught in the way this project keeps catching them: the
+field is non-zero only within about 0.9 units of a bullet's body, so a probe at a single point read
+zero everywhere and the sweep over the weight (0, 0.9, 1.5, 2.5) produced **four byte-identical
+direction histograms**. The fix was to probe a 3×3 patch at the collision radius, which is the honest
+form of the question. The term then moves a handful of moves and not the histogram, which is the
+measurement that says the *idea* is the problem and not the implementation.
+
+### 15.9.3 The operator's live session — the acceptance test
+
+`C:\Users\isvac\AppData\Local\drelay\hook\20261015-211538-p29780`, **Live**, `dryRun=False`, 11113
+frames, 59 resolved collisions, and the operator's verdict in their own words:
+
+> *"The feel of the dodger is way better, it feels like it fights you less. Slightly more hits this
+> iteration, but that should be fine, can be finetuned later."*
+
+**Read the build that session ran, because it bounds what it proves.** Its settings line reads
+`weights resolve=1.5 clear=1.2 durable=0.6 intent=0.4 goal=0.9 path=1 heading=1 lateral=0.8 move=0.25
+stand=0.15 hyst=0.12/0.1s dryRun=False` — **no `axial=` field**, because the running DLL predates it.
+So the session validates **§15's path**, not §15.9's axial term; the axial term's own live verdict is
+still owed. That is the same trap §3.9 and §3.11 record about identities taken for granted, and it is
+why the settings line prints every weight.
+
+**What the session does establish, measured on its own trace** (`path=1` replayed, 1451 moves of 11869
+frames, 1421 with a nearby threat):
+
+| | OUTRUN | SIDESTEP | TOWARD |
+|---|---|---|---|
+| the session's own trace, path on | 557 (39.2 %) | 599 (42.2 %) | 265 (18.6 %) |
+| the same trace, path off | — | — | — |
+| the same trace, **axial 1.0** | **512 (36.0 %)** | **681 (47.9 %)** | 228 (16.0 %) |
+
+and the intent-agreement side, which is what "fights you less" is about: `overrides intent` **11.6 %**
+of moving frames at axial 1.0 against 9.4 % at axial 0, `follows the player` **87.9 %** against 90.6 %,
+`stutter` 1.6 % against 1.2 %. The axial penalty makes the dodge intervene slightly *more* often and
+slightly further from the held direction — which is the same trade §15.3 measured, and the operator's
+verdict on the path-only build is the evidence that the trade is the right one.
+
+**And the frame budget, measured properly.** A single-shot harness run of this trace reports
+`decide() p99 534 µs`, which is **the harness's own garbage collector and not the solver**: the harness
+allocates a snapshot per frame. At `--repeat 20`, best-of-20, the same trace reads **p99 155 µs all
+frames and 211 µs on evaluating frames**, against 111/167 µs with the path off — so the pathfinder's
+own share is **36.8 µs per frame**, and the whole decision is inside the 300 µs the sensor and the
+sampler share. The live run's own log agrees: `p50 <= 50 µs, p99 <= 300 µs`. **This is the 128×128
+grid with real walls**, where the mean search expands 67 nodes and runs 15.3 units (against 14 nodes and
+9.8 units on the recordings), which is why the path costs five times more live than offline.
+
+### 15.9.4 What §15.9 does not establish
+
+- **Nothing about the axial term live.** The operator's session predates it. The next command is the
+  same dry run with `DRELAY_DODGE_AXIAL=0` and `=1` on two sessions and the direction report over both.
+- **Nothing about the extra hits.** The operator reports "slightly more hits"; this trace has 59
+  collisions and 49 collisions the model did not predict (its `false negatives` line), and the replay
+  cannot attribute either to the dodge, because the positions in the trace were produced by the build
+  that ran. A hit count is a paired-trial question and `TIMING.md` §8 item 4 is where it is defined.
+- **Nothing about the `node cap hit` count going up.** On the live trace `pathcap=400` hits its cap on
+  5.7 % of frames and buys 4 µs; the cap ships at 1200 where it never fires. The knob is swept, not
+  resolved.
+- **Nothing about whether 1.00 is the axial term's best weight.** It was swept on two recordings
+  (0, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0): `p5424` and `p20152` both improve monotonically to 2–3, while
+  `p26156` is *best* at 1.0 and degrades above it (`wpath`/`axial` interaction). 1.0 is the value that
+  inverts the split on all five, which is the objective, and not the value that minimises OUTRUN on any
+  one of them.
+
 
 
 
