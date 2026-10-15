@@ -2350,6 +2350,15 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                               + Percent(stats.NodeCapHits, stats.Searches)
                               + ") -- searches that spent " + _config.PathNodeCap
                               + " expansions without reaching the target");
+            // THE ONE CLAIM ABOUT THE PATH THAT CAN BE FALSE WITHOUT ANYTHING ELSE MOVING: that it goes
+            // AROUND walls rather than through them. The diagonal rule is the only thing in the planner
+            // that can put a route through a wall, and the corridor scenario is the 165-solid-cell map
+            // where it would show. A zero here and a path 24.7 units long against an open map
+            // 12 is the evidence; either number alone is not.
+            Console.WriteLine("  corner cuts through a wall : " + stats.WallCrossings
+                              + " over " + stats.PathsFound + " path(s) found -- a diagonal step"
+                              + " whose two orthogonal neighbours are BOTH solid; must be 0, and the"
+                              + " diagonal rule exists to make it 0");
             Console.WriteLine("  declined, by reason : nogrid=" + stats.NoGridFrames
                               + " off=" + stats.DisabledFrames
                               + " nogoal=" + stats.NoGoalFrames
@@ -2405,6 +2414,19 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             Report("T10 hysteresis cannot hold an unsafe heading",
                    _unsafeHold == 0,
                    _unsafeHold + " held heading(s) with no admissible candidate");
+            // THE PATH'S OWN SAFETY CLAIM, ASSERTED RATHER THAN INFERRED. A path is a route through
+            // the client's collision grid, and the one way it can be wrong about a wall is a diagonal
+            // corner cut -- a step whose two orthogonal neighbours are both solid, which is the exact
+            // shape the diagonal rule forbids. The `corridor` scenario is 165 solid cells and its
+            // paths run 24.7 units against an open map's 12, which is consistent with going round and
+            // is not evidence of it; this is. It is asserted on the paths the planner RETURNED, which
+            // is the same standard T6 holds the emitted moves to.
+            Report("PATH no planned route cuts a corner through a wall",
+                   _solver.Path.Stats.WallCrossings == 0,
+                   _solver.Path.Stats.WallCrossings + " corner cut(s) over "
+                   + _solver.Path.Stats.PathsFound + " path(s) found -- a diagonal step whose two"
+                   + " orthogonal neighbours are BOTH solid. A non-zero count means the planner can"
+                   + " route a dodge into scenery on a map with walls in it.");
             if (_trace.Hits.Count == 0)
             {
                 if (_t7 != null && _t7.NotApplicable)

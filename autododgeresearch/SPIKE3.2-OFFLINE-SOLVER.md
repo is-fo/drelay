@@ -2756,10 +2756,11 @@ common.** No weight change ships on that evidence.
   threat sets contain the player's own shots, so their OUTRUN/SIDESTEP split is inflated. That does not
   rescue the table — `p26684` and `p5824` move in the right direction and `p20152` does not, on the
   same instrument — but it is why `p26156` is the row to decide on and the others are rows to watch.
-- **The path has still never been *searched around a wall* in a controlled case.** The operator's live
-  session of §15.9 is the first trace with the 128×128 grid and real terrain in it, and the searches
-  there expand 67 nodes and run 12-15 units long rather than the recordings' 14 nodes and 9.8 — so walls
-  *are* being searched, but `corridor`'s scenario carries no grid and no test asserts "it went round".
+- **The wall half of the design is now checked, and the claim in the first version of this section
+  was wrong.** It said `corridor` carries no recorded grid, so the wall-avoidance path was untested.
+  **It does carry one** — `Synthetic.cs` builds a 64×64 window with `PlanWalls` and `corridor`'s has
+  **165 solid cells** — and §15.10 is the check. What that claim was reaching for is real and remains:
+  no test asserts that the route is the SHORTEST way round, only that it does not go through.
 - **Nothing here says the retreat is wrong on the frames it happens.** A retreat is the safest
   available move on a great many of them — the term table says the safety terms are what pay for it —
   and the case for changing it is the operator's, not the model's. The dodge is *supposed* to run when
@@ -2917,11 +2918,52 @@ grid with real walls**, where the mean search expands 67 nodes and runs 15.3 uni
 - **Nothing about the `node cap hit` count going up.** On the live trace `pathcap=400` hits its cap on
   5.7 % of frames and buys 4 µs; the cap ships at 1200 where it never fires. The knob is swept, not
   resolved.
+- **The scenarios carry walls and the path goes round them.** See §15.10; the earlier claim here that
+  they carry no grid was wrong.
+- **What §15.10 does not establish.** It asserts the route never cuts a corner through a wall; it does
+  not assert the route is the SHORTEST way round, and nothing checks the path against the *client's*
+  walkability for a route longer than the 64-cell window it was searched in.
 - **Nothing about whether 1.00 is the axial term's best weight.** It was swept on two recordings
   (0, 0.5, 0.8, 1.0, 1.5, 2.0, 3.0): `p5424` and `p20152` both improve monotonically to 2–3, while
   `p26156` is *best* at 1.0 and degrades above it (`wpath`/`axial` interaction). 1.0 is the value that
   inverts the split on all five, which is the objective, and not the value that minimises OUTRUN on any
   one of them.
+
+
+## 15.10 The path goes round walls, and that is now a checked number
+
+**The claim this section exists to stop being an inference.** `PathPlanner` searches the client's own
+collision grid with A*, 8-connected, and the diagonal rule — a diagonal step is allowed only when both
+its orthogonal neighbours are walkable — is the single part of that file which can put a route *through*
+a wall. Nothing asserted it. What existed was a shape in the numbers: the `corridor` scenario's paths
+expand 52 nodes and run **24.7 units**, against `dodge`'s 13 nodes and **12.0 units** on the same 64×64
+window. That is *consistent* with going round and it is not evidence of it — and this document's own
+recurring lesson is that a number nobody can read off a file is a number nobody can trust.
+
+**The instrument:** `PathStats.WallCrossings`, incremented on the path a search actually returned, for
+every step whose two cells differ on both axes while **both** of its orthogonal neighbours are solid.
+It is asserted as an invariant — `PATH no planned route cuts a corner through a wall` — beside T6,
+because it is the same kind of claim: T6 holds the *emitted move* to the game's own geometry, and this
+holds the *route the move was chosen from* to it.
+
+| input | paths found | corner cuts |
+|---|---|---|
+| `corridor` (165 solid cells) | 900 | **0** |
+| `peaceful`, `passingby` | 305 each | **0** |
+| `dodge`, `volley`, `headon` | 900 each | **0** |
+| `p20152` / `p5824` / `p26684` / `p5424` / `p26156` | 6126 / 9895 / 21144 / 7923 / 7083 | **0** |
+
+**52 171 paths on the recordings and 3 910 on the scenarios, and not one corner cut.** The assertion
+passes on every input the project has; a regression that lets a diagonal through a corner would fail it
+on `corridor` first, which is the scenario that has walls in it.
+
+**And the honest half.** This asserts a route never goes through a wall. It does **not** assert the
+route is the shortest way round, it does not compare the planner's route against the client's own
+pathfinder, and the search is bounded by a 64-cell window on the scenarios and 128 on a live map — a
+route that would need to leave that window is not found and is not tested. `corridor`'s 24.7-unit paths
+versus `dodge`'s 12 is the shape of a detour; "it is the detour the client would have taken" is not
+claimed anywhere and would need a live comparison.
+
 
 
 

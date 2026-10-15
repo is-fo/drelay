@@ -131,6 +131,24 @@ namespace Drelay.Bootstrap
         /// <summary>Frames on which the waypoint came from the previous frame's hold rather than a fresh path.</summary>
         public long Held;
 
+        /// <summary>
+        /// CORNER CUTS THE SEARCH PRODUCED: path steps whose two cells are both walkable but whose
+        /// diagonal crosses a solid pair. Must be 0 on every frame of every scenario and recording.
+        ///
+        /// WHY THIS IS A COUNTER AND NOT A TEST. The diagonal rule -- a diagonal step is allowed only
+        /// when both orthogonal neighbours are walkable -- is the one part of this file that can put a
+        /// path THROUGH a wall, and the consequence would be a dodge that steers confidently into
+        /// scenery. The scenario suite has walls (`corridor`: 165 solid cells) and its paths are 24.7
+        /// units against `dodge`'s 12, which is *consistent* with going round -- but a longer path is
+        /// inference, and this project's own rule is that a number which cannot be read off a file is
+        /// not evidence. The check is cheap enough to run on every search rather than in a unit test
+        /// nothing calls: one walk of a path that is at most a few dozen nodes, once per frame.
+        /// </summary>
+        public long WallCrossings;
+
+        /// <summary>Searches since the last <see cref="PathPlanner.ResetCounters"/> in which a path was found.</summary>
+        public long PathsFound;
+
         /// <summary>Sum of `Nodes` over every path found, for the mean.</summary>
         public long NodesTotal;
 
@@ -396,6 +414,8 @@ namespace Drelay.Bootstrap
             _stats.NodeCapHits = 0;
             _stats.NoPath = 0;
             _stats.Held = 0;
+            _stats.WallCrossings = 0;
+            _stats.PathsFound = 0;
             _stats.NodesTotal = 0;
             _stats.LengthTotal = 0.0;
             _stats.MicrosecondsTotal = 0.0;
@@ -519,6 +539,7 @@ namespace Drelay.Bootstrap
                 return;
             }
 
+            _stats.PathsFound++;
             _stats.NodesTotal += _nodes;
             _stats.LengthTotal += _length;
 
@@ -929,6 +950,25 @@ namespace Drelay.Bootstrap
                 int tmp = _pathIndex[i];
                 _pathIndex[i] = _pathIndex[j];
                 _pathIndex[j] = tmp;
+            }
+
+            // THE CORNER-CUT CHECK, ON THE PATH THAT WAS ACTUALLY RETURNED. See `WallCrossings`: the
+            // diagonal rule is the only thing in this file that can put a route through a wall, so it
+            // is checked on every search rather than trusted. A diagonal step whose two orthogonal
+            // neighbours are both solid is the exact shape the rule exists to forbid.
+            for (int i = 1; i < _pathCount; i++)
+            {
+                int a = _pathIndex[i - 1];
+                int b = _pathIndex[i];
+                int ax = a % _gridW;
+                int ay = a / _gridW;
+                int bx = b % _gridW;
+                int by = b / _gridW;
+                if (ax != bx && ay != by
+                    && !WalkableIndex((ay * _gridW) + bx) && !WalkableIndex((by * _gridW) + ax))
+                {
+                    _stats.WallCrossings++;
+                }
             }
 
             _length = length;
