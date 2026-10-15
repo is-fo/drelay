@@ -2907,6 +2907,41 @@ sampler share. The live run's own log agrees: `p50 <= 50 µs, p99 <= 300 µs`. *
 grid with real walls**, where the mean search expands 67 nodes and runs 15.3 units (against 14 nodes and
 9.8 units on the recordings), which is why the path costs five times more live than offline.
 
+### 15.9.3b The axial build's own live dry run — and its cost is the real caveat
+
+`20261015-212602-p440`, **DRY RUN**, 2219 frames, 2159 paths, and its settings line is the first live
+one to carry the term: `... goal=0.9 path=1 axial=1 projected=0 heading=1 ... lookahead=0.8s x3`. A dry
+run decides on every frame and moves nobody, so — the handoff's §6 rule — it is evidence about the
+CHOICE and not about the displacement. Measured on its trace:
+
+| | OUTRUN | SIDESTEP | TOWARD | overrides intent | follows the player |
+|---|---|---|---|---|---|
+| **axial 1.0** | **189 (40.8 %)** | **235 (50.8 %)** | 39 (8.4 %) | 9.5 % | 90.1 % |
+| axial 0 | 223 (48.2 %) | 194 (41.9 %) | 46 (9.9 %) | 4.8 % | 95.0 % |
+
+**The inversion holds on a live session's own geometry** — 48.2/41.9 with the term off, 40.8/50.8 with
+it on — and the cost of it is visible in the same row: `overrides intent` **doubles**, 4.8 % → 9.5 %.
+On this session the dodge intervenes against the held direction on one moving frame in ten instead of
+one in twenty, which is the trade §15.3 and §15.9 name and the thing to judge by feel rather than by a
+ratio. `corner cuts through a wall: 0 over 2159 path(s)`, and F, T5, T6, T10 and PATH all pass; T7 fails
+on its 20 resolved collisions as every session does.
+
+**AND THE FRAME BUDGET IS THE THING TO FIX NEXT, not a footnote.** At `--repeat 20`, best-of-20:
+
+| trace | `decide()` all frames p99 | evaluating p99 | evaluating p50 | Plan share |
+|---|---|---|---|---|
+| this dry run, 128×128 grid, 27 solid cells | 244 µs | **719 µs** | 87 µs | 31.1 µs |
+| the acting session's trace, §15.9.3 | 155 µs | 211 µs | — | 36.8 µs |
+| `p26156` (48×48 grid, no walls) | 131 µs | 147 µs | 50 µs | 6.7 µs |
+
+**The p99 of the evaluating frames is 719 µs against a 300 µs budget**, and it is NOT the pathfinder:
+`axial=0` reads 692 µs on the same trace and the `Plan` share is 31 µs either way. The p50 is 87 µs, so
+this is the tail and not the typical frame — a few frames where the candidate set is at its fullest and
+each of 77 candidates runs the plan walk against every threat in the set. It is inside the 16.7 ms frame
+by a factor of twenty so nothing is dropping frames, but the 300 µs this document has been quoting is
+the budget *solver plus sensor plus sampler share*, and this trace shows the solver alone exceeding it
+on one evaluating frame in a hundred. **§15.11 is the task that leaves.**
+
 ### 15.9.4 What §15.9 does not establish
 
 - **Nothing about the axial term live.** The operator's session predates it. The next command is the
@@ -2963,6 +2998,38 @@ pathfinder, and the search is bounded by a 64-cell window on the scenarios and 1
 route that would need to leave that window is not found and is not tested. `corridor`'s 24.7-unit paths
 versus `dodge`'s 12 is the shape of a detour; "it is the detour the client would have taken" is not
 claimed anywhere and would need a live comparison.
+
+
+## 15.11 The next task: the decision's tail
+
+**The defect, in one sentence:** `decide()` p99 on evaluating frames is **719 µs against a 300 µs
+budget** on the field report's own dry run, and it is not the pathfinder — `axial=0` reads 692 µs, the
+`Plan` share is 31 µs, and the p50 is 87 µs.
+
+**Where the tail comes from, by elimination.**
+
+| suspect | evidence it is not the cause |
+|---|---|
+| the path search | `path=0` on the same trace, and the `Plan` self-clock, both put it at 31 µs |
+| the axial term | `axial=0` reads 692 µs |
+| the projected-danger term | ships at weight 0 |
+| the per-threat envelope cache | built once per frame; unchanged by this work |
+| **the admission walk** | 77 candidates × the threats in the set, and the envelope is a *skip* not a bound on the work |
+
+**What to do first, and it is measurement before code.** `SolverHarness` has no way to attribute the
+`decide()` time to a stage: `DecisionWindowMs`, `WindowRefusals` and the path's own counters are all
+*totals*, and a stage timer is what turns "719 µs on one frame in a hundred" into "70 % of it is
+`PlanRefusal` on the frames with 40+ threats". The harness's cost histogram is by frame, not by stage.
+Add the stage split, then look — this document has twice recorded a change made before its cause was
+measured (§10.4's reverted hysteresis, §14.4's unclamped window) and both were found by the instrument
+rather than by the design.
+
+**WHAT IS NOT THE ANSWER.** Shrinking the candidate set is not: admission is the safety boundary and
+§5.3's degradation rule already says the set shrinks under budget pressure rather than the rules being
+relaxed — so if the set has to shrink it is a policy decision with a safety cost, not a tuning one. And
+the node cap is not the answer either: `pathcap=400` buys 4 µs and starts refusing paths on 5.7 % of
+frames (§15.9.4).
+
 
 
 
