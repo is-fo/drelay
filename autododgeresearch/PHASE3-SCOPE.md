@@ -9,6 +9,12 @@ two-controller hazard), [VERIFICATION.md](VERIFICATION.md) §5 (how each is prov
 [MANAGED-ENTRY-HANDOFF.md](MANAGED-ENTRY-HANDOFF.md) §0.2 (the mechanism that makes managed code on
 the game's thread legal).
 
+> **Status 2026-10-14: Spike 3.1 is ANSWERED YES** — see [PHASE3-HANDOFF.md](PHASE3-HANDOFF.md),
+> which carries the measurement (`20261014-040859-p22748`), the four defects that stood between a
+> built actuator and a working one, what the run does *not* establish, and the next step: the solver,
+> offline. **§5.1's account of the startup crash below has been corrected there and here — it was
+> never the `PrepareMethod` pass.**
+
 ---
 
 ## 1. Where Phase 3 starts
@@ -364,16 +370,38 @@ moment the game is closed are expected and are not this run's result** (§5.1).
    `Directory.CreateDirectory` throws inside the launcher, which prints one `FAILED:` line and exits
    1 before the game starts. There is a write probe at the start now, and it names the fix.
 
-**And the reason the game seemed not to open at all, which was neither of the above:** the runs of
-03:17–03:19 *did* start the game, install the hook and arm the pilot -- and then died inside
-`SteeringPilot.Warm`, which had grown a `RuntimeHelpers.PrepareMethod` pass over every method and
-every emitted accessor. That pass had a defensible reason (a `DynamicMethod`'s body is JIT-compiled
-on first call, and the first call would be inside a patched frame) but no need: `FieldAccessor`
-already compiles the delegate at resolve, and `PrepareMethod` on a `DynamicMethod`'s `Method` is not
-the harmless no-op it looks like. It is removed, and the warm-up is back to the one thing it exists
-for -- the `Angle` type initializer and a write-read round trip through the accessors, against the
-pilot's own `Angle` box. **A pre-compile step that nothing needs is not free; it took the game down
-before the first frame.**
+**And the reason the game seemed not to open at all, which was neither of the above.** This section
+first recorded it as the `RuntimeHelpers.PrepareMethod` pass that `SteeringPilot.Warm` had grown.
+**That attribution was wrong, and the correction is left here rather than swept up because the wrong
+cause was "fixed" and the game went on dying** ([PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §2.1 is the
+full account). The pass was removed and the startup access violation was unchanged, because the crash
+was `castclass` on a **value type**: `FieldAccessor` emitted `castclass field.DeclaringType` for every
+accessor, which is correct for a reference type and has no meaning for a `struct` -- and Phase 3's
+actuator is the first code in this project to touch one (`GameInput.MoveAngle` is
+`DarzaCore.Geometry.Angle`, a `sealed` value type). The launch's own stderr carries the receipt:
+
+```
+Fatal error. System.AccessViolationException: Attempted to read or write protected memory.
+   at System.Runtime.CompilerServices.CastHelpers.ChkCastClassSpecial(Void*, System.Object)
+   at DynamicClass.DrelayField_MoveAngle.Radians(System.Object)
+   at Drelay.Bootstrap.SteeringPilot.Warm()
+```
+
+It is a genuine fault and not a catchable `InvalidCastException`, which is why a warm-up defect
+became a process death. `FieldAccessor` now emits `unbox` for a value-typed declaring type. **A
+second defect sat behind it, and only a later run could expose it:** the warm-up read the pilot's box
+back through the nested `GameInput`-shaped accessor, which faults on a boxed struct for the same
+reason. Both are fixed and both are documented at the accessors themselves.
+
+**And a third, which the first *successful* sweep found** ([PHASE3-HANDOFF.md](PHASE3-HANDOFF.md)
+§2.3): `WriteInput` wrote the angle with `FloatSetter(Angle.Radians)`, whose receiver is an `Angle` --
+so the write landed in the pilot's own box, every frame, and the input the client reads kept the
+client's own value. `Moving` and `MoveSpeed` landed correctly, so the player did move: due south, at
+the client's own speed, whatever the sweep commanded, because the read-back used the *nested*
+accessor while the write did not and the log compared two different objects. **A round trip that
+writes and reads through a different pair than the actuator uses is not a check**; `ProveInputWrite`
+now runs the actuator's own pair on the first frame with a live input, and the sweep of
+`20261014-040859-p22748` is the first run in which check A passes.
 
 The report handles both experiments and tells them apart: a run that asked for only one of them is
 not failed for the other, which matters because a good escape result reported as a failed steering
@@ -523,9 +551,15 @@ recorded because it corrects a document.
 
 ## 6. What comes next, in order
 
-1. **Spike 3.1's live run** (§5 runs 1–2). This is M7 and it gates everything below: if movement
-   cannot be actuated, the dodge does not exist and the honest outcome is a stop
-   ([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Phase 3 "If this fails").
+1. ✅ **Spike 3.1's live run** (§5 runs 1–2). This is M7 and it gated everything below.
+   **Answered YES on 2026-10-14** (`20261014-040859-p22748`): the hook steered the live player
+   through the client's own input path in eight commanded directions, the write landed on every
+   logged frame, and the movement followed to within 2°. Two follow-ups are outstanding and neither
+   gates the solver: the wire's `GmKicked` witness (one sweep with `-RelayLog`), and the rotation
+   term, which this run could not measure because `WorldRotation` was 0.0° throughout. The terrain
+   wedging the run exposed (three of eight phases pinned against scenery) is the live motivation for
+   admission rules 2 and 3 of [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md) §5.3.
+   **[PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) is the measurement and the next step.**
 2. ✅ **The budget, measured from the client's own accepted telemetry** (§5.2): `tools/move_budget.py`,
    7 611 real `GmMove` packets, 3.5–8.5 tiles/s resolved law against 1.44 units per 200 ms measured
    mode, and a clock check that validates the decode at ratio 1.0000 over ~7 500 pairs. **What is
@@ -587,8 +621,8 @@ has built:
 
 | criterion | state | instrument |
 |---|---|---|
-| **after Spike 3.1, the movement question has an answer with evidence** | **built, not yet measured**: the actuator, the target, the switches, the logging and the block are in place and the build is green | `--move-steer sweep`, then `tools\steering_report.py` |
-| the budget is measured against the client's own law rather than derived and assumed | **measured offline (§5.2)**: 7 611 real `GmMove` packets give a 200 ms tick, a 1.44-unit typical walking step and a 1.96-unit p99, and they agree with the resolved `3.5 + 5.0·(SPD+10)/75` law at one world unit per tile. The per-frame confirmation rides on the live sweep | `tools/move_budget.py` (with `tools/tests/test_move_budget.py`) |
+| **after Spike 3.1, the movement question has an answer with evidence** | **ANSWERED YES, 2026-10-14** (`20261014-040859-p22748`): the write landed on every logged frame (worst `0.0000000 rad`), the player moved on 1428 of 1951 frames, the heading followed the command to within 2° at eight quarter-turns, mean cos 0.995. The server's acceptance is the one witness still outstanding — run it with `-RelayLog`. [PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §1, §3.1 | `--move-steer sweep`, then `tools\steering_report.py` |
+| the budget is measured against the client's own law rather than derived and assumed | **measured both ways now**: 7 611 real `GmMove` packets give a 200 ms tick and a 1.44-unit typical step (§5.2), and the live sweep's own per-frame displacement is 0.133–0.146 units at 16.680 ms — 8.0–8.7 units/s against the resolved law's 8.5 tiles/s at the cap ([PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §1.4). The tile scale is still not *proven*; the agreement is consistent with it and nothing more | `tools/move_budget.py` (with `tools/tests/test_move_budget.py`) |
 | the dodge is *observably* dodging (decision log shows moves that avoid predicted collisions) | not started | the solver, Spike 3.2 |
 | the frame budget is respected at p99 | **carried from Phase 2's waiver**; the spike's cost is the floor | `frames.csv`, the cost histogram |
 | the death rate in the claim-bearing cases is measurably lower than a deliberate baseline run | not started; needs a paired trial | `TIMING.md` §8 item 4's requirement |

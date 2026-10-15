@@ -124,9 +124,10 @@ invocation with allocation ON.
 **The answer to §1's question, then, is yes — with the qualifier that the *route* matters and not the
 concept.** Managed code can run on the game's thread, entered directly from the game's own call. What
 cannot be depended on is reaching it by `call`ing into managed code from a native detour, because that
-leaves a native frame inside the managed stack that the runtime cannot unwind past. The five Phases
-that needed this answer — Phase 2's sampler, and Phase 3's `World.RequestEscape`, and Phase 4's
-movement work — can now be built the managed way, through a replacement rather than a callback.
+leaves a native frame inside the managed stack that the runtime cannot unwind past. The phases that
+needed this answer — Phase 2's sampler, and Phase 3's `World.RequestEscape` and movement work, which
+are one merged phase since 2026-10-13 — can now be built the managed way, through a replacement
+rather than a callback.
 
 Details, the run table and the raw evidence: [PHASE2-SCOPE.md](PHASE2-SCOPE.md) §4.4 and
 `hook\obj\cases\phase2-mechanism\` (`repl-*`).

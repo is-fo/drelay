@@ -304,7 +304,7 @@ real frame tick reaches the callback; see §6.2 and PHASE1-HANDOFF.md §12.
 ## 4. What Phase 1 deliberately does not do
 
 - **No dodge, no trajectory model, no nexus decision.** Phase 1 reads; it does not decide.
-- **No bridge.** [JAVA-BRIDGE.md](JAVA-BRIDGE.md) is Phase 5, and its own rule is that the hook must
+- **No bridge.** [JAVA-BRIDGE.md](JAVA-BRIDGE.md) is Phase 4, and its own rule is that the hook must
   never block on the relay. Nothing in Phase 1 depends on the relay, so "killing the relay changes
   nothing" is true by construction — and is still on the live checklist.
 - **No writes to game memory other than the detours themselves.** No position writes, no field
@@ -624,8 +624,8 @@ round was spent arguing the opposite.
 | check | why it cannot be done offline |
 |---|---|
 | an hour of play without a crash or a frame regression, at 60 Hz with FPS capped | needs the hour. The recording window is `--live-seconds` now instead of a hard-coded 5 s, which is what makes the hour recordable at all — see [PHASE1-VERIFICATION.md](PHASE1-VERIFICATION.md) §6 |
-| a denied log target costs evidence and not the game (Exit 2a) | needs a live lock; the failure path is instrumented and has already fired in a live run. Run `tools\Run-Exit2a-LogDenial.ps1`. The relay half is Phase 5's (Exit 2b) |
-| a relay that dies mid-session changes nothing (Exit 2b) | the relay is Phase 5 and absent; its *absence* is the status quo and therefore the control |
+| a denied log target costs evidence and not the game (Exit 2a) | needs a live lock; the failure path is instrumented and has already fired in a live run. Run `tools\Run-Exit2a-LogDenial.ps1`. The relay half is Phase 4's (Exit 2b) |
+| a relay that dies mid-session changes nothing (Exit 2b) | the relay is Phase 4 and absent; its *absence* is the status quo and therefore the control |
 | the `token` for `spawn`/`collision`/`escape` read back live | the slot probe resolves the token for the first match only; the reuse path returns nothing |
 | the offset cross-check against a world that appears **after** the run window closes | the probe still runs in the idle loop, but the evidence files have already been written by then |
 | attribution of the CLR fault at the close of `20261011-221035-p4364` | needs a paired run with `DRELAY_NO_PATCH=1`; the Windows event log is the instrument, and it works for harness-spawned runs where dumps do not |
@@ -640,4 +640,4 @@ round was spent arguing the opposite.
   the loaded image. It catches a wrong build; it would not catch a loaded image that differs from
   the file on disk.
 - **The `ICorJitInfo::getFieldOffset` cross-check is Phase 2's**, as §1.3 explains.
-- **The relay bridge is Phase 5 and absent.**
+- **The relay bridge is Phase 4 and absent.**

@@ -451,7 +451,7 @@ generator, and let the probe tell you if the model disagrees.**
   [PHASE1-VERIFICATION.md](PHASE1-VERIFICATION.md) §5.
 - **Exit 2a, the denied log target.** Untested, and now restated with a mechanism and four assertions
   in IMPLEMENTATION-PLAN.md; `tools\Run-Exit2a-LogDenial.ps1` is the run. The relay half is Exit 2b,
-  Phase 5's, and deliberately absent here.
+  Phase 4's, and deliberately absent here.
 - **the `token 0x00000000` in the found-log for `spawn`/`collision`/`escape`.** The slot probe
   resolves the token for the *first* match, and the reuse path returns nothing; `frameTick` is the
   only target whose token has been read back live.

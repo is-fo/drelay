@@ -178,10 +178,10 @@ read-only, and it produces the four numbers that decide whether any of the rest 
 
 | metric | definition | decides |
 |---|---|---|
-| **warning distribution** | for each hit the sensor predicted, `predictedImpactTime − firstPredictionTime` | whether an escape can be dispatched in time — this is the input to Phase 3's thresholds |
+| **warning distribution** | for each hit the sensor predicted, `predictedImpactTime − firstPredictionTime` | whether there is time to move — the input to Phase 3's dodge budget and to the timing of its escape floor |
 | **false-negative rate** | hits that happened but were never predicted, per hit | whether the model is complete enough to rely on |
 | **false-positive rate** | predictions that never became hits, per prediction | how over-cautious the dodge will be; this *is* the ghost rate |
-| **cost** | p50/p99 per-frame microseconds | whether the Phase 4 solver fits the budget at all |
+| **cost** | p50/p99 per-frame microseconds | whether the Phase 3 solver fits the budget at all |
 | **linearity census** | the fraction of live bullets whose sampled path passes the linearity gate | how good a dodge can possibly be |
 
 ### Interpreting it honestly
@@ -215,11 +215,12 @@ structurally cannot affect ([RISKS.md](RISKS.md) §2b).
 
 ### The Phase 3 trial specifically
 
-The predictive nexus is verified differently from the dodge, because its decision needs live state
-and cannot be replayed. The procedure is a **deliberate paired trial**, and the existing relay already
-has both halves of it (`TIMING.md` §8 item 4):
+The acting decision is verified differently from the sensor, because it needs live state and cannot be
+replayed. The procedure is a **deliberate paired trial**, and the existing relay already has both
+halves of it (`TIMING.md` §8 item 4):
 
-1. run in dry run; log the exact moment the hook *would* have escaped, and why;
+1. run in dry run; log the exact moment the hook *would* have moved, the moment it *would* have
+   escaped, and the reason it chose each;
 2. pair that against the relay's `HealthUpdate` trace and against the death, if there was one;
 3. join the hook's `escape` event with the relay's `EscapeAck` on `World.ClientTime`
    ([JAVA-BRIDGE.md](JAVA-BRIDGE.md) §5.3), which measures the end-to-end escape latency that neither
@@ -227,8 +228,13 @@ has both halves of it (`TIMING.md` §8 item 4):
 
 **The acceptance criterion is an accounting, not a rate:** every death in the trial must fall into
 exactly one of two buckets — *"no warning existed"* (a claim-free fall, expected for ~74 %) or
-*"warning existed and the dry-run decision would have escaped in time"*. **A death in neither bucket
-is a bug**, and a third bucket labelled "unclear" is a failed trial.
+*"warning existed and the dry-run decision would have survived the horizon"*. **A death in neither
+bucket is a bug**, and a third bucket labelled "unclear" is a failed trial.
+
+**The trial also checks the other direction, because the escape is the last gate.** Every dry-run
+escape must come with a written reason that no admissible move avoided lethal projected damage: an
+escape that fires while a safe move existed is a dodge that gave up, which is the failure mode the
+2026-10-13 merge exists to remove ([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Phase 3).
 
 ### The anti-regression test
 
@@ -238,8 +244,9 @@ the tool, and it should be run after every change to the hook infrastructure, no
 
 ### 5.1 The two-controller test (the one that matters most for safety)
 
-The dodge and the escape are two controllers fighting over one player, and the conflict is **located,
-not hypothetical**: `World.RequestEscape()`'s channelled branch cancels on movement
+The dodge and the escape are **one decision** in the design since the 2026-10-13 merge, but they are
+still two possible actions over one player, and the conflict between them is **located, not
+hypothetical**: `World.RequestEscape()`'s channelled branch cancels on movement
 (`World.cs:13043-13047`), so a dodge that steers will cancel an in-progress nexus cast in the same
 frame ([RISKS.md](RISKS.md) §3d).
 
@@ -302,7 +309,7 @@ is how a session is diagnosed rather than guessed at.
 
 | symptom | check | likely cause |
 |---|---|---|
-| kicks shortly after the hook acts | `data.reason` on the `Kicked` event | **movement validation** — the decisive Phase 4 risk ([RISKS.md](RISKS.md) §2a) |
+| kicks shortly after the hook acts | `data.reason` on the `Kicked` event | **movement validation** — the decisive Phase 3 risk ([RISKS.md](RISKS.md) §2a) |
 | the dodge moves and the character snaps back | the relay's `Move` records vs the server's next correction | a position write instead of the input path |
 | the nexus cast is cancelled when the dodge acts | the client's own `EscapeCastState` pair in the log | the verified interaction bug ([RISKS.md](RISKS.md) §3d) |
 | "no events from the hook" | `heartbeatSeq` staleness, then `ProcessHandle` liveness | hook dead vs game hung — the mapping cannot tell you which ([JAVA-BRIDGE.md](JAVA-BRIDGE.md) §5.2) |

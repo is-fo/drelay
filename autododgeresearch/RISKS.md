@@ -33,7 +33,7 @@ What follows from that:
 
 | # | risk | likelihood | consequence | evidence |
 |---|---|---|---|---|
-| **1** | the server validates movement and rejects hook-steered moves | **medium — unknown** | Phase 4 cancelled | none; unmeasured |
+| **1** | the server validates movement and rejects hook-steered moves | **medium — unknown** | Phase 3 cancelled; the project rests on Phase 2's measurement | none; unmeasured |
 | **1b** | the server trusts the client's `GmHit` hit claim rather than re-simulating | **settled: it does not trust it alone** | an entire alternative architecture (suppress the claim instead of dodging) is ruled out — which is a *result*, not a loss | the client does send the claim (`GmHit`, id 102, 161/580 with the local player as `ObjectId`), but **74 % of falls have no claim**, so the server resolves most damage itself |
 | **2** | the damage that matters never touches client code | **high — it is the majority case** | scope of benefit is smaller than hoped | measured: **571 of 775 HP falls (74 %) have no client hit claim** |
 | **3** | a game patch changes the target | **certain over time** | hook refuses to install | two apphosts ship *different* builds |
@@ -89,8 +89,10 @@ injecting a deliberately oversized `Move` and watching for `GmKicked` (id 185, w
 relay already decodes — `docs/INJECTION.md` §5.5) turns "the server validates" into a measured
 threshold rather than a known fact.
 
-**If it fails anyway**: Phase 4 is cancelled and Phases 0–3 stand alone. The plan is deliberately
-shaped so that the outcome is still a success.
+**If it fails anyway**: Phase 3 stops. There is no longer a predictive-nexus phase standing behind it
+— the escape is that phase's floor, not a deliverable of its own — so the honest outcome is the
+Phase 2 measurement plus the status quo, and the plan says so rather than quietly assuming a
+consolation prize ([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Phase 3 and §3).
 
 ### 2b. Most damage does not pass through client code
 
@@ -194,8 +196,8 @@ Unmeasured until Phase 2. **This is why Phase 2 exists and why it is a phase rat
 
 The mitigation is a measurement, not a mechanism: log every predicted collision and every actual
 collision, and publish the warning distribution, the false-negative rate and the false-positive rate.
-**The plan has an explicit decision point at M6** where bad numbers mean stopping at the predictive
-nexus rather than building a dodge on a model that does not match reality.
+**The plan has an explicit decision point at M6** where bad numbers mean stopping before Phase 3
+rather than building a dodge on a model that does not match reality.
 
 **Concede**: a dodge cannot be *proven* safe. The reference engine's own audit says so repeatedly —
 *"live gameplay remains unverified"* for much of its newest code, and its tests pin internal
@@ -232,6 +234,12 @@ read to know which mode it is in.
    instant path is the normal one, the *rule* should not assume that, because the failure mode when
    it is wrong is a cancelled run-saving escape;
 4. the interaction is an explicit test ([VERIFICATION.md](VERIFICATION.md) §5.1).
+
+The precedence rule is therefore **part of the plan's Phase 3 deliverable rather than a follow-up**:
+the escape floor is authoritative over the dodge, and the dodge yields
+([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Deliverable 3.4). That is the direct consequence
+of merging the two phases — they are one decision with two outcomes, so the loser of the tie has to
+be named in the design, not discovered in a log.
 
 Two further interactions in the same family, both from `CLIENT-MAP.md` §6.5:
 
@@ -310,10 +318,11 @@ Stated plainly so that no one reads more into the design than is there:
 
 If this project fails, the four most likely stories are:
 
-1. **The movement question failed** and Phase 4 was cancelled — in which case the predictive nexus
-   still shipped and the project was a partial success, provided that outcome was designed for rather
-   than discovered.
-2. **The sensor could not predict collisions** and Phases 4–5 were cancelled at the M6 decision point
+1. **The movement question failed** and Phase 3 stopped — in which case the project's output is
+   Phase 2's measurement plus the knowledge that the dodge is out of reach, and the escape floor is
+   not shipped as a consolation prize (that judgment is the 2026-10-13 merge). A partial success only
+   if that outcome was designed for rather than discovered.
+2. **The sensor could not predict collisions** and Phases 3–4 were cancelled at the M6 decision point
    — in which case the measurement that proved it is itself the valuable output, and the plan's
    phase ordering is what made it a cheap failure instead of an expensive one.
 3. **The hook destabilised the game** — the frame budget, the GC hazards and the pooling hazard are

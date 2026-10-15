@@ -51,10 +51,10 @@ and to publish the four numbers the plan names ([IMPLEMENTATION-PLAN.md](IMPLEME
 
 | number | what it decides | how it is produced |
 |---|---|---|
-| **warning distribution** | whether an escape can be dispatched in time; Phase 3's thresholds | per predicted-then-real collision, the ms between the first frame we predicted it and the frame the game resolved it |
+| **warning distribution** | whether there is time to move; Phase 3's dodge budget and escape-floor timing | per predicted-then-real collision, the ms between the first frame we predicted it and the frame the game resolved it |
 | **false negatives** | whether the model is complete enough to rely on | collisions the game made that our sensor never predicted, each with a named cause |
 | **false positives** | whether a dodge would be over-cautious (the `#ghost` rate) | bullets we predicted would hit that never did |
-| **per-frame cost p50/p99** | whether the Phase 4 solver fits the budget at all | a **histogram**, not a ring (§6.1) |
+| **per-frame cost p50/p99** | whether the Phase 3 solver fits the budget at all | a **histogram**, not a ring (§6.1) |
 
 Plus the fifth measurement the plan calls out separately: **what fraction of real bullets are
 straight**, from the linearity gate's own log.
@@ -159,8 +159,9 @@ Reading is native-safe (no transition), but Phase 2 needs three things a read ca
 **A second, independent reason to settle this now.** Phase 3 needs the same mechanism to call
 `World.RequestEscape`, and [PHASE1-VERIFICATION.md](PHASE1-VERIFICATION.md) §9 records the operator's
 alternative — delegating the *act* to the Java relay — which only helps if the hook can still
-*publish* the decision. Either way the mechanism question is upstream of Phases 3 and 4, and it is
-cheaper to answer it once, on a test host, than twice in a live run.
+*publish* the decision. Either way the mechanism question is upstream of Phase 3 — the merged dodge
+and escape floor — and of the Phase 4 bridge, and it is cheaper to answer it once, on a test host,
+than twice in a live run.
 
 ## 4. Spike 2.0 — the mechanism test (synthetic host, offline)
 
@@ -574,8 +575,8 @@ given frame's ordering.** Against that:
 
 **What would change the decision**, stated so a later reader can tell whether it has: a live run in
 which the collision log records a hit whose bullet the frame path never saw (a false negative with no
-matching observation), or a Phase 3 requirement that the escape be dispatched inside the same frame the
-bullet spawns. Neither has happened, and the second is a Phase 3 measurement, not a Phase 2 guess.
+matching observation), or a Phase 3 requirement that the escape floor be decided inside the same frame
+the bullet spawns. Neither has happened, and the second is a Phase 3 measurement, not a Phase 2 guess.
 
 **And there is a harder reason it is not built yet: it could not be verified.** A 16-argument hook
 needs a witness that calls it with the real argument shapes, and there are only two candidates. The
@@ -798,7 +799,7 @@ frame. The fix is the one §4.7 anticipated — read the hot fields through offs
 reflection, or cache the accessors — and it is now justified by a number rather than by a suspicion.
 
 This is the phase working as designed. IMPLEMENTATION-PLAN.md's whole reason for putting Phase 2 before
-Phase 4 is that a sensor which cannot predict collisions cheaply enough should stop the project
+Phase 3 is that a sensor which cannot predict collisions cheaply enough should stop the project
 *before* the solver is built, and the session runner is what turns that from a sentiment into a verdict
 line.
 
@@ -1139,7 +1140,7 @@ So the mistake is now testable offline, and the fixture's own `hit_character_eva
 the run's verdict records it as a FAIL. **The operator has waived the cost criteria for this
 phase close, and that decision is recorded here rather than argued with**: the mechanism is
 verified, and the cost work belongs with the solver that has to fit in the same frame
-(Phase 4). §7 restates the criteria with their actuals so the waiver is visible rather than
+(Phase 3). §7 restates the criteria with their actuals so the waiver is visible rather than
 implied.
 
 ### 4.8 The ground-truth comparison, and the warning distribution
@@ -1289,10 +1290,16 @@ four were found, because `escape` is not called until a zone loads.
 
 Restated with the actuals from §4.15, so the state of each one is visible rather than implied.
 
+> **Closed by operator decision on 2026-10-13** — the same decision that merged the plan's phases 3
+> and 4 into one dodge-with-an-escape-floor. The cost criterion is waived for now ("ignore
+> performance concerns for now; we will solve later"), and the false-negative row below is carried
+> forward into Phase 3's dry-run trial rather than met here. The operator's close is the phase's
+> status; this table is what that status rests on.
+
 | criterion | state |
 |---|---|
 | prediction agrees with the game's own collision decision on the great majority of hits, and **every disagreement has a named cause** | **not yet measured.** The instrument works and the session produced disagreements, but the false-negative count of that session is an over-count (§4.15) and the corrected counter has not been on a live run. This is the one criterion still open |
-| the sensor's **p99** per-frame cost is inside the 300 µs ceiling with room for the solver (§6.1) | **read: yes** — `p50 <= 50 µs, p99 <= 100 µs` over 19 201 frames, with 11 frames above 2 ms. **sampler: no** — `p50 <= 100 µs, p99 <= 500 µs`. **The operator has waived the cost criteria for this phase close** (recorded in §4.15); the cost work belongs with the solver that shares the frame, in Phase 4 |
+| the sensor's **p99** per-frame cost is inside the 300 µs ceiling with room for the solver (§6.1) | **read: yes** — `p50 <= 50 µs, p99 <= 100 µs` over 19 201 frames, with 11 frames above 2 ms. **sampler: no** — `p50 <= 100 µs, p99 <= 500 µs`. **The operator has waived the cost criteria for this phase close** (recorded in §4.15); the cost work belongs with the solver that shares the frame, in Phase 3 |
 | the **linearity gate** has told us what fraction of real bullets are straight | **yes** — **0.695**, over 406 077 linear and 178 611 curved sample sets, from the live session. Time-weighted rather than per-bullet, which §4.15 flags |
 
 ## 8. What would stop Phase 2
@@ -1304,9 +1311,10 @@ stop: what the sessions established is that the mechanism works end to end on th
 
 - **the mechanism test fails and the native fallback cannot sample trajectories without a curvature
   error large enough to make the FP/FN numbers meaningless.** Then the honest output is the
-  measurement of that error and a stop at "Phase 3 only, from collision events alone" — the sensor
-  would still be able to say *that* a bullet is about to hit, and Phase 3's escape needs no
-  trajectory at all.
+  measurement of that error and a stop **before Phase 3**: the sensor would still be able to say
+  *that* a bullet is about to hit, and an escape needs no trajectory at all — but since the
+  2026-10-13 merge the escape is Phase 3's floor rather than a phase of its own, so there is no dodge
+  and no deliverable standing behind it.
 - **`ProjDesc.GetPosition` turns out to be inlined everywhere it matters**, so there is no separate
   body to call. The escape hatch is the one [HOOK-ARCHITECTURE.md](HOOK-ARCHITECTURE.md) §2.1 names:
   `RequestReJIT` + `SetILFunctionBody` through a profiler.

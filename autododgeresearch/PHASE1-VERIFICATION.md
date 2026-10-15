@@ -202,7 +202,7 @@ spike.
 | **Deliverable** hook skeleton (self-checks, target table + hard refusal, offset pass, off switch) | **met** | `selfcheck.txt` 19/0/2 in both runs; `Test-PeReader.ps1` + injection run 1 cover the refusal; offset pass publishes and cross-checks; `--off` covered by injection run 2 |
 | **Exit 1** an hour with **all four targets patched**, no crash, no frame regression | **not met** | (a) **only one target is patched, deliberately** — the plan and the code still disagree and the handoff §9 item 5 says this must be resolved explicitly; (b) the live window is **hard-coded to 5000 ms** (`DrelayMain.cpp:740`) and the evidence is written at its end, so no run can even record an hour — the hook idles afterwards and nothing harvests its counters; (c) the longest ARMED process session is ~3 minutes, and one of the two ended in §5's fault |
 | **Exit 2a** a denied log target costs evidence, never the game | **not tested** | restated in the plan this session, with a stated kill mechanism (an exclusive lock, not a delete) and four assertions: game exit unchanged, `elapsed_us` unchanged, the kill **felt** (`hook.log.append-failed`, and `log appends` in `summary.txt` when the lock precedes the write), and no line lost to a transient lock. The instruments already exist; the failure mode has already occurred twice — `20261010-014016-p11352` logged one `ERROR_SHARING_VIOLATION` (errno 13, win32 32, `lines pending: 0`) and recovered every line |
-| **Exit 2b** a relay that dies mid-session changes nothing | **not Phase 1's** | moved to Phase 5's exit criteria this session: the relay is Phase 5 and absent, so this cannot be met here; its *absence* is already the status quo and therefore the control |
+| **Exit 2b** a relay that dies mid-session changes nothing | **not Phase 1's** | moved to Phase 4's exit criteria this session: the relay is Phase 4 and absent, so this cannot be met here; its *absence* is already the status quo and therefore the control |
 | **Exit 3** a different build is refused and logs why | **met** | `Test-PeReader.ps1` (tampered MVID) and injection run 1 (fingerprint mismatch), both naming the expected and actual values |
 | **M3** all four patched + one hour, no crash, no regression | **open** | same three gaps as Exit 1 |
 
@@ -294,8 +294,9 @@ Why this is more than a preference:
   log that the escape actually left — without which "the hook decided to escape" and "the game
   escaped" become indistinguishable in the evidence).
 
-Not decided here. It belongs with Phase 3's design, and it changes what the bridge must carry, so it
-should be settled before the escape path is built rather than after.
+Not decided here. It belongs with Phase 3's design — the merged dodge and escape floor — and it
+changes what the Phase 4 bridge must carry, so it should be settled before the escape path is built
+rather than after.
 
 ---
 

@@ -445,19 +445,34 @@ reactive auto-nexus as the status quo, and the deliverable is the measurement it
 
 ## Phase 3 — Dodge, with the escape as its floor
 
-> **Status: entered 2026-10-14, and Spike 3.1 is built but not yet measured live.** The execution
-> plan, the corrected spike order, and the measurement that reshapes the phase are in
+> **Status: entered 2026-10-14, and Spike 3.1 is ANSWERED YES as of 2026-10-14 04:08.**
+> [PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) is the measurement and the next step; the execution plan,
+> the corrected spike order and the measurement that reshapes the phase are in
 > [PHASE3-SCOPE.md](PHASE3-SCOPE.md). What exists now: a **fifth pinned target** (the movement
 > integrator, `World.cs:12666`) with a managed replacement on its entry, a per-frame actuator that
 > writes `GameScene.GameInput` (the mechanism this section ranks first), an opt-in and bounded
 > launcher switch for it, and `tools/steering_report.py` to read the result against the relay's own
-> wire evidence. **One correction to this section's text is load-bearing and is recorded rather than
-> quietly dropped:** the "cheapest possible way to learn whether the server validates movement" it
-> names — injecting a plausible `Move` from the relay — cannot answer Spike 3.1, because the relay
-> cannot reach the actuator this design chose and the question is not whether the server validates
-> movement (the operator settled that) but whether the hook can steer through the client's own input
-> path. [PHASE3-SCOPE.md](PHASE3-SCOPE.md) §3 is the argument, and the proxy keeps the one job that
-> is genuinely its own: witnessing whether the server accepted the movement.
+> wire evidence. **The live sweep of run `20261014-040859-p22748` moved the player under hook control
+> in eight commanded directions: the value read back from `MoveAngle` equalled the value written on
+> every logged frame (worst `0.0000000 rad`, 1428 of 1951 frames moved, heading residual ≤ 2°,
+> mean cos 0.995), and the per-frame displacement (0.133–0.146 units at 16.680 ms) agrees with the
+> resolved `3.5 + 5.0·(SPD+10)/75` law and with §5.2's offline step distribution.** The one witness
+> still outstanding is the wire's: no relay log was attached, so `GmKicked` has not been observed
+> *absent* — the operator reports no disconnect, and illegal movement is disconnected quickly. That
+> does not gate the dodge; it gates the claim, and it is one command
+> ([PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §3.1, §7). **Two corrections to this section's text are
+> load-bearing and are recorded rather than quietly dropped:** (1) the "cheapest possible way to
+> learn whether the server validates movement" it names — injecting a plausible `Move` from the
+> relay — cannot answer Spike 3.1, because the relay cannot reach the actuator this design chose and
+> the question is not whether the server validates movement (the operator settled that) but whether
+> the hook can steer through the client's own input path; [PHASE3-SCOPE.md](PHASE3-SCOPE.md) §3 is
+> the argument, and the proxy keeps the one job that is genuinely its own. (2) The
+> **movement-boundary search** this section asks Spike 3.1 to run is **not** run by deliberate
+> overspend, for the reasons in §3 and §"Exit criteria" of [PHASE3-SCOPE.md](PHASE3-SCOPE.md): `b =
+> TilesPerSecond × frameSeconds` is a legal move by construction, so the design never needs to know
+> where the cliff is, and the per-frame figure it does need is now measured
+> ([PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §1.4). The search stays available as an explicit, opt-in
+> experiment.
 
 **Goal.** Not needing the nexus, in the cases where that is possible — and calling it only when
 nothing else is.
@@ -529,6 +544,16 @@ Because the validation is a distance-per-tick check, the spike should deliberate
 **boundary**: find the largest per-tick magnitude that is still accepted, and confirm the design's
 budget sits inside it with margin.
 
+> **Measured 2026-10-14, and the boundary probe is deliberately not run.** The sustained movement
+> happened, in eight directions, for 1951 frames; the distance-per-tick question is answered from the
+> other end — the client's own accepted `GmMove` telemetry (1.44 units per 200 ms typical, 1.96 at
+> p99, [PHASE3-SCOPE.md](PHASE3-SCOPE.md) §5.2) and now the client's own per-frame integrator
+> (0.133–0.146 units per 16.680 ms frame, [PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §1.4), both inside
+> the resolved law. **Deliberate overspend is a live-character cost for a number the design does not
+> use**: `b = playerSpeed · frameSeconds` is a legal step by construction, so the cliff is not on the
+> path. The kick is still unwitnessed on the wire and is the one thing this criterion leaves open
+> ([PHASE3-HANDOFF.md](PHASE3-HANDOFF.md) §3.1).
+
 **If this fails**: **the dodge does not exist, and with it the point of the project.** The escape
 floor of Deliverable 3.4 is the only behaviour left, and the merge decision above already recorded
 that escape-only is of questionable value on its own — so the default is to stop and document, and
@@ -537,6 +562,11 @@ assumes. Steel yourself for that outcome before starting, because it is a real p
 honest response is to stop rather than to escalate to more invasive techniques.
 
 ### Spike 3.2 — the solver, offline
+
+> **DONE, 2026-10-14.** The solver, the trace recorder and the offline harness exist and are green on
+> five synthetic scenarios; the seven defects the harness found are recorded with their symptoms.
+> **[SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md)** is the handoff, including the one
+> outstanding item — a recorded session, which is the only thing that can settle T7.
 
 The decision is a pure function of a plain-data snapshot ([DODGE-ALGORITHM.md](DODGE-ALGORITHM.md)
 §2). That property exists **so that the solver can be tested without the game.** Build the snapshot

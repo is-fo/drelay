@@ -77,6 +77,23 @@ The client's own predicate is `Projectile.Hit()` (`Projectile.cs:1505`), which b
 `HitsPlayer`. **That flag is the threat filter**, and it arrives as an argument at the spawn hook.
 Nothing needs to be inferred about ownership or alliance.
 
+> **AS IMPLEMENTED 2026-10-15, AND THIS PARAGRAPH HAD BEEN CORRECT BUT UNREAD FOR A WEEK.** The
+> filter above was written into this document from the beginning and the code did not apply it: the
+> sensor filtered projectiles by **type** and by nothing else, so the player's own shots — same type,
+> same radius, and born inside the player's collision disc, which is what got them past every cull —
+> went into the threat set. The first live session after the plan model measured the cost:
+> **51.8 % of its threat records were the local player's own projectiles**, 959 of its 971
+> "already touching" verdicts, and **255 of its 1140 moves**. The dodge was escaping the operator's
+> own muzzle, and `stand` — the specification's preferred answer — was refused on every frame they
+> fired, because `Decide` takes its `stand` early-out only when the player is not inside a disc.
+>
+> `TrajectorySampler` now resolves `Projectile.HitsPlayer` (`:131`) and `Projectile.LocalSeedDerived`
+> (`:115`) and declines a projectile the client can never collide with the player, before it is
+> sampled. The full record, the removal experiment and the two fields are in
+> [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §12. **The lesson is this section's own: a
+> sentence in a specification is a filter only if the code asks the question, and both of this
+> project's threat-set filters that were "obvious" turned out to be missing rather than simple.**
+
 ### 3.2 The record
 
 One record per live bullet, keyed on `(GameId, startTime)` — see the pooling hazard in
@@ -253,7 +270,8 @@ it; ours does not.
 + 24 headings × 3 radii
 + 1 intent-aligned heading at full magnitude
 + 1 egress-direction point (only when §5.4 says we are inside a disc)
-= 77 candidates
++ 1 goal heading at full magnitude, + GoalFanSteps more either side of it
+= 77 (80 with the default one-step fan)
 ```
 
 - headings at `2π·k/24`, giving 15° resolution — the reference's 24-heading engine (`zDodge`) is the
@@ -264,7 +282,14 @@ it; ours does not.
   server will accept;
 - the intent and egress points exist because a 15° ring quantises away "keep doing what the player
   asked" and "get out of the thing I am standing in", and both of those are frequently the right
-  answer.
+  answer;
+- **the goal fan, added 2026-10-15**, is the same argument for the third thing a 15° ring quantises
+  away: "carry on in the direction I am already travelling". The ring's headings are multiples of 15°
+  from world north and the measured course is whatever angle the character is actually moving at, so
+  the exact goal heading needs a candidate of its own — the operator's own example is 13.7°. The
+  `± 1` neighbours at full magnitude are what let the dodge leave that line by the smallest amount
+  that clears an obstacle instead of snapping to the nearest ring heading. See
+  [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §11.3.
 
 **Degradation under budget pressure removes radii, not tests.** If the measured cost exceeds the
 slice, drop to the outer radius only (24 candidates). The admission rules below are never relaxed.
@@ -286,13 +311,21 @@ A candidate is admissible only if all of these hold. Each is cheap, and the chea
 4. **not inside a bullet at arrival** — apply §5.1 at the candidate's position;
 5. **not inside a bullet along the way** — apply §5.1 to the swept segment against every bullet's
    current disc;
-6. **temporally clear** — for every bullet, the player's swept path must not intersect the bullet's
-   *predicted* path within the horizon. This is the test that makes the dodge look intelligent: it is
-   what allows threading a gap that exists only at a particular moment, and it is the single
-   highest-value algorithm in the whole design (§5.5);
+6. **temporally clear** — for every bullet, the plan's body and the bullet's body are never inside the
+   collision radius of each other on the same clock, within the lookahead. This is the test that
+   makes the dodge look intelligent: it is what allows threading a gap that exists only at a
+   particular moment, and it is the single highest-value algorithm in the whole design (§5.5). **As
+   implemented it is a spacetime walk rather than a path-against-path test** — see the note in §5.5
+   and [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §11;
 7. **not inside an enemy body** — a hard exclusion, with one exception: if the player is *already*
    inside the body, the test is dropped for that body. Without the exception every move out of an
    overlapping circle sweeps it, which would trap the player under a mob that walked onto them.
+
+**Rule 6 is one-sided in the same way rules 4 and 5 are**, and the reasoning is §5.3's own: inside the
+decision window a violation is refused outright, and beyond it a candidate is refused only when it
+gets *closer* to that bullet than standing still would. A bullet the player is already inside, or one
+arriving faster than they can move, must not be allowed to refuse the whole candidate set — that is
+the mechanism by which a solver reports "nothing is safe" on a frame where something is.
 
 The exception in rule 7 is not a special case invented here; it is the reference engine's documented
 reasoning for the same rule, and the same escape applies to AoE volumes.
@@ -325,6 +358,19 @@ segment-vs-segment, then check whether the times can coincide. Two refinements m
   interpolation is accurate. This is the reference engine's reasoning for its sample step and it
   holds here.
 
+> **AS IMPLEMENTED 2026-10-15, THIS SECTION IS TRUE BUT STRONGER, AND THE DIFFERENCE IS WORTH THE
+> PARAGRAPH.** "Does the player's swept path intersect the bullet's predicted path at a compatible
+> time" describes two polylines and asks when they cross. What the solver now asks is *where will the
+> bullet's body be when my body is there* — one subtraction, walked over a lookahead — and the two are
+> not the same question. They agree for a player who is standing still, which is why the older form
+> looked right for so long. They come apart for a player who is **moving**, and the older form is
+> wrong in the direction that costs behaviour rather than safety: the candidate's arrival point was
+> compared against the bullet's whole remaining polyline, so a bullet's entire path read as a wall
+> whether the bullet would be there in 600 ms or had been there 600 ms ago. The relative-motion form
+> is exact for two objects that are each linear between knots, needs no time-compatibility machinery,
+> and is stricter between samples — at 24 units/s a bullet moves 0.72 units between knots, wider than
+> the 0.41-unit disc. See [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §11.1–11.2.
+
 The *durability* of a candidate is then the time until its first temporal intersection, and the
 score uses it (§5.6). The reference engine's version of this — an arrival-time march over a bounded
 time grid, with a "trust prefix" that refuses to credit clearance beyond the point where the
@@ -340,8 +386,10 @@ step can never move the player into a bullet because it can only rank options th
 
 ```
 score =  w_clear      · min(clearance, clearComfort)
+       + w_resolve    · fraction of the frame's relevant threats this plan stays clear of
        + w_durable    · durability                     // normalized time-to-first-danger
        + w_intent     · intentAlignment
+       + w_goal       · goalProgress                   // toward the point in front of the character
        + w_heading    · headingContinuity              // dot with the previous chosen heading
        + w_lateral    · lateralness                    // preference for sidestepping over fleeing
        − w_move       · (candidateDistance / b)
@@ -352,13 +400,25 @@ with initial weights, all to be tuned in the offline harness rather than in a li
 
 | term | weight | why it is there |
 |---|---|---|
-| `clearance` | 0.25 | raw geometry; the reference engine uses a similarly small weight because it is already a hard constraint |
-| `durability` | 0.30 | prefers positions that stay safe, which is what stops the jitter |
-| `intent` | 0.40 | the player's own steering is the best goal we have; see §5.7 |
+| `clearance` | 1.20 | how close the two bodies ever come over the lookahead; the geometry term |
+| `resolve` | 1.50 | how many of the bullets actually aimed at the player this plan stays clear of. Added 2026-10-15; without it nothing in the score said whether a move ACHIEVED anything |
+| `durability` | 0.60 | normalized time-to-first-violation. **Time-correlated since 2026-10-15**; it measures the first moment the plan is inside a bullet's disc, and it ignores bullets the player is already standing in, whose damage is committed |
+| `intent` | 0.40 | the direction the player's hands asked for; §5.7 |
+| `goal` | 0.90 | progress toward the imaginary point in front of the character — the measured course when moving, intent when not. Added 2026-10-15; see §5.7 and [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §11.3 |
 | `heading continuity` | 1.00 | anti-jitter; the reference engine's largest weight |
 | `lateralness` | 1.20 | sidestepping keeps the player's options open; fleeing radially can run into more of the volley |
-| `move cost` | 1.20 | do not travel further than necessary |
+| `move cost` | 0.25 | do not travel further than necessary |
 | `stand bias` | 0.15 | small nudge toward doing nothing, deliberately below the durability weight |
+
+**`clearance` and `durability` are not the numbers this table first carried, and the reason is one
+measurement.** The original `clearance` measured the distance to where the bullet **is** — largest
+exactly when the dodge does not need to move — and the original `durability` normalized by the 50 ms
+decision window, so anything clear for more than one frame scored 1.0. Both were constants on the
+frames the score exists for, and the winner was decided by the move penalty, which is a penalty on
+distance: the dodge took the smallest available step, every frame, while the bullet closed. Live, the
+chosen candidate's durability was **p50 17 ms** on the third recording. Three of the terms have now
+been rewritten and the measurement that says so is in
+[SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §10.3 and §11.6.
 
 ### 5.7 Intent preservation
 
@@ -370,6 +430,22 @@ intent makes the operator worse off than no dodge at all.
 
 The player's steering is read from `GameScene.GameInput` (`Moving`, `MoveAngle`, `MoveSpeed`) — the
 same values `World.cs:12690-12692` consumes one line later to compute the movement delta.
+
+**`MoveAngle` IS AN INPUT-FRAME NUMBER AND THE COURSE IS NOT, AND THAT IS THE WHOLE OF THE CONVERSION.**
+`World.cs:12692` computes `angle = MoveAngle + (-WorldRotation + aimOffset)`, so the world heading the
+player is asking for is `MoveAngle - WorldRotation`. Everything the solver reasons about is world
+positions, so the intent is converted on the way in and the chosen heading is converted back on the
+way out (`SteeringPilot` writes `worldHeading + WorldRotation`). A camera at 13.7° makes that a
+13.7° error in the goal; the recorded sessions reach 359.9°.
+
+**The goal is the second thing in this section, and it is not intent's replacement — it is its
+counterpart.** Intent is what the hands asked for. The **course** is what the body is doing, measured
+from the client's own frame-to-frame displacement, and *the imaginary point in front of the character*
+is projected along it. When the character is not moving there is no course and intent is the fallback.
+The two answer different questions — "where do you want to go" and "where are you going" — and the
+score carries both, `w_intent` and `w_goal`, so the trade between obedience and line-keeping is one
+number rather than an architecture. [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §11.7 is
+the measurement of that trade on the third recording and the operator's call to make.
 
 The policy, adapted from the reference engine's most carefully reasoned ladder (their PJDodge
 override ladder, which is the clearest statement of "how much may intent buy" in the whole
@@ -431,6 +507,13 @@ large testing advantage.
 ---
 
 ## 7. Preventive escape
+
+**This is the last gate of one decision, not a feature with its own trigger.** Since 2026-10-13 the
+plan merges the dodge and the escape into a single phase, and §7 is what that phase reaches for when
+§5's solver can find no admissible move that avoids lethal projected damage
+([IMPLEMENTATION-PLAN.md](IMPLEMENTATION-PLAN.md), Phase 3). The precedence rule that follows from
+that — the escape is authoritative, the dodge yields, and the interaction is a verified hazard rather
+than a hypothetical one — is [RISKS.md](RISKS.md) §3d.
 
 ### 7.1 Why this replaces the reactive rule
 
@@ -551,6 +634,15 @@ latency-pad tile fractions (calibrated to its collision geometry), and its `kPla
 
 ## 10. Invariants worth testing
 
+> **IMPLEMENTED, AND FOUR OF THEM ARE ASSERTED ON EVERY RUN OF THE HARNESS.** Invariants 1 to 4
+> (T5, T6, T10, T7 in IMPLEMENTATION-PLAN.md's table) are checked by
+> [`hook/tools/SolverHarness`](hook/tools/SolverHarness). T5, T6 and T10 hold over five synthetic
+> scenarios; **T7 is wired and has never been run**, because it needs frames from a played session —
+> `DRELAY_TRACE=1` records them and [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §6 is
+> the command. Read that document before changing anything in §5: it records seven defects that the
+> text below does not anticipate, including one place (§5.5's temporal test) where this document's
+> own sentence is too coarse to implement as written.
+
 Each of these is a property that can be asserted offline, which is the only place a dodge can be
 tested cheaply:
 
@@ -574,6 +666,13 @@ tested cheaply:
 Invariant 4 is the one to build first. It is the only test that can tell us whether the trajectory
 model is right, and it is available without any live play at all if a recorded position trace
 exists.
+
+**How that worked out, for the next reader.** Invariant 4 was built first as specified, and the
+recording it needs did not exist — Phase 2 keeps counts, not traces — so `TraceRecorder` was written
+to produce one. Invariants 1 to 3 turned out to have teeth without any live play at all: five
+synthetic scenarios, each with a known correct answer, found seven defects in the solver on the
+day it was written. **Invariant 4 remains the one that needs a session**, and it is the only one
+whose failure would mean the trajectory model itself is wrong rather than the solver's use of it.
 
 ---
 
@@ -647,6 +746,6 @@ exists. What changes is that we now *have* the per-frame read.
 | **every time constant** | calibrated to a 5 Hz server; ours must come from [TIMING.md](TIMING.md) |
 | **tile-scale distances and pads** | different units, different collision radii |
 | **the memory-offset layer** | 93 KB of IL2CPP offsets for a different game; we resolve our own at startup |
-| **the grid Dijkstra / pocket search, the spacetime latest-departure advisor, the nav router** | these answer "where should I be in two seconds", which is a goal-seeking problem. Our first version has no goal beyond "exist"; adding pathfinding before the solver is proven would be building the second storey first. Revisit only if the candidate solver demonstrably dead-ends |
-| **the A\* / BFS time-sliced lattice** | same reason, and it is the most expensive and least portable part of their code |
+| **the grid Dijkstra / pocket search, the spacetime latest-departure advisor, the nav router** | these answer "where should I be in two seconds", which is a goal-seeking problem. Our first version had no goal beyond "exist". **Updated 2026-10-15 — the condition this row set was met, and the goal arrived, but not in this form.** The candidate solver did not dead-end; it went *stale*, and the operator's reading of it is the one that stuck: a bullet's entire path was being treated as dangerous, and the dodge had no opinion about which way the character was already going. What was added is the spacetime half of this row — a plan walked against the bullets in one clock — plus a single goal point projected along the measured course. See [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §11. The grid Dijkstra and the nav router are still not borrowed, and still for this reason |
+| **the A\* / BFS time-sliced lattice** | same reason, and it is the most expensive and least portable part of their code. §11's fan of goal-aligned candidates is a one-step lookahead, not a lattice: it can see that a direction leads into an obstacle, and it cannot see a way round a corner. That limit is named rather than hidden |
 | **the WASD-yield that stops planning while a key is held** | we are improving a tool the user runs deliberately; making the dodge stop when they touch the keyboard is a policy choice, not a correctness one, and it belongs in config |
