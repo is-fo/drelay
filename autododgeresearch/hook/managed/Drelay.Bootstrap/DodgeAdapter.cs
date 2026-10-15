@@ -175,10 +175,18 @@ namespace Drelay.Bootstrap
 
         // --- The grid window ---------------------------------------------------------------
         //
-        // 24 tiles each way, the same window the recorder writes, for the same reason: it is the
-        // region a 600 ms horizon plus a one-frame budget can touch, and it is what makes the
-        // per-frame cost a copy rather than a map. Re-read only when the player's tile changes.
-        private const int GridRadius = 24;
+        // 64 tiles each way, AND IT IS NOT THE HORIZON'S NUMBER ANY MORE. 24 was -- "the region a
+        // 600 ms horizon plus a one-frame budget can touch" -- and that was right while every test
+        // was a one-step candidate. The pathfinder (HANDOFF-DIRECTED-DODGE.md section 4) searches
+        // this grid for a route around a corridor of fire, so the window is now sized by what a PATH
+        // can reach rather than by what a step can: 128 units across, which is the same window
+        // `TraceRecorder` writes and therefore the same world the offline harness searches. A window
+        // that did not match the recorder's would make the tuned decision a decision about a
+        // different grid.
+        //
+        // Re-read only when the player's tile changes, so a wider window is also a cheaper one: the
+        // copy happens once per tile crossed rather than once per frame.
+        private const int GridRadius = 64;
 
         private static readonly byte[] GridCells = new byte[(2 * GridRadius) * (2 * GridRadius)];
         private static int _gridOriginX;

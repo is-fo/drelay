@@ -638,6 +638,93 @@ namespace Drelay.Bootstrap
         public float WeightStandBias;
 
         /// <summary>
+        /// How much of the move carries the character toward the PATH's waypoint rather than along
+        /// the goal ray. See `HANDOFF-DIRECTED-DODGE.md` section 4.
+        ///
+        /// THE TERM THE DODGE WAS MISSING, AND THE ONE DEFECT 3.16 OF
+        /// `SPIKE3.2-OFFLINE-SOLVER.md` SECTION 15 IS ABOUT. `goal` rewards motion along the
+        /// player's own line and `lateral` rewards motion across the nearest threat, and on a frame
+        /// where the player is walking AWAY from the shooter those two are the same direction -- so
+        /// the biggest step wins and the dodge outruns. Measured over the five recordings with
+        /// `tools/dodge_direction_report.py`: OUTRUN is 40-50 % of the dodge's own moves, and on
+        /// three of the five it is the single most common thing the dodge does.
+        ///
+        /// It is a PREFERENCE and it goes in `ScoreAll` beside `GoalProgress`, never in `Admit`. The
+        /// admissible set is the safety boundary; a path term that admits is a path term that can
+        /// walk the player into a bullet, which is the one thing section 5.3's doctrine forbids.
+        /// </summary>
+        public float WeightPath;
+
+        // --- The pathfinder (HANDOFF-DIRECTED-DODGE.md section 4) ------------------------
+
+        /// <summary>
+        /// Whether the frame gets a path at all. False restores the pre-path behaviour exactly, so
+        /// the change has an off-switch and an A/B that is one environment variable wide.
+        /// </summary>
+        public bool PathEnable;
+
+        /// <summary>
+        /// How far along the goal ray the search aims, in seconds of the player's own travel.
+        ///
+        /// The goal is a RAY -- the player's held direction, which has no cell to search to -- so the
+        /// target is the cell the character would reach by walking that way for this long. 1.5 s is
+        /// twelve units at 8.2 u/s and about four seconds of game time at 60 Hz, which is long enough
+        /// to route around a corridor of fire and short enough that a straight-line guess about where
+        /// the player is going is still honest.
+        /// </summary>
+        public float PathTargetSeconds;
+
+        /// <summary>
+        /// Expansions the search may make before giving up. The fallback is the goal term, so the cap
+        /// trades dodge quality for frame time and never for safety.
+        /// </summary>
+        public int PathNodeCap;
+
+        /// <summary>
+        /// What one unit of danger is worth in units of distance. A cell the bullet's body crosses
+        /// costs the step plus this much again, so a square of corridor is worth going around while a
+        /// whole detour is not -- which is the "sidestep rather than outrun" preference expressed as a
+        /// cost rather than as a weight on the final score.
+        /// </summary>
+        public float PathStepCostWeight;
+
+        /// <summary>
+        /// Extra world units added to the collision disc when the path's danger field is built. It
+        /// covers the sampling gap between a bullet's knots; it is a CLAMP on the danger radius and
+        /// not a pad on the safety test, which stays exactly the game's own.
+        /// </summary>
+        public float PathDangerPadUnits;
+
+        /// <summary>
+        /// How far along the path the waypoint sits, in world units.
+        ///
+        /// IT IS NOT THE PATH HORIZON AND IT IS NOT THE STEP. The waypoint is a DIRECTION the score
+        /// terms are dotted against, so it has to be far enough out to be a direction at all: a
+        /// one-unit-wide grid's first cell centre is half a unit away, and which of the eight
+        /// neighbours it is depends on the path's own quantisation. Measured on `p26156` at half a
+        /// unit, the waypoint alternated sides on adjacent frames and the path term moved the
+        /// direction histogram by three points with a weight of 1.0. At two and a half units it is
+        /// stable, and it still sits well inside a path that averages ten.
+        /// </summary>
+        public float PathWaypointUnits;
+
+        /// <summary>
+        /// How far along the path the waypoint sits, as a FRACTION OF THE PATH'S OWN LENGTH.
+        ///
+        /// THE FRACTION IS THE POINT AND THE ABSOLUTE DISTANCE IS ONLY A FLOOR. A path's first
+        /// half carries the goal direction -- the detour is at its far end -- so a waypoint's
+        /// direction is a fact about where along the path it was taken, not about the path.
+        /// </summary>
+        public float PathWaypointFraction;
+
+        /// <summary>
+        /// Minimum dwell before a held waypoint may be replaced by a fresh one, seconds. The path term
+        /// gets the same anti-jitter discipline as the heading, for the same reason: a path that
+        /// changes its mind every frame is a dodge that changes its mind every frame.
+        /// </summary>
+        public float PathHysteresisDwellSeconds;
+
+        /// <summary>
         /// How much of the move carries the character toward the imaginary point in front of them.
         ///
         /// THIS IS THE TERM THE DODGE WAS MISSING, AND IT IS NOT `WeightIntent` WEARING A DIFFERENT
@@ -789,6 +876,43 @@ namespace Drelay.Bootstrap
             // re-tuned against.
             c.WeightGoal = 0.90f;
             c.ClearComfort = 1.0f;
+
+            // --- THE PATH (HANDOFF-DIRECTED-DODGE.md section 4) -----------------------------
+            //
+            // AND THE GOAL TERM FALLS WHEN THE PATH IS ON, WHICH IS THE WHOLE POINT OF THE PAIR. The
+            // path's waypoint IS the goal's own ray whenever the ray is walkable and safe, so the two
+            // terms agree and `WeightPath` sets the scale; when the ray is blocked or dangerous the
+            // waypoint moves and the two DISAGREE -- and the disagreement has to be resolvable. Left
+            // at 0.90 the goal term would outvote a lateral waypoint by 0.9 to 1.0 on the very frames
+            // the change exists for, so it is cut to 0.30 when the path is on and kept at 0.90 when it
+            // is off, which is what makes `PathEnable` an A/B of one thing.
+            c.WeightPath = 1.00f;
+            c.PathEnable = true;
+            c.PathTargetSeconds = 1.5f;
+            c.PathNodeCap = 1200;
+            c.PathStepCostWeight = 1.60f;
+            c.PathDangerPadUnits = 0.25f;
+            c.PathWaypointUnits = 2.5f;
+            c.PathWaypointFraction = 0.75f;
+            c.PathHysteresisDwellSeconds = 0.15f;
+            // THE GOAL TERM KEEPS ITS OWN VALUE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
+            // The first version of this cut `WeightGoal` from 0.90 to 0.30 whenever the path was on,
+            // on the reasoning that the path's waypoint IS the goal whenever the goal is walkable and
+            // safe, so the two terms would agree and only `WeightPath` needed to set the scale -- and
+            // on the frames where they disagreed the disagreement had to be resolvable. The reasoning
+            // is sound and the numbers refused it: `p26156`, `tools/dodge_direction_report.py`, the
+            // dodge's own moves --
+            //
+            //   path off, goal 0.90 (the baseline)  OUTRUN 30.5 %  SIDESTEP 48.8 %  TOWARD 20.7 %
+            //   path on,  goal 0.30                OUTRUN 33.6 %  SIDESTEP 46.3 %  TOWARD 20.1 %
+            //   path on,  goal 0.90                OUTRUN 26.4 %  SIDESTEP 49.3 %  TOWARD 24.2 %
+            //
+            // Cutting the goal made the dodge outrun MORE, which is the opposite of the intent, and
+            // the third row is why the cut is not here. The goal term is what reduces OUTRUN -- see
+            // SPIKE3.2-OFFLINE-SOLVER.md section 15 -- because it is the only term that prefers the
+            // axial direction the player asked for over the axial direction that is away from the
+            // shooter. The path is an addition, not a replacement.
+            c.WeightGoal = 0.90f;
             // THE HYSTERESIS IS THE SPECIFICATION'S STARTING VALUE BECAUSE STRENGTHENING IT WAS
             // TRIED, MEASURED AND DID NOT HELP. The reasoning was sound and the numbers refused it.
             //
@@ -935,6 +1059,18 @@ namespace Drelay.Bootstrap
             c.WeightMove = Float("DRELAY_DODGE_W_MOVE", c.WeightMove);
             c.WeightStandBias = Float("DRELAY_DODGE_W_STAND", c.WeightStandBias);
             c.WeightGoal = Float("DRELAY_DODGE_W_GOAL", c.WeightGoal);
+            // THE PATH'S OWN KNOBS. `DRELAY_DODGE_PATH=0` is the off-switch and it restores the
+            // pre-path score exactly, which is what makes the change A/B-able on a live session
+            // rather than only on a replayed recording.
+            c.PathEnable = Environment.GetEnvironmentVariable("DRELAY_DODGE_PATH") != "0";
+            c.WeightPath = FloatAllowZero("DRELAY_DODGE_W_PATH", c.WeightPath);
+            c.PathTargetSeconds = Float("DRELAY_DODGE_PATH_TARGET_S", c.PathTargetSeconds);
+            c.PathNodeCap = Int("DRELAY_DODGE_PATH_CAP", c.PathNodeCap);
+            c.PathStepCostWeight = FloatAllowZero("DRELAY_DODGE_PATH_DANGER", c.PathStepCostWeight);
+            c.PathDangerPadUnits = FloatAllowZero("DRELAY_DODGE_PATH_PAD", c.PathDangerPadUnits);
+            c.PathWaypointUnits = Float("DRELAY_DODGE_PATH_WAYPOINT", c.PathWaypointUnits);
+            c.PathWaypointFraction = FloatAllowZero("DRELAY_DODGE_PATH_WPFRACTION", c.PathWaypointFraction);
+            c.PathHysteresisDwellSeconds = FloatAllowZero("DRELAY_DODGE_PATH_DWELL_S", c.PathHysteresisDwellSeconds);
             c.PlanLookaheadSeconds = Float("DRELAY_DODGE_PLAN_LOOKAHEAD_S", c.PlanLookaheadSeconds);
             c.GoalLookaheadSeconds = Float("DRELAY_DODGE_GOAL_LOOKAHEAD_S", c.GoalLookaheadSeconds);
             c.GoalFanSteps = Int("DRELAY_DODGE_GOAL_FAN", c.GoalFanSteps);
@@ -1010,7 +1146,7 @@ namespace Drelay.Bootstrap
         /// <summary>A one-line description for the log, so a run's own settings are readable from it.</summary>
         public string Describe()
         {
-            return DescribePlan() + DescribeWeights();
+            return DescribePlan() + DescribeWeights() + DescribePath();
         }
 
         /// <summary>
@@ -1039,11 +1175,28 @@ namespace Drelay.Bootstrap
         public string DescribeWeights()
         {
             return string.Format(CultureInfo.InvariantCulture,
-                "weights resolve={0} clear={1} durable={2} intent={3} goal={4} heading={5} "
-                + "lateral={6} move={7} stand={8} hyst={9}/{10}s dryRun={11}",
-                WeightResolve, WeightClearance, WeightDurability, WeightIntent, WeightGoal,
+                "weights resolve={0} clear={1} durable={2} intent={3} goal={4} path={5} heading={6} "
+                + "lateral={7} move={8} stand={9} hyst={10}/{11}s dryRun={12}",
+                WeightResolve, WeightClearance, WeightDurability, WeightIntent, WeightGoal, WeightPath,
                 WeightHeading, WeightLateral, WeightMove, WeightStandBias, HysteresisMargin,
                 HysteresisDwellSeconds, DryRun);
+        }
+
+        /// <summary>
+        /// The pathfinder's own numbers, on their own line.
+        ///
+        /// A THIRD LINE RATHER THAN THREE MORE NUMBERS ON THE SECOND, and the reason is the one
+        /// `DescribePlan` records: `DrelayLog.cpp` truncates at 256 bytes with no mark saying so, and
+        /// a truncated settings line is a run whose settings cannot be read back -- which is the only
+        /// thing these lines exist for. `HANDOFF-DIRECTED-DODGE.md` section 6 asks for exactly this
+        /// and says why: "a live run's own log says which path it ran".
+        /// </summary>
+        public string DescribePath()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "path enable={0} target={1}s cap={2} danger={3} pad={4} wp={5}/{7} dwell={6}s",
+                PathEnable, PathTargetSeconds, PathNodeCap, PathStepCostWeight, PathDangerPadUnits,
+                PathWaypointUnits, PathHysteresisDwellSeconds, PathWaypointFraction);
         }
     }
 

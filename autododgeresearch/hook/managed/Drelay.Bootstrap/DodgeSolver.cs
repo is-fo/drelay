@@ -327,6 +327,20 @@ namespace Drelay.Bootstrap
         private DodgeConfig _config;
         private readonly Hysteresis _hysteresis = new Hysteresis();
 
+        /// <summary>
+        /// The frame's path, and the only opinion in this class about the NEXT step.
+        ///
+        /// IT IS ONE INSTANCE AND IT IS CALLED ONCE PER FRAME, from `Decide`, before any candidate is
+        /// scored. See `PathPlanner`'s header: the path never reaches the input, it produces a
+        /// waypoint, and `ScoreAll` ranks the already-admissible candidates by their alignment with
+        /// it. Nothing here can admit, refuse or move a candidate.
+        ///
+        /// IT HOLDS THE CONFIG RATHER THAN A COPY OF IT. `Configure` replaces the frame's numbers --
+        /// the hook re-reads them when the world changes -- and a planner holding the values it was
+        /// built with would search the previous world's grid on the frame the map changed.
+        /// </summary>
+        private readonly PathPlanner _planner;
+
         // Reused per frame. Sized once to the maximum candidate count so nothing grows on the
         // frame path.
         private CandidateResult[] _results = new CandidateResult[128];
@@ -402,6 +416,19 @@ namespace Drelay.Bootstrap
         private float _decisionWindowMs;
 
         /// <summary>
+        /// The frame's own player and budget, kept so <see cref="DescribeChosen"/> can re-derive a
+        /// term from the same numbers the score used.
+        ///
+        /// THEY ARE KEPT RATHER THAN PASSED because the caller that wants the breakdown -- the
+        /// harness, printing one frame -- has the snapshot but not the resolved budget, and a reader
+        /// that recomputed `speed * frameSeconds` itself would be a second implementation of the one
+        /// number every candidate's scale is measured against.
+        /// </summary>
+        private PlayerView _lastPlayer;
+        private float _lastBudget;
+        private bool _lastValid;
+
+        /// <summary>
         /// Candidates the last decision refused because they were inside the rule 6 decision window.
         ///
         /// THIS IS THE COUNT THAT SAYS WHETHER THE WINDOW IS LOAD-BEARING AT ALL, and without it
@@ -417,6 +444,7 @@ namespace Drelay.Bootstrap
         public DodgeSolver(DodgeConfig config)
         {
             _config = config;
+            _planner = new PathPlanner(config);
             EnsureCapacity(MaxCandidates(config));
         }
 
@@ -459,6 +487,16 @@ namespace Drelay.Bootstrap
         public GoalSource GoalSource => _goalSource;
 
         /// <summary>
+        /// The frame's path, for the harness and for the <c>--decisions</c> dump.
+        ///
+        /// IT IS EXPOSED RATHER THAN COPIED INTO THE DECISION, for the reason `GoalSource` is: the
+        /// path is a per-frame object with seven numbers and a lifetime, and a struct field per
+        /// number in `DodgeDecision` would duplicate the planner's own state in a place that can
+        /// disagree with it. A reader asks the solver that made the decision.
+        /// </summary>
+        public PathPlanner Path => _planner;
+
+        /// <summary>
         /// The widest rule 6 decision window this frame computed, in milliseconds -- the value
         /// `PlanRefusal` used for the most slowly-approaching threat in the set.
         ///
@@ -485,6 +523,7 @@ namespace Drelay.Bootstrap
         public void Configure(DodgeConfig config)
         {
             _config = config;
+            _planner.Configure(config);
             EnsureCapacity(MaxCandidates(config));
         }
 
@@ -515,6 +554,7 @@ namespace Drelay.Bootstrap
         public void Reset()
         {
             _hysteresis.Reset();
+            _planner.Reset();
             _hasPreviousHeading = false;
         }
 
@@ -653,6 +693,29 @@ namespace Drelay.Bootstrap
                 _goalSource = GoalSource.None;
             }
 
+            // --- THE PATH: ONE SEARCH, ONCE PER FRAME, BEFORE MAYBE-EVALUATING THE FRAME. -----
+            //
+            // IT IS RESOLVED HERE RATHER THAN AFTER THE THREAT GATE, AND THE REASON IS THE
+            // INSTRUMENT. A run where the planner only ran on the 3410 frames that evaluate would
+            // report "no path" for the other 3759, and `HANDOFF-DIRECTED-DODGE.md` section 6:
+            // "a pathfinder that is silently absent prints as 'the outrun ratio did not move', which
+            // is the same output as a pathfinder that ran and did nothing". Resolving it on every
+            // frame makes the dump's own columns say which of the two happened. The cost is one grid
+            // read of 16 cells and, on the frames with no threat, no search worth measuring -- the
+            // path's cost is reported per frame by the harness, not assumed.
+            //
+            // AND IT IS A PREFERENCE, NOT A GATE. Nothing below this line is conditional on the path
+            // existing: a frame with no grid, no goal or an unreachable target scores exactly as it
+            // did before `WeightPath` existed (the term contributes nothing when the waypoint is
+            // invalid). "A pathfinder that can produce no answer must not be able to produce no
+            // move" -- section 4.1.
+            float pathStepRadius = player.SpeedPerSecond * _frameSeconds;
+            if (pathStepRadius > 0.0f)
+            {
+                _planner.Plan(snapshot, _goalRadians, _goalValid, pathStepRadius,
+                              pathStepRadius, playerRadius);
+            }
+
             // --- Stage 0: the gates that are not about bullets. -----------------------------
             //
             // These come before any geometry because they are the ladder's steps 1 and 2
@@ -671,6 +734,10 @@ namespace Drelay.Bootstrap
                 decision.Reason = DodgeReason.Immobile;
                 return decision;
             }
+            // KEPT FOR THE FRAME, WHATEVER BRANCH THE DECISION LEAVES BY. See `_lastPlayer`.
+            _lastPlayer = player;
+            _lastBudget = budget;
+            _lastValid = true;
 
             // `GameInput.Moving` IS DELIBERATELY NOT A GATE HERE, AND THE RECORDED RUN IS THE
             // REASON. It used to return immediately when it was false, on the reasoning that the
@@ -694,11 +761,10 @@ namespace Drelay.Bootstrap
                 return decision;
             }
 
-            // --- Stages 2 and 3: candidates and admission. ----------------------------------
+            // --- Stage 2 and 3: candidates and admission. -----------------------------------
             _resultCount = 0;
             BuildAndAdmit(snapshot, player, playerRadius, budget);
             decision.EvaluatedCount = _resultCount;
-
             int standIndex = FindStand();
             bool standAdmissible = standIndex >= 0 && _results[standIndex].Admissible;
 
@@ -2405,6 +2471,7 @@ namespace Drelay.Bootstrap
                     ? IntentAlignment(r.HeadingRadians, player.IntentRadians, r.Distance)
                     : 0.0f;
                 float goal = GoalProgress(r.HeadingRadians, r.Distance, budget);
+                float path = PathProgress(r.HeadingRadians, r.Distance, budget);
                 float heading = _hasPreviousHeading ? Dot(r.HeadingRadians, _previousHeading) : 0.0f;
                 float lateral = Lateralness(snapshot, player, r);
                 float move = r.Distance / budget;
@@ -2445,6 +2512,7 @@ namespace Drelay.Bootstrap
                     + (_config.WeightDurability * durability)
                     + (_config.WeightIntent * intent)
                     + (_config.WeightGoal * goal)
+                    + (_config.WeightPath * path)
                     + (_config.WeightHeading * heading)
                     + (_config.WeightLateral * lateral)
                     - (_config.WeightMove * move)
@@ -2452,6 +2520,72 @@ namespace Drelay.Bootstrap
                 _results[i] = r;
             }
         }
+
+        /// <summary>
+        /// Each score term's own contribution to the chosen candidate, as a weighted value.
+        ///
+        /// WHY THIS EXISTS AND WHY IT IS NOT LOGGING. Every measurement this project has made of the
+        /// score so far has been a DISTRIBUTION OVER OUTCOMES -- how many moves were outruns, how many
+        /// degrees of deflection -- and a distribution cannot say WHICH TERM chose them. The
+        /// outrun/sidestep question is exactly that kind of question: `tools/dodge_direction_report.py`
+        /// says the dodge retreated on 46 % of its moves on `p20152`, and nothing anywhere says
+        /// whether that was the safety terms paying for distance, the goal term failing to have an
+        /// opinion, or the move penalty preferring a shorter step. This is the instrument that
+        /// answers it, and it is the reason `HANDOFF-DIRECTED-DODGE.md` section 8 trap 11 puts the
+        /// instrument before the change.
+        ///
+        /// The order is the order of the sum in `ScoreAll`, and each entry is `weight * term` -- the
+        /// number that actually entered the score -- so a reader can add them up and get `Score`
+        /// back. `path` is new with the pathfinder; the rest are the terms that predate it.
+        /// </summary>
+        public void DescribeChosen(DodgeSnapshot snapshot, int index, float[] into)
+        {
+            if (into == null || into.Length < 11)
+            {
+                return;
+            }
+            for (int i = 0; i < 11; i++)
+            {
+                into[i] = 0.0f;
+            }
+            if (!_lastValid || index < 0 || index >= _resultCount)
+            {
+                return;
+            }
+            CandidateResult r = _results[index];
+            float budget = _lastBudget;
+            float goal = GoalProgress(r.HeadingRadians, r.Distance, budget);
+            float path = PathProgress(r.HeadingRadians, r.Distance, budget);
+            float heading = _hasPreviousHeading ? Dot(r.HeadingRadians, _previousHeading) : 0.0f;
+            float lateral = snapshot != null ? Lateralness(snapshot, _lastPlayer, r) : 0.0f;
+            float move = budget > 0.0f ? r.Distance / budget : 0.0f;
+            float stand = r.Distance <= 1e-6f ? 1.0f : 0.0f;
+            float clearance = r.Clearance;
+            if (clearance > _config.ClearComfort) { clearance = _config.ClearComfort; }
+            if (clearance < -_config.ClearComfort) { clearance = -_config.ClearComfort; }
+            float intent = _lastPlayer.IntentValid
+                ? IntentAlignment(r.HeadingRadians, _lastPlayer.IntentRadians, r.Distance)
+                : 0.0f;
+
+            into[0] = _config.WeightResolve * r.Resolve;
+            into[1] = _config.WeightClearance * clearance;
+            into[2] = _config.WeightDurability * Normalize(r.DurabilitySeconds);
+            into[3] = _config.WeightIntent * intent;
+            into[4] = _config.WeightGoal * goal;
+            into[5] = _config.WeightPath * path;
+            into[6] = _config.WeightHeading * heading;
+            into[7] = _config.WeightLateral * lateral;
+            into[8] = -(_config.WeightMove * move);
+            into[9] = _config.WeightStandBias * stand;
+            into[10] = r.Score;
+        }
+
+        /// <summary>The candidate names of <see cref="DescribeChosen"/>'s terms, in its own order.</summary>
+        public static readonly string[] ScoreTermNames =
+        {
+            "resolve", "clearance", "durability", "intent", "goal", "path", "heading",
+            "lateral", "move", "stand", "score",
+        };
 
         /// <summary>
         /// Durability as a fraction of the horizon the solver actually believes, capped at 1.
@@ -2478,6 +2612,33 @@ namespace Drelay.Bootstrap
             }
             float v = durabilitySeconds / window;
             return v > 1.0f ? 1.0f : v;
+        }
+
+        /// <summary>
+        /// How much of the move carries the character toward the PATH's waypoint.
+        ///
+        /// IT IS SHAPED LIKE <see cref="GoalProgress"/> AND IT REPLACES IT ON THE FRAMES THE PATH HAS
+        /// AN OPINION. Same `forward * (distance / budget)`: a step that points at the waypoint
+        /// scores by how much of a full step it takes, and a retreat scores zero rather than
+        /// negative. The two terms are separate so that the A/B is a weight and not a rewrite --
+        /// `DRELAY_DODGE_PATH=0` restores `WeightGoal` at its old value and this term at zero.
+        ///
+        /// ZERO WHEN THERE IS NO WAYPOINT, which is the whole degradation story: no grid, no goal, an
+        /// unreachable target or a search that hit its cap all leave `WaypointValid` false and the
+        /// candidate set scored exactly as it was before this term existed.
+        /// </summary>
+        private float PathProgress(float heading, float distance, float budget)
+        {
+            if (!_planner.WaypointValid || distance <= 1e-6f || budget <= 0.0f)
+            {
+                return 0.0f;
+            }
+            float forward = Dot(heading, _planner.WaypointHeading);
+            if (forward <= 0.0f)
+            {
+                return 0.0f;
+            }
+            return forward * (distance / budget);
         }
 
         /// <summary>

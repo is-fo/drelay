@@ -46,6 +46,10 @@
          these two files are the only ones guaranteed to compile without the game. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSnapshot.cs" Link="Solver\DodgeSnapshot.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSolver.cs" Link="Solver\DodgeSolver.cs" />
+    <!-- The frame's path (HANDOFF-DIRECTED-DODGE.md section 4). It is here for the same reason the
+         other two are: it must compile with no game in sight, and a change that reaches for a game
+         type has to break this build rather than the live one. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\PathPlanner.cs" Link="Solver\PathPlanner.cs" />
   </ItemGroup>
 
 </Project>

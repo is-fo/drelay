@@ -21,6 +21,24 @@ now", which is what pathfinding is.
 
 ## 0. What changed since the first version of this document
 
+> **STATUS 2026-10-15 (later the same day): §4's pathfinder was built and measured, and this
+> document's objective is NOT met.** Read [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md)
+> **§15** first — it is the result, the null result, and the reason for both. In one paragraph: a
+> bounded A* over the client's own grid now runs once per frame (§4.1–§4.3 as specified), with the
+> danger cost in spacetime, the waypoint hysteresis, the path columns in `--decisions` and the path
+> counters in the harness. On `p26156` — the recording this document's §3 is measured against —
+> **OUTRUN falls 30.5 % → 26.4 % and SIDESTEP rises 48.8 % → 49.1 %**, which is the acceptance test in
+> §1 here met on that recording, at a cost of 26 frames of extra clearance regret and with `decide()`
+> p99 still inside budget (104 µs). **On the other four recordings the change is a wash and on
+> `p20152` it is slightly negative**, so the inversion §1 asks for is achieved on one recording of
+> five. §15.5 is why, and it is a fact about the model rather than about the path: the retreat is paid
+> for by `resolve` and `clearance`, which are both *right* — a retreat really does increase distance
+> and really does clear corridors — and a direction-only preference cannot outvote them on frames
+> where the goal ray is itself walkable and clear. **§15.6 states what the objective needs next: score
+> a candidate by the safety of the state it leads to, not by its alignment with a waypoint.** §4.4's
+> "cheap version first" was not the path taken; the path was built first and §15.5's term breakdown is
+> the measurement that says the cheap version would not have been enough either.
+
 | | |
 |---|---|
 | §5.1 the goal is the player's held direction | **shipped.** The goal came from the body's own course on **1612 of 1665** moves of `p26156`; now **1082** of its 1666 moves come from the player's held direction and 568 from the course. Mean deflection **59.3° → 51.6°**, median **45.0° → 30.6°**. |
@@ -28,7 +46,7 @@ now", which is what pathfinding is.
 | §6.10 the `--decisions` dump | **shipped.** `SolverHarness --decisions <path>`, read by `tools/decisions_report.py` and `tools/dodge_direction_report.py`. |
 | §4's `Moving` test | **holds, re-verified.** On the 249 frames of `p26156` where the pilot provably wrote nothing, `moving` was true on 158 (63.5 %) and the intent takes the eight compass directions. |
 | problem 1 (the partial-path window) | **shipped.** `MoveTemporalWindowSeconds` was a constant 50 ms, which is a *distance* of `0.05 * speed` — 1.95× the collision disc on a 16 u/s projectile and 0.53× of it on the 6 u/s ones. It is now `disc=2` disc-crossings, exposed as `--dodge-disc` / `DRELAY_DODGE_DECISION_DISC` / `--config disc=`. See §14. |
-| **problem 2 (this document)** | **not started.** |
+| **problem 2 (this document)** | **built and measured; the objective is not met.** See the status block above and §15 of the spike. |
 
 ---
 

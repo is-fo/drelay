@@ -70,8 +70,25 @@ namespace Drelay.Bootstrap
         /// <summary>Bullets recorded per frame, at most. The rest are counted, not written.</summary>
         private const int MaxThreatsPerFrame = 48;
 
-        /// <summary>Half-width of the grid window, in tiles, centred on the player.</summary>
-        private const int GridRadius = 24;
+        /// <summary>
+        /// Half-width of the grid window, in tiles, centred on the player.
+        ///
+        /// 64 RATHER THAN THE 24 IT WAS, AND THE PATHFINDER IS THE REASON. 24 was exactly the region
+        /// the 600 ms admission horizon could touch -- the comment here used to say so -- and a
+        /// decision that never looks further than one step does not need more. A path does: it is a
+        /// route around a corridor of fire toward a point on the player's own line, and with a 24-cell
+        /// radius the search would be aiming at a target it cannot see the far side of.
+        ///
+        /// At one world unit per cell this is 128 units across, and the recorder copies it only when
+        /// the player's tile changes -- so the wider window also changes LESS OFTEN, which is why the
+        /// trace does not grow by the 7x the cell count does. It is written run-length encoded (see
+        /// `WriteGridWindow`), and a window is mostly one value.
+        ///
+        /// IT MUST STAY EQUAL TO `DodgeAdapter`'s OWN, because the harness reproduces the live
+        /// decision from this recording: a trace recorded with a smaller window than the live solver
+        /// reads is an offline result for a different world.
+        /// </summary>
+        private const int GridRadius = 64;
 
         private static bool _enabled;
         private static bool _resolved;

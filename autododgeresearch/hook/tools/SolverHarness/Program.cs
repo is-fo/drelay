@@ -69,6 +69,7 @@ namespace Drelay.SolverHarness
             int repeat = 1;
             bool strict = false;
             int debugThreatId = -1;
+            System.Collections.Generic.HashSet<int> framesToExplain = null;
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -86,6 +87,28 @@ namespace Drelay.SolverHarness
                     case "--config": configArgs = Next(args, ref i); break;
                     case "--preset": presetName = Next(args, ref i); break;
                     case "--frame": traceFrame = int.Parse(Next(args, ref i), CultureInfo.InvariantCulture); break;
+                    case "--frames-from":
+                    {
+                        // One frame number per line, `#` comments and blanks skipped. See
+                        // `FramesToExplain` for why a set of frames needs a switch of its own.
+                        string listPath = Next(args, ref i);
+                        framesToExplain = new System.Collections.Generic.HashSet<int>();
+                        foreach (string raw in System.IO.File.ReadAllLines(listPath))
+                        {
+                            string trimmed = raw.Trim();
+                            if (trimmed.Length == 0 || trimmed[0] == '#')
+                            {
+                                continue;
+                            }
+                            int parsed;
+                            if (int.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture,
+                                             out parsed))
+                            {
+                                framesToExplain.Add(parsed);
+                            }
+                        }
+                        break;
+                    }
                     case "--repeat": repeat = int.Parse(Next(args, ref i), CultureInfo.InvariantCulture); break;
                     case "--strict": strict = true; break;
                     case "--debug-threat": debugThreatId = int.Parse(Next(args, ref i), CultureInfo.InvariantCulture); break;
@@ -176,6 +199,7 @@ namespace Drelay.SolverHarness
 
             var harness = new Harness(trace, config);
             harness.FrameToExplain = traceFrame;
+            harness.FramesToExplain = framesToExplain;
             harness.ExpectMove = string.Equals(scenarioName, "dodge", StringComparison.OrdinalIgnoreCase);
             harness.ExpectFrames = !string.IsNullOrEmpty(tracePath);
             harness.Repeat = repeat;
@@ -270,6 +294,20 @@ namespace Drelay.SolverHarness
                     case "stand": config.WeightStandBias = v; break;
                     case "margin": config.HysteresisMargin = v; break;
                     case "dwell": config.HysteresisDwellSeconds = v; break;
+                    // THE PATHFINDER, AND `path=0` IS THE A/B THE WHOLE CHANGE RESTS ON. With it off
+                    // the score is the pre-path one and the goal term has to be put back by hand
+                    // (`--config path=0,goal=0.9`), because `DodgeConfig.Default` cuts `goal` when the
+                    // path is on and a comparison against the old behaviour has to restore both
+                    // halves of the same change.
+                    case "path": config.PathEnable = v != 0.0f; break;
+                    case "wpath": config.WeightPath = v; break;
+                    case "pathdel": config.PathStepCostWeight = v; break;
+                    case "pathcap": config.PathNodeCap = (int)v; break;
+                    case "pathpad": config.PathDangerPadUnits = v; break;
+                    case "pathtarget": config.PathTargetSeconds = v; break;
+                    case "pathdwell": config.PathHysteresisDwellSeconds = v; break;
+                    case "pathwp": config.PathWaypointUnits = v; break;
+                    case "wpfraction": config.PathWaypointFraction = v; break;
                     case "horizon": config.HorizonMs = v; break;
                     case "trust": config.TrustSeconds = v; break;
                     case "legalern": config.LethalFraction = v; break;
@@ -372,6 +410,16 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         /// frame printed in full is worth an hour of reading the code.
         /// </summary>
         public int FrameToExplain = -1;
+
+        /// <summary>
+        /// A SET of frames to explain, from `--frames-from`, for the term breakdown.
+        ///
+        /// `--frame N` EXPLAINS ONE FRAME AND A MEASUREMENT NEEDS THOUSANDS. `tools/dodge_term_report.py`
+        /// aggregates the chosen move's score terms by the direction it chose, and the dodge moves on
+        /// 1 100 to 5 000 frames of each recording -- so the alternative to this is one process per
+        /// frame, each one re-parsing a 7 MB trace, which is a measurement nobody runs twice.
+        /// </summary>
+        public System.Collections.Generic.HashSet<int> FramesToExplain;
 
         /// <summary>
         /// Where to write one line per frame -- the whole decision, joined to the player's input.
@@ -608,7 +656,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 decisions.WriteLine("# frame | action | reason | held | heading | scale | goal | goalsrc | "
                                   + "hintent | intent | course | moving | evaluated | admissible | "
                                   + "durabilityMs | clearance | resolve | score | runnerup | costUs | "
-                                  + "windowMs");
+                                  + "windowMs | wp | wpdist | pathn | pathlen | pathcost | pathwhy");
             }
 
             // JIT warm-up. The first `Decide` of a process compiles every method the decision
@@ -623,6 +671,11 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                                              ResolveSpeed(_trace.Frames[w], float.NaN, float.NaN),
                                              0.0f, false));
             }
+            // THE WARM-UP'S OWN DECISIONS ARE NOT THE RUN'S. They are compiled and measured by the
+            // cost report below, but they are not frames of the recording, so every counter the
+            // report prints -- including the pathfinder's -- starts from here rather than including
+            // eight frames nobody asked about.
+            _solver.Path.ResetCounters();
 
             foreach (RecordedFrame frame in _trace.Frames)
             {
@@ -725,7 +778,8 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     DebugThreat(frame, snapshot);
                 }
 
-                if (frame.Frame == FrameToExplain)
+                if (frame.Frame == FrameToExplain
+                    || (FramesToExplain != null && FramesToExplain.Contains(frame.Frame)))
                 {
                     Explain(frame, snapshot, decision, candidates, speed);
                 }
@@ -829,6 +883,30 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                               + " admissible=" + decision.AdmissibleCount
                               + " evaluated=" + decision.EvaluatedCount
                               + " durability=" + F(decision.DurabilitySeconds * 1000.0f) + "ms");
+            // THE PATH, AND A PROBE OF ITS DANGER FIELD. `pathcost` in the decision dump says what the
+            // route cost; when it equals the length on every frame the field may be honestly empty or
+            // it may be broken, and these three lines are what tells those apart: a `d` of zero at the
+            // player's own position with threats on the envelope means the field is not reading.
+            PathPlanner planner = _solver.Path;
+            Console.WriteLine("  path    : " + planner.Reason
+                              + " wp=" + (planner.WaypointValid ? F(Deg(planner.WaypointHeading)) : "nan")
+                              + " at (" + F(planner.WaypointX) + "," + F(planner.WaypointY) + ")"
+                              + " nodes=" + planner.Nodes + " len=" + F(planner.Length)
+                              + " cost=" + F(planner.Cost) + " held=" + planner.Held
+                              + " envelope=" + planner.DebugThreatCount + " threat(s)");
+            if (planner.DebugThreatCount > 0)
+            {
+                Console.WriteLine("    danger at the player, t=0.00s : "
+                                  + F(planner.DebugDangerAt(frame.PlayerX, frame.PlayerY, 0.0f))
+                                  + "   t=0.25s : "
+                                  + F(planner.DebugDangerAt(frame.PlayerX, frame.PlayerY, 0.25f))
+                                  + "   tight radius of threat 0 : "
+                                  + F(planner.DebugThreatNear(0)));
+                for (int ti = 0; ti < planner.DebugThreatCount; ti++)
+                {
+                    Console.WriteLine("    envelope[" + ti + "] : " + planner.DebugThreat(ti));
+                }
+            }
             Console.WriteLine("  solver's own view: durablySafeAtCurrent="
                               + _solver.IsDurablySafeAt(snapshot, frame.PlayerX, frame.PlayerY)
                               + ", insideAnyDisc="
@@ -838,6 +916,27 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                                                                    frame.PlayerY)
                               + ", StandRefusal=" + (AdmissionRule)decision.StandRefusal);
             int shown = 0;
+            // THE CHOSEN MOVE'S OWN TERMS, BEFORE THE MENU. `tools/dodge_direction_report.py` says the
+            // dodge retreated; this says WHICH TERM PAID FOR IT, which is the difference between a
+            // finding and a diagnosis. `HANDOFF-DIRECTED-DODGE.md` section 8 trap 11 is the reason it
+            // comes before any further change: a distribution over outcomes cannot name a cause.
+            if (decision.Action == DodgeAction.Move && decision.CandidateIndex >= 0)
+            {
+                float[] terms = new float[11];
+                _solver.DescribeChosen(snapshot, decision.CandidateIndex, terms);
+                var parts = new System.Collections.Generic.List<string>();
+                for (int ti = 0; ti < terms.Length; ti++)
+                {
+                    parts.Add(DodgeSolver.ScoreTermNames[ti] + "=" + F(terms[ti]));
+                }
+                // THE HEADING IS ON THIS LINE AND NOT ONLY IN THE MENU BELOW, because the reader of
+                // this line is a script that aggregates terms BY DIRECTION (see
+                // `tools/dodge_term_report.py`). A breakdown that cannot be grouped by the thing the
+                // dodge chose is a breakdown of a frame, not of a decision.
+                Console.WriteLine("  chosen  : heading=" + F(Deg(decision.HeadingRadians))
+                                  + " scale=" + F(decision.SpeedScale) + " "
+                                  + string.Join(" ", parts));
+            }
             foreach (CandidateResult c in candidates)
             {
                 if (!c.Admissible && shown > 8)
@@ -956,7 +1055,68 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // writes the floor here on every frame, so the change and its own off-switch are one
             // grep apart.
             w.Write(F(_solver.DecisionWindowMs));
+            w.Write(" | ");
+            // THE PATH, WHICH IS THE NEW OBJECT AND THEREFORE THE ONE THAT MOST NEEDS A COLUMN.
+            // HANDOFF-DIRECTED-DODGE.md section 6 states the rule this set of columns exists for:
+            // "a pathfinder that is silently absent prints as 'the outrun ratio did not move', which
+            // is the same output as a pathfinder that ran and did nothing". Six numbers, and each
+            // answers a different half of that: `pathwhy` says whether there was a path at all and
+            // why not, `pathn`/`pathlen` say how much of a search produced it, `pathcost` says how
+            // much of that route was spent in danger, `wpdist` says how far away the thing the dodge
+            // is steering at actually is, and `wp` is the direction it is steering at -- the column
+            // that makes "it sidestepped" readable per frame instead of inferred from a mean.
+            PathPlanner path = _solver.Path;
+            w.Write(path.WaypointValid ? F(Deg(Ring(path.WaypointHeading))) : "nan"); w.Write(" | ");
+            w.Write(path.WaypointValid ? F(Distance(snapshot.Player.X, snapshot.Player.Y,
+                                                    path.WaypointX, path.WaypointY)) : "nan");
+            w.Write(" | ");
+            w.Write(path.Reason == PathReason.Found ? path.Nodes : -1);          w.Write(" | ");
+            w.Write(path.Reason == PathReason.Found ? F(path.Length) : "nan");   w.Write(" | ");
+            w.Write(path.Reason == PathReason.Found ? F(path.Cost) : "nan");     w.Write(" | ");
+            w.Write(PathReasonName(path.Reason));
             w.Write(Environment.NewLine);
+        }
+
+        private static float Distance(float ax, float ay, float bx, float by)
+        {
+            float dx = bx - ax;
+            float dy = by - ay;
+            return (float)Math.Sqrt((dx * dx) + (dy * dy));
+        }
+
+        /// <summary>
+        /// The path's heading, folded onto the same ring the candidate set uses.
+        ///
+        /// THE WAYPOINT IS A CONTINUOUS ANGLE AND EVERY OTHER HEADING IN THIS FILE IS A RING HEADING.
+        /// A reader comparing `wp` against `heading` column-by-column is comparing a number the search
+        /// produced against a number the ring produced, and those two are up to 7.5 degrees apart even
+        /// when they agree -- which is exactly why `GoalFanSteps` exists. Folding the waypoint onto
+        /// the same 15-degree ring makes "the dodge did what the path said" a comparison of two equal
+        /// quantities rather than of two that are merely close.
+        /// </summary>
+        private float Ring(float radians)
+        {
+            int headings = _config.Headings < 1 ? 24 : _config.Headings;
+            float step = (float)(2.0 * Math.PI) / headings;
+            return (float)Math.Round(radians / step) * step;
+        }
+
+        /// <summary>The `--decisions` spelling of a path failure. See `PathReason`.</summary>
+        private static string PathReasonName(PathReason reason)
+        {
+            switch (reason)
+            {
+                case PathReason.Found: return "found";
+                case PathReason.Disabled: return "off";
+                case PathReason.NoGrid: return "nogrid";
+                case PathReason.GridTooLarge: return "toolarge";
+                case PathReason.NoGoal: return "nogoal";
+                case PathReason.NoTarget: return "notarget";
+                case PathReason.NodeCap: return "nodecap";
+                case PathReason.Unreachable: return "unreachable";
+                case PathReason.StartBlocked: return "startblocked";
+                default: return "?";
+            }
         }
 
         private static float Deg(float radians)
@@ -2120,6 +2280,65 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                               + " had one the dodge could answer, and "
                               + _framesNothingToDoAbout + " (" + Percent(_framesNothingToDoAbout, _framesWithRelevantThreats)
                               + ") had nothing it could do");
+            Console.WriteLine();
+            ReportPath();
+        }
+
+        /// <summary>
+        /// The pathfinder's own numbers, and they exist for one sentence in the handoff.
+        ///
+        /// `HANDOFF-DIRECTED-DODGE.md` section 6: "A pathfinder that is silently absent prints as
+        /// 'the outrun ratio did not move', which is the same output as a pathfinder that ran and did
+        /// nothing." So this block separates the two. `searches with a path` against `searches` says
+        /// whether the planner ran at all; the reason histogram says, for every frame it did not,
+        /// WHICH of the ways it declined -- and the four are not the same finding: `nogrid` on a
+        /// recording is a recorder that did not carry the grid, `unreachable` is a real map saying
+        /// the target is behind a wall, `nodecap` is a budget being spent, and `nogoal` is a frame
+        /// where the player was not walking and the course was not measured either.
+        ///
+        /// AND THE COST IS PRINTED HERE RATHER THAN INGESTED INTO `ReportCost`, because it is measured
+        /// on the solver's own clock inside `Plan` -- the harness's `decide()` cost already contains
+        /// it, and adding the two would count it twice.
+        /// </summary>
+        private void ReportPath()
+        {
+            PathStats stats = _solver.Path.Stats;
+            if (stats.Searches == 0)
+            {
+                Console.WriteLine("-- the path ------------------------------------------------------");
+                Console.WriteLine("  THE PLANNER NEVER RAN: no frame reached it. See `PathPlanner.Plan`'s");
+                Console.WriteLine("  call site in `DodgeSolver.Decide`; this line is the one that keeps a");
+                Console.WriteLine("  disabled pathfinder from reading as an ineffective one.");
+                Console.WriteLine();
+                return;
+            }
+
+            long found = stats.Searches - stats.NoPath;
+            Console.WriteLine("-- the path ------------------------------------------------------");
+            Console.WriteLine("  searches            : " + stats.Searches
+                              + " frame(s); " + found + " produced a path ("
+                              + Percent(found, stats.Searches) + "), " + stats.NoPath
+                              + " did not (" + Percent(stats.NoPath, stats.Searches) + ")");
+            if (found > 0)
+            {
+                Console.WriteLine("  mean path           : " + F((float)(stats.NodesTotal / (double)found))
+                                  + " node(s) expanded, " + F((float)(stats.LengthTotal / found))
+                                  + " units long, and " + stats.Held + " frame(s) held the previous"
+                                  + " waypoint");
+            }
+            Console.WriteLine("  node cap hit        : " + stats.NodeCapHits + " ("
+                              + Percent(stats.NodeCapHits, stats.Searches)
+                              + ") -- searches that spent " + _config.PathNodeCap
+                              + " expansions without reaching the target");
+            Console.WriteLine("  declined, by reason : nogrid=" + stats.NoGridFrames
+                              + " off=" + stats.DisabledFrames
+                              + " nogoal=" + stats.NoGoalFrames
+                              + " unreachable=" + stats.UnreachableFrames
+                              + " (the rest are notarget/startblocked/toolarge)");
+            Console.WriteLine("  cost                : " + F((float)(stats.MicrosecondsTotal / stats.Searches))
+                              + " us per frame inside Plan, over " + stats.Searches
+                              + " search(es) -- a SEPARATE clock from `decide()` above, which"
+                              + " already contains it");
             Console.WriteLine();
         }
 

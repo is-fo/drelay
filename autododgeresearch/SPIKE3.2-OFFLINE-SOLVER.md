@@ -2603,3 +2603,205 @@ hook\out\Drelay.Launcher.exe --dodge --dodge-disc 0 --dodge-window 0.05
   lookahead is now part of this knob's effective range and has not been swept.
 
 
+## 15. The dodge outran because nothing could see past one step
+
+**The defect, in one sentence:** every candidate was one step scored in isolation, so on the frames
+where the player is walking away from the shooter "away from the shooter" and "along my own line" are
+the same direction, the safety terms pay for the distance, and the dodge retreats — on **40–50 %** of
+its own moves on four of the five recordings (`HANDOFF-DIRECTED-DODGE.md` §3).
+
+**The change:** a bounded `A*` over the client's own collision grid, once per frame, with a spacetime
+danger cost (`PathPlanner.cs`). It produces a **waypoint**, and each already-admissible candidate is
+scored by its alignment with that waypoint (`WeightPath`, 1.00). It never admits, never refuses and
+never reaches the input — the admission rules and their doctrine are untouched. `DRELAY_DODGE_PATH=0`
+restores the old score exactly.
+
+**The result is partial and is reported as such.** §15.3 is the honest table: on `p26156` — the slow-
+projectile session every other number in this document is measured against — OUTRUN falls **30.5 % →
+26.4 %** and SIDESTEP rises **48.8 % → 49.1 %**, which is the handoff's acceptance test met on the
+recording it names. On the other four the change is a **wash, and on two of them slightly negative**.
+The path is kept because it is bounded, cheap, invariant-clean, off-switchable, and correct on the
+session that has a usable measurement — **not** because the objective is met. §15.6 says what the
+objective actually needs, and the term breakdown in §15.5 is why.
+
+### 15.1 What was built, and the two design errors it took to make it work
+
+| piece | what it is |
+|---|---|
+| `PathPlanner.cs` | the search: 8-connected A* on the client's grid, distance + spacetime danger, node cap 1200, all buffers pre-sized |
+| `DodgeConfig` | `WeightPath` plus seven path knobs, all on `DRELAY_DODGE_PATH_*` |
+| `DodgeAdapter` / `TraceRecorder` | the grid window grew from **24 to 64 cells each way**, so a path has somewhere to go and so the harness searches the same world the hook does |
+| `SolverHarness` | six `--decisions` columns (`wp`, `wpdist`, `pathn`, `pathlen`, `pathcost`, `pathwhy`), a `--config` key per knob, a `--frames-from` set, and a per-frame `chosen:` line with every score term |
+| `tools/dodge_direction_report.py` | now takes the decision directory as an argument (it was hardcoded to a directory no capture writes) and reports the clearance the chosen step gave up against the best heading available |
+| `tools/dodge_term_report.py`, `hook/tools/Capture-DodgeTerms.ps1` | the term breakdown: which of the ten score terms chose the direction the dodge took |
+
+**Two errors, both found by measurement rather than by review, and both worth recording:**
+
+1. **The waypoint was the first path node beyond one step — which is the grid's rounding error.** The
+   handoff's §4.3 suggests exactly that, and a path node is one world unit wide while a step is
+   `budget` ≈ 0.14 units, so the waypoint was the first cell centre and alternated sides of the goal on
+   adjacent frames (`p26156` frame 26 `wp 60`, frame 27 `wp −60`, both against goal −135). **The
+   instrument that caught it was `wpdist` in the new column** — 0.5 units, when the path is 10 units
+   long — and the fix was to take the waypoint a *fraction of the path's own length* out.
+
+2. **The path's danger cost was zero on 90 % of frames, and the reason is geometric.** `pathcost −
+   pathlen` is the danger the route paid, and it was 0 at p50 and p90 even at a danger weight of 20.
+   A path that detours only at its far end **points at the goal for its whole first half**, so a
+   waypoint near the player is the goal term wearing a pathfinder's name. This is why the fraction
+   (0.75 of the path) is the knob that matters and the absolute floor (2.5 units) is only a floor.
+
+**And one configuration was measured and thrown away.** The first version cut `WeightGoal` from 0.90 to
+0.30 whenever the path was on, on the reasoning that the two terms would agree wherever the goal was
+walkable. It made the dodge outrun **more** (33.6 % against 30.5 % on `p26156`), and the goal term is
+put back at 0.90 in the shipped defaults. The comment recording this is at the assignment in
+`DodgeConfig.Default`.
+
+### 15.2 The headline: the dodge's own direction, per move
+
+`tools/dodge_direction_report.py`, all five recordings, the dodge's own chosen heading classified
+against the line from the nearest threatening muzzle to the player. **Before** = `path=0` on the
+current build, which reproduces §3's table exactly — that reproduction is the control, and it is why
+the before/after columns are trustworthy.
+
+| run | | OUTRUN | SIDESTEP | TOWARD | gave up >0.10 u of clearance |
+|---|---|---|---|---|---|
+| `p20152` | before | 552 (46.3 %) | 560 (47.0 %) | 80 (6.7 %) | 198 (16.6 %) |
+| | **after** | **595 (49.9 %)** | **511 (42.9 %)** | 86 (7.2 %) | 194 (16.3 %) |
+| `p5824` | before | 702 (47.9 %) | 654 (44.6 %) | 110 (7.5 %) | 190 (13.0 %) |
+| | **after** | **687 (46.9 %)** | **617 (42.1 %)** | 162 (11.1 %) | 235 (16.0 %) |
+| `p26684` | before | 1449 (49.7 %) | 1226 (42.0 %) | 242 (8.3 %) | 384 (13.2 %) |
+| | **after** | **1382 (47.4 %)** | **1206 (41.3 %)** | 329 (11.3 %) | 446 (15.3 %) |
+| `p5424` | before | 351 (40.6 %) | 469 (54.3 %) | 44 (5.1 %) | 118 (13.7 %) |
+| | **after** | 352 (40.7 %) | **402 (46.5 %)** | 110 (12.7 %) | 166 (19.3 %) |
+| **`p26156`** | before | 506 (30.5 %) | 809 (48.8 %) | 343 (20.7 %) | 169 (10.2 %) |
+| | **after** | **438 (26.4 %)** | **814 (49.1 %)** | 406 (24.5 %) | 195 (11.8 %) |
+
+Read it without the emphasis and it says: **the inversion the task asked for is achieved on one
+recording of five.** OUTRUN exceeds SIDESTEP on three of the four older ones before and after, and the
+change moves it in the right direction on two of those (`p5824`, `p26684`) and the wrong direction on
+one (`p20152`). `p5424`'s SIDESTEP falls seven points while its OUTRUN is unchanged, which is the
+worst single row in the table and is not explained by the other columns.
+
+### 15.3 `p26156`, where the change does what it was meant to do
+
+| | OUTRUN | SIDESTEP | TOWARD |
+|---|---|---|---|
+| the goal cut to 0.30, path on | 33.6 % | 46.3 % | 20.1 % |
+| path off, goal 0.90 (baseline) | 30.5 % | 48.8 % | 20.7 % |
+| **path on, goal 0.90 (shipped)** | **26.4 %** | **49.1 %** | 24.5 % |
+| path on, `wpath=2` | 32.3 % | 40.5 % | 27.2 % |
+| path on, `wpath=3` | 34.4 % | 38.7 % | 27.0 % |
+
+The path term earns its weight here **(−4.1 points of OUTRUN)** and over-weighting it destroys the
+effect, which is the shape of a preference that is doing something specific rather than a knob that
+trades one defect for another. TOWARD rises from 20.7 % to 24.5 % — the goal term pulling the dodge
+back toward the shooter's line — and the clearance-regret column rises from 10.2 % to 11.8 %: **26 more
+frames of the 1658 choose a heading that gives up more than a tenth of a unit of clearance against the
+best heading available.** That is the price, and it is small but it is not zero.
+
+### 15.4 What it does not break
+
+- **All six synthetic scenarios: green**, and **every move count identical to the baseline** except
+  none — `peaceful` 0, `headon` 52, `dodge` 28, `volley` 0, `corridor` 2, `passingby` 20, which are the
+  pre-change numbers to the frame. The scenarios carry no grid, so the planner reports `nogrid` on all
+  900 frames of each and the solver behaves exactly as it did. **That is the degradation path being
+  exercised by every scenario run rather than by an argument.**
+- **T5, T6, T10 and F hold on all five recordings.** T7 fails on all five exactly as it did before the
+  change (§7's baseline: the same false positives, `p26156` with zero resolved collisions). No T7
+  number moved.
+- **The frame budget is fine.** `decide()` p99 **104 µs** at `--repeat 50` on `p26156`, against 119 µs
+  before the path and a 300 µs budget shared with the sampler and the sensor. The path's own share is
+  **6.8 µs per frame inside `Plan`**, every one of 7169 frames producing a path, mean 13.9 nodes
+  expanded and 9.8 units long, **node cap hit on 0 frames**.
+
+### 15.5 Why it is only partial, measured rather than guessed
+
+`tools/dodge_term_report.py` aggregates the chosen move's own score terms by the direction it chose.
+On `p5424`, 841 frames with a chosen move and a nearby threat, mean weighted contribution:
+
+| term | OUTRUN | SIDESTEP | TOWARD | who it pays |
+|---|---|---|---|---|
+| resolve | 1.339 | 1.282 | 1.139 | **OUTRUN +0.057** |
+| clearance | 0.330 | **0.479** | 0.288 | SIDESTEP +0.149 |
+| durability | 0.541 | 0.542 | 0.494 | nobody |
+| intent | 0.305 | 0.307 | 0.315 | nobody |
+| goal | 0.597 | **0.578** | 0.638 | OUTRUN +0.019 — the goal is axial too |
+| path | 0.674 | 0.638 | 0.695 | OUTRUN +0.036 |
+| lateral | 0.556 | 0.568 | 0.583 | SIDESTEP +0.012 |
+| move | −0.245 | −0.240 | −0.237 | nobody |
+| frames | 135 | 392 | 314 | |
+
+**The retreat is paid for by `resolve` and `clearance`, and both of them are right.** A retreat does
+increase the distance to a bullet's corridor and does clear corridors the player is inside; that is
+what those two terms are *for*. The path term cannot outvote them because on a frame whose goal ray is
+walkable and clear, the path is the goal ray — which is why the same table shows `path` preferring
+OUTRUN by 0.036.
+
+**And one thing this table deliberately does not claim.** The obvious next move is to move those two
+weights, and it was tried: `resolve=1.0,clear=1.8` makes `p5424` **worse** (OUTRUN 40.7 % → 42.1 %),
+`resolve=0.8,clear=2.0` worse still (43.2 %), while `resolve=1.2,clear=2.0` is marginally better
+(41.1 % against 40.7 %) with SIDESTEP 48.3 % against 46.5 %. Those means are aggregates over frames
+with different threat geometry, and the first two rows are the proof that the aggregate is not a
+causal model: **raising the weight of the term that favours SIDESTEP in the mean made OUTRUN more
+common.** No weight change ships on that evidence.
+
+### 15.6 What this does not establish, and what the objective actually needs
+
+- **The objective is not met.** §1 of the handoff asks for OUTRUN "well below" SIDESTEP on all five
+  recordings. It is met on one. The path is a real, measured improvement on `p26156` and a wash
+  elsewhere, and calling it the fix for problem 2 would be the exact failure §3 exists to prevent.
+- **The recordings without a `nohit` key are not comparable on behaviour** (handoff §8 trap 9): their
+  threat sets contain the player's own shots, so their OUTRUN/SIDESTEP split is inflated. That does not
+  rescue the table — `p26684` and `p5824` move in the right direction and `p20152` does not, on the
+  same instrument — but it is why `p26156` is the row to decide on and the others are rows to watch.
+- **The path has never been searched on a map with a wall in it.** `corridor` is the scenario with
+  walls and it carries no recorded grid, so every scenario run exercises `nogrid` and the "route
+  around a wall" half of the design is **untested**. This is the largest single gap in this section.
+- **Nothing here says the retreat is wrong on the frames it happens.** A retreat is the safest
+  available move on a great many of them — the term table says the safety terms are what pay for it —
+  and the case for changing it is the operator's, not the model's. The dodge is *supposed* to run when
+  running is the only way out; what §3 measured is that it runs when it is not.
+- **A live session is the acceptance test and it has not been run.** The dry run is the next command
+  (§15.7), and the question for it is not the ratio but whether the character now looks like it is
+  going somewhere.
+- **What the objective needs, stated as the next session's task.** The path term is a *direction*
+  preference and the retreat is chosen by the *safety* terms, so a path that only supplies a direction
+  cannot fix it. What could: scoring a candidate by the SAFETY OF THE STATE IT LEADS TO — project the
+  candidate, then run the same corridor reasoning from the projected point over the plan horizon, so
+  "retreat into the third bullet" is expensive and "sidestep into the clear" is not. That is one
+  bounded plan-walk per admissible candidate (77 × ~21 samples × the number of nearby threats, which is
+  the shape §14.5 measured at 25 µs when it was not cached), and it is the honest version of the
+  "a step is bad because of the step after it" sentence the handoff opens with.
+
+### 15.7 The live run this hands to the operator
+
+```powershell
+# 1. THE DRY RUN FIRST. The solver decides on every frame and logs every move it would have made.
+.\hook\tools\Run-Phase3Session.ps1 -Experiment Hold -Seconds 180 -Dodge
+
+# 2. Read it, with the game closed.
+python tools\intent_report.py "$env:LOCALAPPDATA\drelay\hook\<run-dir>"
+
+# 3. AND THE A/B, WHICH IS NOW ONE ENVIRONMENT VARIABLE. Same session, path off:
+#    $env:DRELAY_DODGE_PATH = '0'   before launching -- the old score, for comparison.
+```
+
+The `WOULD MOVE` lines now carry the waypoint and the path's own numbers, so "it ran around the
+volley" is read off a file. **`bootstrap.log` carries the settings line, which now ends with
+`path enable=... target=... cap=... danger=... pad=... wp=.../... dwell=...s`** — a run that does not
+print it is a run whose path cannot be identified.
+
+### 15.8 Where every number in this section came from
+
+| number | where |
+|---|---|
+| every before/after column in §15.2 | `work/dd-after` (path on) and `work/off` (path off), both captured on the current build; `python tools\dodge_direction_report.py <dir>` |
+| the control (`path=0` reproduces §3) | `tools\AB-Dodge.ps1` or the one-liner above; the before column of §15.2 is that run |
+| the `p26156` sweep rows in §15.3 | `--config path=...,wpath=...,goal=...` on `20261015-153805-p26156`, dumps under `work/ab3` |
+| the term table in §15.5 | `hook\tools\Capture-DodgeTerms.ps1 -Recording 20261015-151232-p5424 -Out work\terms-p5424`, read by `tools\dodge_term_report.py` |
+| the weight sweep that is reported as a null result | `--config resolve=...,clear=...` on `p5424`, dumps under `work/w` |
+| the cost and the path counters | `SolverHarness --repeat 50`, `p26156` |
+| the scenario move counts | `SolverHarness --scenario <s> --frames 900`, six of them |
+
+
+
