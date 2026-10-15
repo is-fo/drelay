@@ -659,11 +659,17 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             {
                 decisions = new System.IO.StreamWriter(DecisionsPath, false);
                 decisions.WriteLine("# SolverHarness --decisions -- one line per recorded frame, in order.");
-                decisions.WriteLine("# " + _config.Describe());
+                // THE `# ` IS ADDED HERE RATHER THAN BY THE DESCRIBE, AND EVERY LINE OF IT. `Describe`
+                // returns its lines without a comment marker because the hook's own log does not use
+                // one -- the marker belongs to this file's format, and the version that assumed the
+                // string came pre-marked wrote a bare config line into the middle of the dump, which
+                // a reader that skips `#` lines then tried to parse as a frame with 26 fields.
+                decisions.WriteLine("# " + _config.Describe().TrimEnd('\r', '\n').Replace("\n", "\n# "));
                 decisions.WriteLine("# frame | action | reason | held | heading | scale | goal | goalsrc | "
                                   + "hintent | intent | course | moving | evaluated | admissible | "
                                   + "durabilityMs | clearance | resolve | score | runnerup | costUs | "
-                                  + "windowMs | wp | wpdist | pathn | pathlen | pathcost | pathwhy");
+                                  + "windowMs | wp | wpdist | pathn | pathlen | pathcost | pathwhy | "
+                                  + "stSetup | stPath | stGates | stAdmit | stScore | stEscape");
             }
 
             // JIT warm-up. The first `Decide` of a process compiles every method the decision

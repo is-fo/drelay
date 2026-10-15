@@ -132,7 +132,12 @@ param(
     # whatever else the run is doing, so a `Hold` run can carry the decision stream beside the
     # steering evidence -- which is exactly the shape SPIKE3.2-OFFLINE-SOLVER.md's section 6
     # keeps asking for and the only way the dry run gets a real session.
-    [switch] $Dodge
+    [switch] $Dodge,
+    # NOT A FEATURE: A NAMED REFUSAL. `-Dodge` is the dry run and `-Experiment Dodge` is the
+    # acting one, and that pair was confused by a caller who reached for `-DodgeAct` -- which
+    # PowerShell refused with "A parameter cannot be found", a message that names what is
+    # missing and not what to type. The switch exists so the mistake binds and gets an answer.
+    [switch] $DodgeAct
 )
 
 # ---------------------------------------------------------------------------
@@ -147,6 +152,44 @@ param(
 # collected and reported here instead.
 # ---------------------------------------------------------------------------
 $ErrorActionPreference = 'Continue'
+
+# ---------------------------------------------------------------------------
+# THE TWO NAMES THAT DO NOT EXIST, NAMED SO THE CALLER LEARNS THE REAL ONES.
+#
+# `-Dodge` is the DRY RUN (`--dodge`): the solver decides and logs and MOVES NOBODY.
+# `--dodge-act` -- the solver actually steering -- is the `Dodge` EXPERIMENT
+# (`-Experiment Dodge`). Two things named "dodge" that do opposite things is a trap,
+# and it was walked into: a session was launched with `-DodgeAct`, PowerShell had no
+# parameter of that name, and the command died before the game started. The message
+# then was "A parameter cannot be found that matches parameter name 'DodgeAct'",
+# which says what is missing and not what to type.
+#
+# A near-miss is REFUSED rather than ignored, because `-DodgeAct` is close enough to a
+# real switch that accepting it silently would be worse than stopping: a run that
+# looks like it acted and only decided is exactly the shape of mistake section 6 of
+# HANDOFF-DIRECTED-DODGE.md keeps recording.
+# ---------------------------------------------------------------------------
+foreach ($key in $MyInvocation.BoundParameters.Keys) {
+    if ($key -eq 'DodgeAct') {
+        Write-Host "there is no -$key switch, and this is the pair that gets confused:" -ForegroundColor Red
+        Write-Host "  -Dodge                  the DRY RUN: the solver decides, logs, and moves NOBODY" -ForegroundColor Yellow
+        Write-Host "  -Experiment Dodge       the ACTING run: the solver steers the character" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "for a live acting session, recorded so it can be measured afterwards:" -ForegroundColor Cyan
+        Write-Host "  .\hook\tools\Run-Phase3Session.ps1 -Experiment Dodge -Seconds 300 -Trace" -ForegroundColor Cyan
+        exit 2
+    }
+}
+
+# AND THE OTHER HALF OF THAT MISTAKE, WHICH COSTS EVIDENCE RATHER THAN A RUN: an ACTING session
+# with no `-Trace` decides correctly and leaves nothing behind to measure. `20261015-212859-p34740`
+# is that run -- `mode=LIVE`, `dryRun=False`, the right build, and `trace.jsonl` at 0 bytes.
+if ($Experiment -eq 'Dodge' -and -not $Trace -and -not $AnalyseOnly) {
+    Write-Host "this is the ACTING experiment with no -Trace: the dodge will steer, and the run" -ForegroundColor Yellow
+    Write-Host "will leave no trace.jsonl to measure it against afterwards." -ForegroundColor Yellow
+    Write-Host "  add -Trace to record it, or press on if you only want to feel it." -ForegroundColor Yellow
+    Write-Host ""
+}
 
 # A LAUNCHER CANNOT CREATE A RUN DIRECTORY IN A CONFINED SHELL, AND THE FAILURE LOOKS LIKE
 # NOTHING AT ALL. When this script is run from the agent harness, `Directory.CreateDirectory`

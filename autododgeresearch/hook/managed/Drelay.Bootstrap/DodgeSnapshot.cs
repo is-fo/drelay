@@ -1241,7 +1241,14 @@ namespace Drelay.Bootstrap
             return string.Format(CultureInfo.InvariantCulture,
                 "weights resolve={0} clear={1} durable={2} intent={3} goal={4} path={5} axial={6} "
                 + "projected={7} heading={8} lateral={9} move={10} stand={11} hyst={12}/{13}s "
-                + "dryRun={14} lookahead={15}s x{16}",
+                // THE NEWLINE IS PART OF THE FORMAT AND IT IS NOT COSMETIC. `Describe` is
+                // `DescribePlan() + DescribeWeights() + DescribePath()`, so the three lines exist only
+                // because each one ends itself; the version that appended the path's numbers without
+                // one produced `x3path enable=True ...` -- a run whose settings line cannot be read
+                // back, which is the one thing these lines are for. A bare `\n` rather than
+                // `Environment.NewLine` because this string is written into a file that a Python
+                // reader parses on whichever platform produced it.
+                + "dryRun={14} lookahead={15}s x{16}\n",
                 WeightResolve, WeightClearance, WeightDurability, WeightIntent, WeightGoal, WeightPath,
                 WeightAxial, WeightProjectedDanger, WeightHeading, WeightLateral, WeightMove,
                 WeightStandBias, HysteresisMargin, HysteresisDwellSeconds, DryRun, ProjectedSeconds,
