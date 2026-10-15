@@ -128,6 +128,21 @@ def angle_delta_deg(a, b):
     return d
 
 
+def angle_gap_rad(a, b):
+    """How far apart two radians are, as an angle: a full turn is zero, not 2*pi.
+
+    WHY THIS EXISTS, AND IT COST A RUN ITS VERDICT. Check A compares the angle the pilot
+    wrote with the angle it read back from the same field, and the client's setter NORMALISES
+    what it is given: `20261015-032549-p26684` logged `wrote -2.3562rad read-back 3.9270rad`
+    -- a difference of exactly 2*pi, on a frame where the write had landed perfectly. The
+    check reported `worst |written - read back| = 6.2832000` and FAILED the run, so a session
+    whose actuator worked end to end read as a broken one. A difference of 2*pi in an angle is
+    a difference of zero; only a reader that forgets angles wrap can disagree.
+    """
+    d = (a - b) % (2.0 * math.pi)
+    return min(d, (2.0 * math.pi) - d)
+
+
 def parse_run(run_dir):
     out = {
         "run_dir": run_dir,
@@ -416,9 +431,18 @@ def main(argv=None):
     # -- A: the write landed -------------------------------------------------------------
     if steering_requested:
         if run["frames"]:
-            worst = max(abs(f["wrote"] - f["read"]) for f in run["frames"])
-            checks.append(("A the input landed (read-back == written)", worst < 1e-4,
-                           "worst |written - read back| = %.7f rad over %d logged frame(s)"
+            worst = max(angle_gap_rad(f["wrote"], f["read"]) for f in run["frames"])
+            # THE TOLERANCE IS THE LOG'S OWN RESOLUTION, NOT A NUMBER PICKED TO PASS. Both angles
+            # are printed to four decimals, so two numbers that ARE the same angle may differ by up
+            # to 1e-4 after rounding -- measured on `20261015-032549-p26684`, where the worst gap is
+            # 8.53e-05 on `wrote 3.0252 read 9.3083`: 9.3083 - 3.0252 = 6.2831 against a true 2*pi
+            # of 6.28319, and the residual is the printout. A threshold of 1e-4 sits exactly on that
+            # rounding and would fail this run or pass it depending on which frames were logged.
+            # 5e-4 is one order above the instrument and four below any real disagreement: a write
+            # that did not land is out by a whole angle, not by a fifth of a degree.
+            checks.append(("A the input landed (read-back == written, mod 2pi)", worst < 5e-4,
+                           "worst |written - read back| = %.7f rad over %d logged frame(s) "
+                           "(an angle: a full turn counts as zero; the log's own resolution is 1e-4)"
                            % (worst, len(run["frames"]))))
         else:
             checks.append(("A the input landed (read-back == written)", False,
