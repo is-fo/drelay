@@ -127,6 +127,26 @@ namespace Drelay.Launcher
         //     environment unchanged and let the hook read it.
         public string MoveSteer;
 
+        // THE AUTO-AIM REQUEST: `--autoaim closest` or `--autoaim highesthp`.
+        //
+        // WHY IT IS A VALUE AND NOT A FLAG.  The two modes are the same mechanism with a
+        // different score, and a boolean could not say which one was asked for -- the same
+        // argument `--move-steer` carries.  The value is passed to the hook verbatim as
+        // `DRELAY_AIM_MODE`; the launcher validates that it is one of the two names it
+        // knows so a typo is refused at the command line rather than silently selecting
+        // nothing once the game is already running.
+        //
+        // IT IS ALSO A REAL SETTING CHANGE, AND THE HELP TEXT SAYS SO.  The replacement
+        // arms the game's own `Prefs.enable_aimbot`, because `Player.Shoot` checks that
+        // property before it ever asks for a target -- see `AutoAim` in the bootstrap.
+        //
+        // AND IT IMPLIES `--frame-replacement`.  That is not a preference: the flag has to be
+        // armed from the game's own thread before `AimbotSystem.FindTarget` is ever called,
+        // and the frame replacement is the only game-thread entry point every run has.  The
+        // reason the write cannot wait for the aim target itself is circular -- the target is
+        // compiled only once the flag is set -- and `AutoAim.OnFrame` carries the full account.
+        public string AutoAim;
+
         // SPIKE 3.2'S RECORDING REQUEST.
         //
         // IT SETS THREE THINGS, AND EACH ONE IS A DEPENDENCY THE OPERATOR SHOULD NOT HAVE TO KNOW
@@ -212,6 +232,43 @@ namespace Drelay.Launcher
 
         public string RunDirectory;
 
+        /// <summary>
+        /// Normalise and check a `--autoaim` mode.
+        ///
+        /// REFUSED AT THE COMMAND LINE RATHER THAN AT THE HOOK, because the two failures look
+        /// nothing alike from the outside.  A typo that reached the hook would resolve to
+        /// "off", the run would start, and the operator would spend a session watching the
+        /// game not aim while `bootstrap.log` said the module had never been asked for
+        /// anything -- the class of mistake this project has paid for repeatedly (see the
+        /// empty-trace note on `Options.Trace`).  Here it costs one line of console text.
+        /// </summary>
+        private static bool TryParseAutoAim(string raw, out string mode, out string error)
+        {
+            mode = null;
+            error = null;
+            string value = (raw ?? "").Trim().ToLowerInvariant();
+            switch (value)
+            {
+                case "closest":
+                case "close":
+                case "nearest":
+                    mode = "closest";
+                    return true;
+                case "highesthp":
+                case "highest-hp":
+                case "highest":
+                case "maxhp":
+                case "max-hp":
+                    mode = "highesthp";
+                    return true;
+                default:
+                    error = "--autoaim needs a mode: 'closest' (the nearest damageable enemy) "
+                            + "or 'highesthp' (the damageable enemy with the most health), got '"
+                            + raw + "'";
+                    return false;
+            }
+        }
+
         public static bool TryParse(string[] args, out Options options, out string error)
         {
             options = new Options();
@@ -242,6 +299,17 @@ namespace Drelay.Launcher
                 case "--frame-helper": options.FrameHelper = true; break;
                 case "--frame-replacement": options.FrameReplacement = true; break;
                 case "--move-steer": options.MoveSteer = Next(args, ref i); break;
+                case "--autoaim":
+                {
+                    string raw = Next(args, ref i);
+                    if (!TryParseAutoAim(raw, out string autoAim, out string why))
+                    {
+                        error = why;
+                        return false;
+                    }
+                    options.AutoAim = autoAim;
+                    break;
+                }
                 case "--trace": options.Trace = true; break;
                 case "--dodge": options.Dodge = true; break;
                 case "--dodge-act": options.Dodge = true; options.DodgeAct = true; break;
@@ -303,6 +371,16 @@ namespace Drelay.Launcher
                         else if (a.StartsWith("--collect-delay=", StringComparison.Ordinal)) { options.CollectDelayMs = int.Parse(a.Substring(16), CultureInfo.InvariantCulture); }
                         else if (a.StartsWith("--live-seconds=", StringComparison.Ordinal)) { options.LiveSeconds = int.Parse(a.Substring(15), CultureInfo.InvariantCulture); }
                         else if (a.StartsWith("--move-steer=", StringComparison.Ordinal)) { options.MoveSteer = a.Substring(13); }
+                        else if (a.StartsWith("--autoaim=", StringComparison.Ordinal))
+                        {
+                            string raw = a.Substring(10);
+                            if (!TryParseAutoAim(raw, out string autoAim, out string why))
+                            {
+                                error = why;
+                                return false;
+                            }
+                            options.AutoAim = autoAim;
+                        }
                         else if (a.StartsWith("--escape-test=", StringComparison.Ordinal))
                         {
                             string raw = a.Substring(14);
@@ -766,6 +844,27 @@ namespace Drelay.Launcher
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
                 variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", options.MoveSteer));
             }
+            if (!string.IsNullOrEmpty(options.AutoAim))
+            {
+                // THE SAME TWO-NAME SPLIT AS `--move-steer`, AND FOR THE SAME REASON.
+                // `DRELAY_HOOK_AIM_REPLACEMENT` lives in the namespace the launcher owns and
+                // deletes inherited values from, so a stale shell variable cannot decide that
+                // a patched game method jumps into managed code; the *mode* travels under its
+                // own name (`DRELAY_AIM_MODE`) for the managed side, which is where the
+                // selection lives, to read. A value with no flag would patch nothing; a flag
+                // with no value would patch a method that then does nothing.
+                //
+                // AND IT TURNS THE FRAME REPLACEMENT ON, WHICH IS NOT OPTIONAL.  The module
+                // has to arm `Prefs.enable_aimbot` before `AimbotSystem.FindTarget` is ever
+                // called -- nothing else compiles it, so nothing else patches it -- and the
+                // only place it may make that write is the game's own thread. The frame
+                // replacement is the one game-thread entry point that exists on every run.
+                // `AutoAim.OnFrame` carries the whole argument, including why the write at
+                // resolve time is lost to `GameSettings.Load` in `DarzaWindow`'s constructor.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_FRAME_REPLACEMENT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_AIM_REPLACEMENT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_AIM_MODE", options.AutoAim));
+            }
             if (options.Dodge)
             {
                 // THE THREE DEPENDENCIES OF A LIVE DECISION, SET TOGETHER. See `Options.Dodge`.
@@ -1008,6 +1107,28 @@ namespace Drelay.Launcher
                                                        commanded-vs-observed pairs
                        The player WILL move. Do not use it in a run whose result
                        matters, and never while a nexus cast is in progress.
+  --autoaim MODE       AUTO-AIM: replace the game's own target selection so the player
+                       always aims at a chosen enemy, through a full 360 degrees rather
+                       than the narrow cone the shipped desktop aimbot uses (that cone is
+                       `player.AimAssist * pi / 20`, rebuilt from the equipped gear's
+                       aim-assist affix, so with no affix the shipped one finds nothing at
+                       all). MODE is:
+                         closest     the nearest damageable enemy in range
+                         highesthp   the damageable enemy with the most health
+                       `in range` is the client's own weapon range -- the same function the
+                       shipped selection calls -- and `damageable` is the client's own
+                       predicate, `Effects.Unhittable()`, which is true for Invincible,
+                       Invulnerable and Cutscene; those are never chosen. Dead enemies and
+                       NPCs are skipped, and the client's own projectile leading, shot
+                       geometry and target highlight are unchanged.
+                       IT ARMS A REAL SETTING: Prefs.enable_aimbot is set ON, because
+                       Player.Shoot checks it before it ever asks for a target, and the game
+                       persists that setting. Without this switch the replacement is still
+                       published and verified, and only calls through.
+                       It implies --frame-replacement, and that is not a preference: the
+                       flag must be armed from the game's own thread before the target is
+                       ever called (nothing compiles it otherwise), and the frame
+                       replacement is the only game-thread entry point a run has.
   --dodge              DELIVERABLE 3.3, DRY RUN: run the solver on live frames and LOG what
                        it would have done -- the heading, the magnitude, the reason, the
                        candidate count, the cost -- without writing the input at all. Sets

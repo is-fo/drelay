@@ -46,9 +46,9 @@ expected/actual pair), and **2** when it cannot run at all. Two of the values ab
 not script-checked — the MVID and the GUID slot — because both are properties of the *running*
 process rather than of a file on disk.
 
-## The five targets
+## The six targets
 
-Quoted from the `targetMethods` block. `ilHashVersion` is `1` for all five.
+Quoted from the `targetMethods` block. `ilHashVersion` is `1` for all six.
 
 | role | declaring type | method | arity | metadata token | RVA | IL size | IL hash | citation |
 |---|---|---|---|---|---|---|---|---|
@@ -57,9 +57,11 @@ Quoted from the `targetMethods` block. `ilHashVersion` is `1` for all five.
 | collision | `DarzasDominion.Darza.Game.Objects.Projectile` | `HitCharacter` | 0 | `0x0600521F` | `0x3E64FC` | 989 | `D6F353B8CF67A24344899064EBC13D292095508E6C1C13F36A65081F0ED108B2` | `Objects/Projectile.cs:1514` |
 | escape | `DarzasDominion.Darza.Game.World` | `RequestEscape` | 0 | `0x06002964` | `0x162E4C` | 335 | `6E3B9F4CD77B5E8AE6B060B85233B20B00E88F054DFFC4AB380C04458C030A2D` | `Game/World.cs:12984` |
 | movement integrator | `DarzasDominion.Darza.Game.World` | `hehe\ueb2c\ue5a5\uee82\ue9c5\uef68` | 2 | `0x06002961` | `0x1621B8` | 2574 | `1E41504101BED2A28539A69A46C2384E4FB24956F04EBDD199A1ED4C72737028` | `Game/World.cs:12666` |
+| aim target selection | `DarzasDominion.Darza.Game.AimbotSystem` | `FindTarget` | 2 | `0x06002837` | `0x14C9EC` | 1580 | `B8E646CD86A27DB5DA2B830B40AA85C0E5BD1BF4AB5B936CB2360BE8869C9124` | `Game/AimbotSystem.cs:179` |
 
 The line in the IL dump that each target was found at is recorded as `ilDumpLine`: 500932 (frame
-tick), 1978316 (spawn), 1981122 (collision), 780182 (escape), 778772 (movement integrator).
+tick), 1978316 (spawn), 1981122 (collision), 780182 (escape), 778772 (movement integrator), 726472
+(aim target selection).
 
 ### The movement target's name, and why it is written that way
 
@@ -365,10 +367,10 @@ matches that whole five-byte shape (`2B <delta> 00 2B 00`) exactly rather than t
 with `br.s`". The near-miss is real in this build: the frame tick's stream contains
 `IL_0030: br.s IL_0035`, `IL_0032: ldc.i4.0`, `IL_0033: br.s IL_0035` — bytes `2B 03 16 2B 00` — which
 is the ordinary shape a C# conditional leaves behind (one side `ldc.i4.1` + `br.s`, the other
-`ldc.i4.0` + `br.s`, both meeting at `brtrue.s`), not an indirection. Separately, `decode_length()`'s
-docstring records that a couple of operand widths in its opcode table are not right for this build,
-so on the four targets the walk lands on **96–100 % of the disassembler's instruction offsets while
-still ending at exactly the right byte**.
+`ldc.i4.0` + `br.s`, both meeting at `brtrue.s`), not an indirection. Separately, the opcode table
+`decode_length()` walks with used to be **one entry short** — `br` (`0x38`) had no row, so everything
+after it sat one index low — and the walk could not consume every body; that is fixed, and its own
+section below records the measurement that found it.
 
 **Neither of the four recorded targets needs the indirection, and none of them uses it.** Measured
 against the dump, each of their streams begins at `IL_0000` with a real instruction — `call void
@@ -388,13 +390,47 @@ DarzasDominion.Graphics.DynamicFont::WarmAtlasStep()` for the frame tick, `ldarg
 collision and escape — so `code_entry()` returns 0 for all four in this build. The rule exists for
 the methods that do carry the indirection; do not go looking for one in these four.
 
-**Instruction: leave both behaviours alone.** Do not relax `code_entry()` to a prefix test — that
-shifts the walk by three bytes for ordinary code like the sequence above. And do not "fix"
-`decode_length()`'s operand widths *towards the hash*: the hash is over the raw bytes and no
-interpretation of them, and the walk exists only to catch a body this reader mislocated (the
-`MoreSects` trap above is the real instance of that). A target whose walk does not consume its body
-exactly is reported as `ilDecodesCleanly=false` and becomes a problem; the digest is unaffected
-either way.
+**Instruction: leave `code_entry()` alone, and fix `decode_length()` only against the
+disassembler.** Do not relax `code_entry()` to a prefix test — that shifts the walk by three bytes for
+ordinary code like the sequence above. And do not "fix" `decode_length()`'s operand widths *towards the
+hash*: the hash is over the raw bytes and no interpretation of them, and the walk exists only to catch a
+body this reader mislocated (the `MoreSects` trap above is the real instance of that). The one thing
+that *is* a legitimate repair is the one that was made: a table entry that the IL dump's own instruction
+offsets contradict, fixed against that witness and measured over every method the dump describes.
+
+### The opcode table's missing `br`, and how it was found
+
+**The table was one entry short for its whole life.** `OPCODES_1` had no row for `br` (`0x38`), so every
+row after it sat one index low: `switch` at `0x44` instead of `0x45`, `isinst` at `0x74` instead of
+`0x75`, and on to the end. It went unnoticed because the entries either side of the shift mostly share an
+operand width — `br` and `brfalse` are both four-byte branches — so the walk usually landed correctly
+anyway, and the four Phase 0 targets all consumed their bodies exactly.
+
+**What found it was the auto-aim target.** `AimbotSystem.FindTarget` is 1580 bytes, contains `isinst`,
+and the shifted table walked it off the end: `il_index.py` refused to write the record with
+`aimTarget: the instruction walk does not consume the body exactly`, which is the check doing its job —
+a target that could not be verified would otherwise have been pinned anyway, because the IL *hash* is
+over raw bytes and never needed the walk.
+
+**Measured against the dump before and after.** For each of the 20 418 methods the dump describes (RVA,
+declared code size and instruction offsets all present), the body was read and walked, and the walk was
+required to (a) visit only offsets the dump lists and (b) consume the body exactly:
+
+| table | all visited offsets are the dump's | body consumed exactly |
+|---|---|---|
+| before (`br` missing) | 11 699 (57.30 %) | 19 971 (97.81 %) |
+| after | **19 667 (96.32 %)** | **20 413 (99.98 %)** |
+
+`python tools/check_opcode_table.py` re-runs that measurement against the table
+`il_index.py` currently ships, and exits non-zero if it falls below either threshold. It exists
+because the number in the row above is a claim about a table that can be edited, and a claim that
+cannot be re-measured is a claim nobody can check.
+
+**The digest never depended on this, and still does not.** `il_hash` is SHA-256 over the exact IL bytes;
+no entry in the opcode table can move a target's identity. What the table feeds is `decode_length()`
+(the "is this body where we think it is" check) and the `MoreSects` offset choice inside
+`method_body()` — which *can* move a chosen body, so the fix was verified to leave all five
+pre-existing target hashes **unchanged** rather than assumed to.
 
 ## Where the numbers come from
 

@@ -120,9 +120,9 @@ namespace Drelay.Bootstrap
 
     /// <summary>
     /// The shared block, field for field as the native header declares it.
-    /// 440928 bytes including the reserved tail.
+    /// 440944 bytes including the reserved tail.
     /// </summary>
-    [StructLayout(LayoutKind.Explicit, Size = 440928, CharSet = CharSet.Ansi)]
+    [StructLayout(LayoutKind.Explicit, Size = 440944, CharSet = CharSet.Ansi)]
     public struct DrelayShared
     {
         [FieldOffset(0)] public uint magic;
@@ -2545,15 +2545,17 @@ namespace Drelay.Bootstrap
         [FieldOffset(178800)] public ulong managedCollisionTrampoline;
         [FieldOffset(178808)] public ulong managedMovementReplacement;
         [FieldOffset(178816)] public ulong managedMovementTrampoline;
-        [FieldOffset(178824)] public unsafe fixed byte reserved[262104];
+        [FieldOffset(178824)] public ulong managedAimReplacement;
+        [FieldOffset(178832)] public ulong managedAimTrampoline;
+        [FieldOffset(178840)] public unsafe fixed byte reserved[262104];
         public const int reserved_Count = 262104;
     }
 
     /// <summary>Byte offsets and sizes, as computed from the native header.</summary>
     public static class GeneratedLayout
     {
-        public const uint SharedVersion = 6u;
-        public const int DrelaySharedSize = 440928;
+        public const uint SharedVersion = 7u;
+        public const int DrelaySharedSize = 440944;
         public const int DRELAY_ARM_ARMED = 1;
         public const int DRELAY_ARM_REFUSED = 2;
         public const int DRELAY_ARM_UNCONFIGURED = 3;
@@ -2724,6 +2726,8 @@ namespace Drelay.Bootstrap
         public const int Off_managedCollisionTrampoline = 178800;
         public const int Off_managedMovementReplacement = 178808;
         public const int Off_managedMovementTrampoline = 178816;
-        public const int Off_reserved = 178824;
+        public const int Off_managedAimReplacement = 178824;
+        public const int Off_managedAimTrampoline = 178832;
+        public const int Off_reserved = 178840;
     }
 }

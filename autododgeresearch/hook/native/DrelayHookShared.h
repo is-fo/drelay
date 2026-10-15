@@ -47,7 +47,7 @@
 // The launcher builds these names and the bootstrap is given the run directory
 // by the launcher, but the *names* of the kernel objects are fixed because both
 // sides must agree on them without a filesystem round trip.
-#define DRELAY_SHARED_VERSION   6u
+#define DRELAY_SHARED_VERSION   7u
 #define DRELAY_MAGIC_CONFIG     0x44485243u  /* 'DHRC' -- section holds a valid config */
 #define DRELAY_MAGIC_STATUS     0x44485253u  /* 'DHRS' -- native has written its status */
 #define DRELAY_MAGIC_BOOT       0x44485242u  /* 'DHRB' -- bootstrap has started and is alive */
@@ -653,6 +653,38 @@ typedef struct DrelayShared {
     volatile uint64_t managedMovementReplacement;
     volatile uint64_t managedMovementTrampoline;
 
+    /* ------------------------------------------------------------------ */
+    /* THE AUTO-AIM REPLACEMENT -- the target-selection pass.               */
+    /*                                                                     */
+    /* `AimbotSystem.FindTarget(Player, World)` is `public static`, so on   */
+    /* x64 the two references arrive in RCX and RDX and the answer leaves   */
+    /* in RAX.  The replacement takes both as `object` and returns          */
+    /* `object`, which is the same ABI -- a managed reference is a pointer   */
+    /* in a register whether the compiler calls it an `object` or an        */
+    /* `IntPtr` -- and taking them as `object` is what lets the replacement  */
+    /* read the player and the enemies through the managed accessors        */
+    /* instead of reinterpreting addresses.                                 */
+    /*                                                                     */
+    /* WHY THIS TARGET AND NOT `Prefs.enable_aimbot`.  The shipped aimbot is */
+    /* real and complete; what the desktop build lacks is a way to reach it  */
+    /* and a cone wide enough to be useful.  `FindTarget` is where both live: */
+    /* it is called once per `World.Update` through `AimbotSystem.          */
+    /* UpdateTarget`, and it is the only place the candidate set is chosen.  */
+    /* It is 1580 bytes of IL, far past any inlining budget, so the JIT      */
+    /* hands it to the detour as a method of its own -- which a replacement  */
+    /* on the tiny `UpdateTarget` or on the `Prefs.enable_aimbot` property   */
+    /* could not count on.                                                   */
+    /*                                                                     */
+    /* THE ORDERING RULE IS THE SAME AS EVERY PAIR ABOVE, AND IT IS LOAD-    */
+    /* BEARING FOR A DIFFERENT REASON THAN "the first call arrives at once". */
+    /* This method is not called until a world exists AND the aimbot flag is */
+    /* set, which is seconds or minutes after the patch pass -- so the       */
+    /* trampoline is published well before the first call, and a zero here   */
+    /* would mean the native side patched a target the bootstrap never       */
+    /* prepared.                                                            */
+    volatile uint64_t managedAimReplacement;
+    volatile uint64_t managedAimTrampoline;
+
     /* Reserved capacity.  The mapping is created at a fixed size by the launcher
      * and mapped by both sides before either knows the other's struct size, so
      * the size has to be a constant both can compute rather than
@@ -673,7 +705,15 @@ typedef struct DrelayShared {
 // pagefile-backed section of that size fails `CreateFileMapping` with error 8.
 // The rings are now sized for a launch (see the DRELAY_*_RING_* comments) and the
 // whole block is 431 KB.
-#define DRELAY_SHARED_SIZE 440928u
+//
+// 440 928 -> 440 944 IS THE AUTO-AIM REPLACEMENT'S TWO SLOTS, AND IT IS A REAL
+// MOVE RATHER THAN PADDING.  The reserved tail is a fixed 262 104 bytes, not
+// slack absorbed by a constant total, so a named field added in front of it grows
+// the block -- and a launcher and a bootstrap built either side of this change
+// would disagree by exactly these 16 bytes, which the size check in DrelayMain.cpp
+// reports as a refusal rather than as a misread field.  That is why the version
+// went to 7 with it.
+#define DRELAY_SHARED_SIZE 440944u
 
 // The assert is suppressed for the layout probe only.  SizeProbe.c must be able
 // to compile in order to *report* the real size when the constant is wrong; with

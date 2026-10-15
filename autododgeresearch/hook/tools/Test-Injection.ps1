@@ -1547,6 +1547,114 @@ Check 'at least one of them had been predicted' (
     $latePredicted -ge 1) "predicted=$latePredicted of $($lateHits.Count)"
 
 # ---------------------------------------------------------------------------
+# Run 13: the AUTO-AIM replacement, and the late pass that runs after the window
+# ---------------------------------------------------------------------------
+#
+# WHAT THIS GATES.  `--autoaim` publishes a THIRD managed replacement, on a fourth
+# native dispatch arm (`aimTarget`), with its own pair of shared-block slots and its
+# own trampoline.  Every one of those is plumbing that a build can get wrong while
+# the module it carries is correct: a slot added in the wrong place, a dispatch arm
+# named differently from the target table, a publish that never runs.  Run 8 covers
+# that shape for the frame tick; this run covers it for the aim target.
+#
+# AND IT IS THE ONLY COVER FOR THE IDLE PASS.  `DrelayPatchNewTargets` used to be
+# called only inside the live window, so a method the game first compiles after that
+# window closed was matched by IL hash, reported as found, and left unpatched.  For
+# a module the operator leaves running that is a session which silently does nothing,
+# so the watcher's idle loop now polls the same pass every two seconds -- and the
+# only way to know that works is to put the target's first compilation AFTER the
+# window on purpose, which is what the 40 s cadence delay below does.
+#
+# WHAT THE HOST CAN AND CANNOT SHOW.  The synthetic host has no `AimbotSystem`, so
+# the module resolves to "unavailable" here and the replacement does nothing but call
+# through -- which makes the assertions about *selection* meaningless and the ones
+# about *plumbing* exactly as strong as they are for the frame tick:
+#
+#   * the replacement was published into the shared block;
+#   * the native side aimed MinHook's `jmp` at it, by target name;
+#   * the patch happened LATE, from the idle pass, after the live window had shut;
+#   * every call the host made arrived at the original body through the trampoline
+#     -- with the hook enabled the body is reachable no other way -- and the
+#     replacement reported that it had been entered and could not act, which is a
+#     different fact from never being entered at all;
+#   * and the process did not die.
+Write-Host ''
+Write-Step 'run 13: the auto-aim replacement, patched late from the idle pass'
+
+$aimHashText = (& python $hashTool --assembly $hostDll `
+        --type 'SyntheticHostFixture.AimCadence' --name 'FindTarget' --arity 2 2>&1 | Out-String)
+$aimIlSize = $null
+$aimIlHash = $null
+if ($aimHashText -match 'ilSize=(\d+)') { $aimIlSize = [int]$Matches[1] }
+if ($aimHashText -match 'ilHash=([0-9A-Fa-f]{64})') { $aimIlHash = $Matches[1].ToUpperInvariant() }
+
+Check 'the host has a target selection with a Phase 0 identity to publish' (
+    $null -ne $aimIlSize -and $null -ne $aimIlHash) (
+    "ilSize=$aimIlSize ilHash=$aimIlHash")
+
+$aimSpec = "aimTarget|SyntheticHostFixture.AimCadence|FindTarget|$aimIlSize|$aimIlHash"
+$savedHold13 = $env:DRELAY_TEST_HOLD_MS
+$savedDelay13 = $env:DRELAY_TEST_CADENCE_DELAY_MS
+$savedCadenceFile13 = $env:DRELAY_TEST_CADENCE_FILE
+# FORTY SECONDS IS THE WHOLE POINT OF THIS RUN: it puts the fixture's one and only
+# compilation (tiering is off) after the live window has closed, so the only pass that
+# can still patch it is the idle one.  Seventy seconds of hold leaves half a minute of
+# patched calls to count.
+$env:DRELAY_TEST_HOLD_MS = '70000'
+$env:DRELAY_TEST_CADENCE_DELAY_MS = '40000'
+# THE FIXTURE'S OWN SWITCH, AND NO OTHER RUN SETS IT.  Without it the host never calls
+# its stand-in selection, so runs 1-12 keep exactly the timing they had before this
+# fixture existed.
+$savedAim13 = $env:DRELAY_TEST_AIM
+$env:DRELAY_TEST_AIM = '1'
+$cadence13 = Join-Path $testRoot 'cadence-run13.txt'
+$env:DRELAY_TEST_CADENCE_FILE = $cadence13
+Remove-Item -LiteralPath $cadence13 -ErrorAction SilentlyContinue
+
+$runDirsBefore13 = @(Get-ChildItem $runRoot -Directory -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
+$null = & $launcher @commonLauncherArgs --collect-delay 500 --live-seconds 5 `
+    --test-target $aimSpec --autoaim closest --verbose 2>&1
+$dir13 = Get-ChildItem $runRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object { $runDirsBefore13 -notcontains $_.Name } |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+$env:DRELAY_TEST_HOLD_MS = $savedHold13
+$env:DRELAY_TEST_CADENCE_DELAY_MS = $savedDelay13
+$env:DRELAY_TEST_CADENCE_FILE = $savedCadenceFile13
+$env:DRELAY_TEST_AIM = $savedAim13
+
+$log13 = Read-RunFile $(if ($dir13) { $dir13.FullName } else { '' }) 'hook.log'
+$boot13 = Read-RunFile $(if ($dir13) { $dir13.FullName } else { '' }) 'bootstrap.log'
+$crash13 = if ($dir13) { Test-Path -LiteralPath (Join-Path $dir13.FullName 'crash.txt') } else { $true }
+$cadence13Text = if (Test-Path -LiteralPath $cadence13) { Get-Content -LiteralPath $cadence13 -Raw } else { '' }
+
+$aimHost13 = $null
+$aimBody13 = $null
+if ($cadence13Text -match 'aim_host_calls=(\d+)') { $aimHost13 = [long]$Matches[1] }
+if ($cadence13Text -match 'aim_body_calls=(\d+)') { $aimBody13 = [long]$Matches[1] }
+
+Check 'the auto-aim replacement was published for the native side' (
+    $boot13 -match 'managed auto-aim replacement published at 0x[0-9A-F]+') (
+    'expected "managed auto-aim replacement published" in bootstrap.log')
+Check 'the module said it could not resolve against this host' (
+    $boot13 -match 'the auto-aim module is NOT available') (
+    'expected the resolve failure to be named; without it the run cannot tell "the host has no AimbotSystem" from "the module never ran"')
+Check 'the native side aimed the hook at the managed replacement by target name' (
+    $log13 -match "'aimTarget' will be patched with the MANAGED REPLACEMENT") (
+    "expected the native dispatch arm for 'aimTarget' to select the managed replacement")
+Check 'the patch came from the LATE pass, after the live window had closed' (
+    $log13 -match "PATCHED 'aimTarget'" -and $log13 -match 'were patched late') (
+    (($log13 -split "`r?`n" | Where-Object { $_ -match 'patched late|PATCHED' }) -join ' | '))
+Check 'the replacement reported being ENTERED and unable to act' (
+    $boot13 -match 'auto-aim: the replacement was entered, but the module did not resolve') (
+    'expected the entered-but-unresolved line in bootstrap.log; a patch nobody enters would leave the counters agreeing just as happily')
+Check 'every patched entry reached the original through the managed trampoline' (
+    $null -ne $aimHost13 -and $aimHost13 -gt 100 -and $aimBody13 -eq $aimHost13) (
+    "aim_host_calls=$aimHost13 aim_body_calls=$aimBody13")
+Check 'the run did not die' (-not $crash13) (
+    $(if ($crash13) { 'crash.txt was written -- the auto-aim replacement route faulted' } else { 'no crash.txt' }))
+
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
