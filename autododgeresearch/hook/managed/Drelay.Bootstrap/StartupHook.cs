@@ -1119,6 +1119,33 @@ namespace Drelay.Bootstrap
                 Marshal.WriteInt64(_viewPointer, GeneratedLayout.Off_managedMovementReplacement, 0L);
             }
 
+            // THE AUTO-AIM MODULE -- the same shape a third time, and the same rule: publish
+            // on every run and let the launcher's switch decide whether the `jmp` is aimed
+            // here.  Resolve is what reaches the game's types, so it is the step that has to
+            // survive a build whose field names moved: a failure leaves the replacement
+            // calling through on every frame, which is the client's own behaviour and not a
+            // suppressed call.
+            try
+            {
+                bool available = AutoAim.Resolve(game);
+                AutoAim.LogPlan();
+                if (!available)
+                {
+                    AppendLog("ERROR", "the auto-aim module is NOT available: "
+                                       + AutoAim.UnresolvedReason
+                                       + " -- nothing else is affected, but no auto-aim can run");
+                    FlushLog();
+                }
+                AutoAim.Publish();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("ERROR", "publishing the auto-aim replacement threw; the auto-aim "
+                                   + "target will not be patched and the game is unaffected: " + ex);
+                FlushLog();
+                Marshal.WriteInt64(_viewPointer, GeneratedLayout.Off_managedAimReplacement, 0L);
+            }
+
             // PHASE 3'S ESCALATION TEST — the floor itself, made enterable on demand.
             //
             // `World.RequestEscape` was reported MISSING in the 2026-10-13 run for the one
@@ -1526,6 +1553,15 @@ namespace Drelay.Bootstrap
             try
             {
                 FrameReplacementSensor(total);
+
+                // THE AUTO-AIM MODULE'S ARMED FLAG, KEPT ARMED FROM THE GAME'S OWN THREAD.
+                // It has to run here rather than from the watcher thread: `Prefs.enable_aimbot`
+                // is backed by the game's settings `Dictionary`, and a concurrent write from
+                // another thread while the game reads the same store is how a process hangs.
+                // The frame replacement is the only game-thread entry point that exists on
+                // every run, which is why `--autoaim` turns it on (see AutoAim.OnFrame).
+                // It returns immediately when the module is off, so no other run pays for it.
+                AutoAim.OnFrame();
             }
             catch (Exception ex)
             {

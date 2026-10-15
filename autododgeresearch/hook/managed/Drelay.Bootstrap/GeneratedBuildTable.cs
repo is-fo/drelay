@@ -55,6 +55,7 @@ namespace Drelay.Bootstrap
             new TargetSpec("collision", "DarzasDominion.Darza.Game.Objects.Projectile", "HitCharacter", 0x0600521F, 989, "D6F353B8CF67A24344899064EBC13D292095508E6C1C13F36A65081F0ED108B2", "collision"),
             new TargetSpec("escape", "DarzasDominion.Darza.Game.World", "RequestEscape", 0x06002964, 335, "6E3B9F4CD77B5E8AE6B060B85233B20B00E88F054DFFC4AB380C04458C030A2D", "escape"),
             new TargetSpec("movementIntegrator", "DarzasDominion.Darza.Game.World", "hehe", 0x06002961, 2574, "1E41504101BED2A28539A69A46C2384E4FB24956F04EBDD199A1ED4C72737028", "movement integrator"),
+            new TargetSpec("aimTarget", "DarzasDominion.Darza.Game.AimbotSystem", "FindTarget", 0x06002837, 1580, "B8E646CD86A27DB5DA2B830B40AA85C0E5BD1BF4AB5B936CB2360BE8869C9124", "aim target selection"),
         };
 
         public readonly struct TargetSpec

@@ -848,6 +848,7 @@ DWORD WINAPI WatcherThread(LPVOID) {
     //    has somewhere to publish and so shutdown can flush.  It must not
     //    consume CPU: the bridge is Phase 4 and until then there is nothing to
     //    wait for but shutdown.
+    uint32_t idlePatchPolls = 0;
     for (;;) {
         if (InterlockedCompareExchange(&g_shutdownRequested, 0, 0) != 0) {
             break;
@@ -863,6 +864,28 @@ DWORD WINAPI WatcherThread(LPVOID) {
         // technical question.  The transition is logged when it happens, so the run
         // has a dated record of it even though `summary.txt` was written earlier.
         DrelayPollArmProbe();
+
+        // AND SO DOES THE LATE PATCH PASS, FOR A REASON THAT IS THE SAME ONE LEVEL UP.
+        //
+        // `DrelayPatchNewTargets` used to be called only from inside the live window, so a
+        // target the game first compiled after that window closed was matched by IL hash,
+        // reported as found in `hook.log.sizes`, and never patched.  For the Phase 1-3
+        // evidence that was tolerable: the interesting targets are compiled when a zone
+        // loads, and `--live-seconds` is chosen to cover it.  For a module the operator
+        // leaves running it is not, and the auto-aim target is exactly that shape --
+        // `AimbotSystem.FindTarget` is not compiled until a world exists AND the aimbot
+        // flag is set, which for a session that starts at a login screen is minutes after
+        // the evidence window has closed.  A hook that had already written its files would
+        // then be resident and doing nothing, which reads identically to a module that
+        // decided there was no target.
+        //
+        // ONCE EVERY TWO SECONDS, because the cost is a walk of a six-entry table and the
+        // alternative is a session whose aim starts working at an unpredictable moment.
+        // The pass is silent when it adds nothing, and reports what it added when it does.
+        if (++idlePatchPolls >= 4) {
+            idlePatchPolls = 0;
+            DrelayPatchNewTargets();
+        }
         Sleep(500);
     }
 

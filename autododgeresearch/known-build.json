@@ -104,6 +104,19 @@
       "ilDumpLine": 778772,
       "role": "movement integrator",
       "citation": "Game/World.cs:12666"
+    },
+    "aimTarget": {
+      "declaringType": "DarzasDominion.Darza.Game.AimbotSystem",
+      "name": "FindTarget",
+      "arity": 2,
+      "metadataToken": "0x06002837",
+      "rva": "0x14C9EC",
+      "ilSize": 1580,
+      "ilHash": "B8E646CD86A27DB5DA2B830B40AA85C0E5BD1BF4AB5B936CB2360BE8869C9124",
+      "ilHashVersion": 1,
+      "ilDumpLine": 726472,
+      "role": "aim target selection",
+      "citation": "Game/AimbotSystem.cs:179"
     }
   }
 }

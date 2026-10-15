@@ -443,6 +443,41 @@ namespace SyntheticHostFixture
     }
 
     /// <summary>
+    /// The stand-in target selection: the method `Test-Injection.ps1` run 13 matches by IL
+    /// hash and patches with the hook's AUTO-AIM replacement.
+    ///
+    /// WHY ITS SHAPE IS `object (object, object)`.  The hook cannot name
+    /// `AimbotSystem.FindTarget`'s real signature -- it has no compile-time reference to the
+    /// game at all -- so `AutoAim.FindTargetReplacement` takes both arguments and returns
+    /// `object`.  That is the same ABI the game's own `Enemy FindTarget(Player, World)` has on
+    /// x64: two managed references in, one out.  A fixture of its own shape, with an arity or
+    /// value-type parameters of its own, would exercise a *different* crossing from the one
+    /// the real target has -- and the crossing is the whole subject of that run.
+    ///
+    /// `NoInlining` for the reason `Cadence.FrameTick` carries it: an inlined method has no
+    /// entry point of its own, so the JIT detour never sees it compile and the target can
+    /// never be matched.  That reads exactly like a hook that failed to patch, which is the
+    /// failure this run exists to be able to tell apart.
+    /// </summary>
+    public sealed class AimCadence
+    {
+        /// <summary>
+        /// How many times the body ran.  Once the hook is enabled this is reachable ONLY
+        /// through MinHook's trampoline, so a non-zero value that matches the host's own call
+        /// count is evidence that every patched entry reached the original through the
+        /// managed replacement.
+        /// </summary>
+        public static long BodyCalls;
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        public static object FindTarget(object player, object world)
+        {
+            BodyCalls = BodyCalls + 1;
+            return null;
+        }
+    }
+
+    /// <summary>
     /// An object the cadence loop holds and reads every iteration.  It is
     /// reachable from no static, no field and no other frame, which is what makes
     /// it a witness: if the runtime's stack walk stops at the hook's own native
@@ -912,8 +947,18 @@ namespace SyntheticHostFixture
     {
         public const int WitnessMarker = 0x5A5A1234;
 
+        /// <summary>
+        /// Whether this run also drives the stand-in target selection (`DRELAY_TEST_AIM=1`,
+        /// set only by `Test-Injection.ps1` run 13).
+        /// </summary>
+        public static readonly bool AimFixture =
+            Environment.GetEnvironmentVariable("DRELAY_TEST_AIM") == "1";
+
         /// <summary>Body executions the host itself observed.</summary>
         public static long SelfObservedCalls;
+
+        /// <summary>Target-selection calls the host itself made -- run 13's other half.</summary>
+        public static long AimHostCalls;
 
         /// <summary>Iterations where the witness had been corrupted; 0 is the pass.</summary>
         public static long WitnessFailures;
@@ -946,6 +991,7 @@ namespace SyntheticHostFixture
 
             System.Diagnostics.Stopwatch clock = System.Diagnostics.Stopwatch.StartNew();
             long calls = 0;
+            long aimCalls = 0;
             bool corrupted = false;
 
             try
@@ -954,6 +1000,18 @@ namespace SyntheticHostFixture
                 {
                     cadence.FrameTick((float)clock.Elapsed.TotalMilliseconds);
                     calls = calls + 1;
+
+                    // RUN 13'S SUBJECT, BEHIND A SWITCH SO NO OTHER RUN SEES IT.  Calling it
+                    // unconditionally would perturb every timing-sensitive assertion in the
+                    // suite -- run 10's sampler counts are taken over a churning world and
+                    // already sit close to their bounds -- and a fixture that changes the
+                    // system it is measuring is not a fixture.  With `DRELAY_TEST_AIM` unset
+                    // this loop is byte-for-byte the loop it was before the fixture existed.
+                    if (AimFixture)
+                    {
+                        SyntheticHostFixture.AimCadence.FindTarget(null, null);
+                        aimCalls = aimCalls + 1;
+                    }
 
                     // The read is what keeps the witness live across the call above.
                     if (witness.Marker != WitnessMarker)
@@ -974,6 +1032,7 @@ namespace SyntheticHostFixture
             }
 
             SelfObservedCalls = calls;
+            AimHostCalls = aimCalls;
             WitnessIntact = (corrupted || witness.Marker != WitnessMarker) ? 0 : 1;
         }
 
@@ -1224,6 +1283,8 @@ internal static class SyntheticHost
                 File.WriteAllText(cadenceFile,
                     "self_observed_calls=" + SyntheticHostFixture.CadenceRunner.SelfObservedCalls + "\n" +
                     "patched_body_calls=" + cadence.Calls + "\n" +
+                    "aim_host_calls=" + SyntheticHostFixture.CadenceRunner.AimHostCalls + "\n" +
+                    "aim_body_calls=" + SyntheticHostFixture.AimCadence.BodyCalls + "\n" +
                     "witness_intact=" + SyntheticHostFixture.CadenceRunner.WitnessIntact + "\n" +
                     "witness_failures=" + SyntheticHostFixture.CadenceRunner.WitnessFailures + "\n" +
                     "allocations=" + SyntheticHostFixture.CadenceRunner.Allocations + "\n" +

@@ -144,6 +144,37 @@ TARGETS = [
         "why": "the input->position step: it reads GameScene.GameInput and commits "
                "Player.Position, so a replacement on it can both steer and measure",
     },
+    {
+        # THE AUTO-AIM TARGET, AND IT IS THE ONE THE CLIENT ITSELF CALLS AN AIMBOT.
+        #
+        # `AimbotSystem.FindTarget(Player, World)` is the desktop/mobile aimbot's whole
+        # target-selection pass: it collects every live, non-NPC enemy within the equipped
+        # weapon's own range, keeps the ones the local aim direction already points at, and
+        # then picks one according to `Prefs.aimbot_priority_mode`.  Two of its gates are
+        # what makes the shipped feature unusable on desktop and what a replacement is for:
+        #
+        #   * the candidate list is filtered by a CONE around the aim direction, whose half
+        #     angle is `player.AimAssist * pi / 20` (`Game/AimbotSystem.cs:293`) -- so a
+        #     player with no aim-assist affix has a cone of zero and gets nothing at all,
+        #     and one with the affix gets a window that scales with the roll;
+        #   * `Prefs.enable_aimbot` gates the whole path, and its own consumers
+        #     (`AimbotSystem.UpdateTarget`, `Player.Shoot`) are the only reason a target is
+        #     ever used.
+        #
+        # The name is the readable one -- the obfuscator left the whole `AimbotSystem` type
+        # alone -- and its IL is 1580 bytes, far past any inlining budget, so the JIT hands
+        # it to the detour as a method of its own.
+        "key": "aimTarget",
+        "role": "aim target selection",
+        "declaringType": "DarzasDominion.Darza.Game.AimbotSystem",
+        "name": "FindTarget",
+        "arity": 2,
+        "signatureHint": "static class Enemy FindTarget(class Player, class World)",
+        "citation": "Game/AimbotSystem.cs:179",
+        "why": "the aimbot's target-selection pass, called once per World.Update through "
+               "AimbotSystem.UpdateTarget; a replacement on it chooses the enemy Player.Shoot "
+               "aims at, and can drop the cone filter that limits the shipped desktop feature",
+    },
 ]
 
 
@@ -559,96 +590,90 @@ INLINE_BR: OperandKind = "Br"
 INLINE_BRS: OperandKind = "BrS"
 
 # name, operand kind. Index = opcode. Mirrors ECMA-335 III.2.2 / the ilspycmd output.
+#
+# THIS TABLE WAS ONE ENTRY SHORT FOR ITS WHOLE LIFE, AND `br` WAS THE MISSING ONE.
+# `br` (0x38) had no entry at all, so every entry after it sat one index low --
+# `switch` at 0x44 instead of 0x45, `isinst` at 0x74 instead of 0x75, and so on to
+# the end of the table. It went unnoticed because the entries either side of the
+# shift mostly share an operand width, so the walk usually landed correctly anyway.
+# THE MEASUREMENT THAT FOUND IT.  Against the IL dump's own instruction offsets, over
+# the 20 418 methods the dump describes: the shifted table put every offset the walk
+# visited among the dump's for 11 699 of them and consumed the body exactly for 19 971;
+# the corrected table below scores 19 667 and 20 413.  The auto-aim target
+# (`AimbotSystem::FindTarget`) is one of the ones the shifted table could not consume,
+# and it was refused as "TARGET TABLE NOT TRUSTWORTHY" until this was fixed.
+# `tools/check_opcode_table.py` re-runs that comparison against this table.
+#
+# The hash never depended on this table -- `il_hash` covers the raw IL bytes, which is
+# the whole reason it is not normalised. What the table feeds is `decode_length`, the
+# check that a body was located correctly, and the MoreSects offset choice inside
+# `method_body`. A change here can therefore move a *different* target's chosen body,
+# so `known-build.json` is re-pinned and compared rather than merely regenerated.
 OPCODES_1 = [
-    ("nop", INLINE_NONE), ("break", INLINE_NONE), ("ldarg.0", INLINE_NONE),
-    ("ldarg.1", INLINE_NONE), ("ldarg.2", INLINE_NONE), ("ldarg.3", INLINE_NONE),
-    ("ldloc.0", INLINE_NONE), ("ldloc.1", INLINE_NONE), ("ldloc.2", INLINE_NONE),
-    ("ldloc.3", INLINE_NONE), ("stloc.0", INLINE_NONE), ("stloc.1", INLINE_NONE),
-    ("stloc.2", INLINE_NONE), ("stloc.3", INLINE_NONE), ("ldarg.s", INLINE_SVAR),
-    ("ldarga.s", INLINE_SVAR), ("starg.s", INLINE_SVAR), ("ldloc.s", INLINE_SVAR),
-    ("ldloca.s", INLINE_SVAR), ("stloc.s", INLINE_SVAR), ("ldnull", INLINE_NONE),
-    ("ldc.i4.m1", INLINE_NONE), ("ldc.i4.0", INLINE_NONE), ("ldc.i4.1", INLINE_NONE),
-    ("ldc.i4.2", INLINE_NONE), ("ldc.i4.3", INLINE_NONE), ("ldc.i4.4", INLINE_NONE),
-    ("ldc.i4.5", INLINE_NONE), ("ldc.i4.6", INLINE_NONE), ("ldc.i4.7", INLINE_NONE),
-    ("ldc.i4.8", INLINE_NONE), ("ldc.i4.s", INLINE_SI), ("ldc.i4", INLINE_I),
-    ("ldc.i8", INLINE_I8), ("ldc.r4", INLINE_SR), ("ldc.r8", INLINE_R),
-    ("unused_37", INLINE_NONE), ("dup", INLINE_NONE), ("pop", INLINE_NONE),
-    ("jmp", INLINE_TOKEN), ("call", INLINE_TOKEN), ("calli", INLINE_TOKEN),
-    ("ret", INLINE_NONE), ("br.s", INLINE_BRS), ("brfalse.s", INLINE_BRS),
-    ("brtrue.s", INLINE_BRS), ("beq.s", INLINE_BRS), ("bge.s", INLINE_BRS),
-    ("bgt.s", INLINE_BRS), ("ble.s", INLINE_BRS), ("blt.s", INLINE_BRS),
-    ("bne.un.s", INLINE_BRS), ("bge.un.s", INLINE_BRS), ("bgt.un.s", INLINE_BRS),
-    ("ble.un.s", INLINE_BRS), ("blt.un.s", INLINE_BRS), ("brfalse", INLINE_BR),
-    ("brtrue", INLINE_BR), ("beq", INLINE_BR), ("bge", INLINE_BR), ("bgt", INLINE_BR),
-    ("ble", INLINE_BR), ("blt", INLINE_BR), ("bne.un", INLINE_BR), ("bge.un", INLINE_BR),
-    ("bgt.un", INLINE_BR), ("ble.un", INLINE_BR), ("blt.un", INLINE_BR),
-    ("switch", INLINE_SWITCH), ("ldind.i1", INLINE_NONE), ("ldind.u1", INLINE_NONE),
-    ("ldind.i2", INLINE_NONE), ("ldind.u2", INLINE_NONE), ("ldind.i4", INLINE_NONE),
-    ("ldind.u4", INLINE_NONE), ("ldind.i8", INLINE_NONE), ("ldind.i", INLINE_NONE),
-    ("ldind.r4", INLINE_NONE), ("ldind.r8", INLINE_NONE), ("ldind.ref", INLINE_NONE),
-    ("stind.ref", INLINE_NONE), ("stind.i1", INLINE_NONE), ("stind.i2", INLINE_NONE),
-    ("stind.i4", INLINE_NONE), ("stind.i8", INLINE_NONE), ("stind.r4", INLINE_NONE),
-    ("stind.r8", INLINE_NONE), ("add", INLINE_NONE), ("sub", INLINE_NONE),
-    ("mul", INLINE_NONE), ("div", INLINE_NONE), ("div.un", INLINE_NONE),
-    ("rem", INLINE_NONE), ("rem.un", INLINE_NONE), ("and", INLINE_NONE),
-    ("or", INLINE_NONE), ("xor", INLINE_NONE), ("shl", INLINE_NONE), ("shr", INLINE_NONE),
-    ("shr.un", INLINE_NONE), ("neg", INLINE_NONE), ("not", INLINE_NONE),
-    ("conv.i1", INLINE_NONE), ("conv.i2", INLINE_NONE), ("conv.i4", INLINE_NONE),
-    ("conv.i8", INLINE_NONE), ("conv.r4", INLINE_NONE), ("conv.r8", INLINE_NONE),
-    ("conv.u4", INLINE_NONE), ("conv.u8", INLINE_NONE), ("callvirt", INLINE_TOKEN),
-    ("cpobj", INLINE_TOKEN), ("ldobj", INLINE_TOKEN), ("ldstr", INLINE_TOKEN),
-    ("newobj", INLINE_TOKEN), ("castclass", INLINE_TOKEN), ("isinst", INLINE_TOKEN),
-    ("conv.r.un", INLINE_NONE), ("unused_77", INLINE_NONE), ("unbox", INLINE_TOKEN),
-    ("throw", INLINE_NONE), ("ldfld", INLINE_TOKEN), ("ldflda", INLINE_TOKEN),
-    ("stfld", INLINE_TOKEN), ("ldsfld", INLINE_TOKEN), ("ldsflda", INLINE_TOKEN),
-    ("stsfld", INLINE_TOKEN), ("stobj", INLINE_TOKEN), ("conv.ovf.i1.un", INLINE_NONE),
-    ("conv.ovf.i2.un", INLINE_NONE), ("conv.ovf.i4.un", INLINE_NONE),
-    ("conv.ovf.i8.un", INLINE_NONE), ("conv.ovf.u1.un", INLINE_NONE),
-    ("conv.ovf.u2.un", INLINE_NONE), ("conv.ovf.u4.un", INLINE_NONE),
-    ("conv.ovf.u8.un", INLINE_NONE), ("conv.ovf.i.un", INLINE_NONE),
-    ("conv.ovf.u.un", INLINE_NONE), ("box", INLINE_TOKEN), ("newarr", INLINE_TOKEN),
-    ("ldlen", INLINE_NONE), ("ldelema", INLINE_TOKEN), ("ldelem.i1", INLINE_NONE),
-    ("ldelem.u1", INLINE_NONE), ("ldelem.i2", INLINE_NONE), ("ldelem.u2", INLINE_NONE),
-    ("ldelem.i4", INLINE_NONE), ("ldelem.u4", INLINE_NONE), ("ldelem.i8", INLINE_NONE),
-    ("ldelem.i", INLINE_NONE), ("ldelem.r4", INLINE_NONE), ("ldelem.r8", INLINE_NONE),
-    ("ldelem.ref", INLINE_NONE), ("stelem.i", INLINE_NONE), ("stelem.i1", INLINE_NONE),
-    ("stelem.i2", INLINE_NONE), ("stelem.i4", INLINE_NONE), ("stelem.i8", INLINE_NONE),
-    ("stelem.r4", INLINE_NONE), ("stelem.r8", INLINE_NONE), ("stelem.ref", INLINE_NONE),
-    ("conv.ovf.i1", INLINE_NONE), ("conv.ovf.u1", INLINE_NONE), ("conv.ovf.i2", INLINE_NONE),
-    ("conv.ovf.u2", INLINE_NONE), ("conv.ovf.i4", INLINE_NONE), ("conv.ovf.u4", INLINE_NONE),
-    ("conv.ovf.i8", INLINE_NONE), ("conv.ovf.u8", INLINE_NONE), ("unused_a0", INLINE_NONE),
-    ("unused_a1", INLINE_NONE), ("unused_a2", INLINE_NONE), ("unused_a3", INLINE_NONE),
-    ("unused_a4", INLINE_NONE), ("unused_a5", INLINE_NONE), ("unused_a6", INLINE_NONE),
-    ("unused_a7", INLINE_NONE), ("unused_a8", INLINE_NONE), ("unused_a9", INLINE_NONE),
-    ("unused_aa", INLINE_NONE), ("unused_ab", INLINE_NONE), ("unused_ac", INLINE_NONE),
-    ("unused_ad", INLINE_NONE), ("unused_ae", INLINE_NONE), ("unused_af", INLINE_NONE),
-    ("unused_b0", INLINE_NONE), ("unused_b1", INLINE_NONE), ("unused_b2", INLINE_NONE),
-    ("unused_b3", INLINE_NONE), ("unused_b4", INLINE_NONE), ("unused_b5", INLINE_NONE),
-    ("unused_b6", INLINE_NONE), ("unused_b7", INLINE_NONE), ("unused_b8", INLINE_NONE),
-    ("unused_b9", INLINE_NONE), ("unused_ba", INLINE_NONE), ("unused_bb", INLINE_NONE),
-    ("unused_bc", INLINE_NONE), ("unused_bd", INLINE_NONE), ("unused_be", INLINE_NONE),
-    ("unused_bf", INLINE_NONE), ("unused_c0", INLINE_NONE), ("unused_c1", INLINE_NONE),
-    ("refanyval", INLINE_TOKEN), ("ckfinite", INLINE_NONE), ("unused_c4", INLINE_NONE),
-    ("unused_c5", INLINE_NONE), ("mkrefany", INLINE_TOKEN), ("unused_c7", INLINE_NONE),
-    ("unused_c8", INLINE_NONE), ("unused_c9", INLINE_NONE), ("unused_ca", INLINE_NONE),
-    ("unused_cb", INLINE_NONE), ("unused_cc", INLINE_NONE), ("unused_cd", INLINE_NONE),
-    ("unused_ce", INLINE_NONE), ("unused_cf", INLINE_NONE), ("ldtoken", INLINE_TOKEN),
-    ("conv.u2", INLINE_NONE), ("conv.u1", INLINE_NONE), ("conv.i", INLINE_NONE),
-    ("conv.ovf.i", INLINE_NONE), ("conv.ovf.u", INLINE_NONE), ("add.ovf", INLINE_NONE),
-    ("add.ovf.un", INLINE_NONE), ("mul.ovf", INLINE_NONE), ("mul.ovf.un", INLINE_NONE),
-    ("sub.ovf", INLINE_NONE), ("sub.ovf.un", INLINE_NONE), ("endfinally", INLINE_NONE),
-    ("leave", INLINE_BR), ("leave.s", INLINE_BRS), ("stind.i", INLINE_NONE),
-    ("conv.u", INLINE_NONE), ("unused_e1", INLINE_NONE), ("unused_e2", INLINE_NONE),
-    ("unused_e3", INLINE_NONE), ("unused_e4", INLINE_NONE), ("unused_e5", INLINE_NONE),
-    ("unused_e6", INLINE_NONE), ("unused_e7", INLINE_NONE), ("unused_e8", INLINE_NONE),
-    ("unused_e9", INLINE_NONE), ("unused_ea", INLINE_NONE), ("unused_eb", INLINE_NONE),
-    ("unused_ec", INLINE_NONE), ("unused_ed", INLINE_NONE), ("unused_ee", INLINE_NONE),
-    ("unused_ef", INLINE_NONE), ("unused_f0", INLINE_NONE), ("unused_f1", INLINE_NONE),
-    ("unused_f2", INLINE_NONE), ("unused_f3", INLINE_NONE), ("unused_f4", INLINE_NONE),
-    ("unused_f5", INLINE_NONE), ("unused_f6", INLINE_NONE), ("unused_f7", INLINE_NONE),
-    ("unused_f8", INLINE_NONE), ("unused_f9", INLINE_NONE), ("unused_fa", INLINE_NONE),
-    ("unused_fb", INLINE_NONE), ("unused_fc", INLINE_NONE), ("unused_fd", INLINE_NONE),
-    ("unused_fe", INLINE_NONE), ("unused_ff", INLINE_NONE),
+    ('nop', INLINE_NONE), ('break', INLINE_NONE), ('ldarg.0', INLINE_NONE), ('ldarg.1', INLINE_NONE),
+    ('ldarg.2', INLINE_NONE), ('ldarg.3', INLINE_NONE), ('ldloc.0', INLINE_NONE), ('ldloc.1', INLINE_NONE),
+    ('ldloc.2', INLINE_NONE), ('ldloc.3', INLINE_NONE), ('stloc.0', INLINE_NONE), ('stloc.1', INLINE_NONE),
+    ('stloc.2', INLINE_NONE), ('stloc.3', INLINE_NONE), ('ldarg.s', INLINE_SVAR), ('ldarga.s', INLINE_SVAR),
+    ('starg.s', INLINE_SVAR), ('ldloc.s', INLINE_SVAR), ('ldloca.s', INLINE_SVAR), ('stloc.s', INLINE_SVAR),
+    ('ldnull', INLINE_NONE), ('ldc.i4.m1', INLINE_NONE), ('ldc.i4.0', INLINE_NONE), ('ldc.i4.1', INLINE_NONE),
+    ('ldc.i4.2', INLINE_NONE), ('ldc.i4.3', INLINE_NONE), ('ldc.i4.4', INLINE_NONE), ('ldc.i4.5', INLINE_NONE),
+    ('ldc.i4.6', INLINE_NONE), ('ldc.i4.7', INLINE_NONE), ('ldc.i4.8', INLINE_NONE), ('ldc.i4.s', INLINE_SI),
+    ('ldc.i4', INLINE_I), ('ldc.i8', INLINE_I8), ('ldc.r4', INLINE_SR), ('ldc.r8', INLINE_R),
+    ('unused_24', INLINE_NONE), ('dup', INLINE_NONE), ('pop', INLINE_NONE), ('jmp', INLINE_TOKEN),
+    ('call', INLINE_TOKEN), ('calli', INLINE_TOKEN), ('ret', INLINE_NONE), ('br.s', INLINE_BRS),
+    ('brfalse.s', INLINE_BRS), ('brtrue.s', INLINE_BRS), ('beq.s', INLINE_BRS), ('bge.s', INLINE_BRS),
+    ('bgt.s', INLINE_BRS), ('ble.s', INLINE_BRS), ('blt.s', INLINE_BRS), ('bne.un.s', INLINE_BRS),
+    ('bge.un.s', INLINE_BRS), ('bgt.un.s', INLINE_BRS), ('ble.un.s', INLINE_BRS), ('blt.un.s', INLINE_BRS),
+    ('br', INLINE_BR), ('brfalse', INLINE_BR), ('brtrue', INLINE_BR), ('beq', INLINE_BR),
+    ('bge', INLINE_BR), ('bgt', INLINE_BR), ('ble', INLINE_BR), ('blt', INLINE_BR),
+    ('bne.un', INLINE_BR), ('bge.un', INLINE_BR), ('bgt.un', INLINE_BR), ('ble.un', INLINE_BR),
+    ('blt.un', INLINE_BR), ('switch', INLINE_SWITCH), ('ldind.i1', INLINE_NONE), ('ldind.u1', INLINE_NONE),
+    ('ldind.i2', INLINE_NONE), ('ldind.u2', INLINE_NONE), ('ldind.i4', INLINE_NONE), ('ldind.u4', INLINE_NONE),
+    ('ldind.i8', INLINE_NONE), ('ldind.i', INLINE_NONE), ('ldind.r4', INLINE_NONE), ('ldind.r8', INLINE_NONE),
+    ('ldind.ref', INLINE_NONE), ('stind.ref', INLINE_NONE), ('stind.i1', INLINE_NONE), ('stind.i2', INLINE_NONE),
+    ('stind.i4', INLINE_NONE), ('stind.i8', INLINE_NONE), ('stind.r4', INLINE_NONE), ('stind.r8', INLINE_NONE),
+    ('add', INLINE_NONE), ('sub', INLINE_NONE), ('mul', INLINE_NONE), ('div', INLINE_NONE),
+    ('div.un', INLINE_NONE), ('rem', INLINE_NONE), ('rem.un', INLINE_NONE), ('and', INLINE_NONE),
+    ('or', INLINE_NONE), ('xor', INLINE_NONE), ('shl', INLINE_NONE), ('shr', INLINE_NONE),
+    ('shr.un', INLINE_NONE), ('neg', INLINE_NONE), ('not', INLINE_NONE), ('conv.i1', INLINE_NONE),
+    ('conv.i2', INLINE_NONE), ('conv.i4', INLINE_NONE), ('conv.i8', INLINE_NONE), ('conv.r4', INLINE_NONE),
+    ('conv.r8', INLINE_NONE), ('conv.u4', INLINE_NONE), ('conv.u8', INLINE_NONE), ('callvirt', INLINE_TOKEN),
+    ('cpobj', INLINE_TOKEN), ('ldobj', INLINE_TOKEN), ('ldstr', INLINE_TOKEN), ('newobj', INLINE_TOKEN),
+    ('castclass', INLINE_TOKEN), ('isinst', INLINE_TOKEN), ('conv.r.un', INLINE_NONE), ('unused_77', INLINE_NONE),
+    ('unused_78', INLINE_NONE), ('unbox', INLINE_TOKEN), ('throw', INLINE_NONE), ('ldfld', INLINE_TOKEN),
+    ('ldflda', INLINE_TOKEN), ('stfld', INLINE_TOKEN), ('ldsfld', INLINE_TOKEN), ('ldsflda', INLINE_TOKEN),
+    ('stsfld', INLINE_TOKEN), ('stobj', INLINE_TOKEN), ('conv.ovf.i1.un', INLINE_NONE), ('conv.ovf.i2.un', INLINE_NONE),
+    ('conv.ovf.i4.un', INLINE_NONE), ('conv.ovf.i8.un', INLINE_NONE), ('conv.ovf.u1.un', INLINE_NONE), ('conv.ovf.u2.un', INLINE_NONE),
+    ('conv.ovf.u4.un', INLINE_NONE), ('conv.ovf.u8.un', INLINE_NONE), ('conv.ovf.i.un', INLINE_NONE), ('conv.ovf.u.un', INLINE_NONE),
+    ('box', INLINE_TOKEN), ('newarr', INLINE_TOKEN), ('ldlen', INLINE_NONE), ('ldelema', INLINE_TOKEN),
+    ('ldelem.i1', INLINE_NONE), ('ldelem.u1', INLINE_NONE), ('ldelem.i2', INLINE_NONE), ('ldelem.u2', INLINE_NONE),
+    ('ldelem.i4', INLINE_NONE), ('ldelem.u4', INLINE_NONE), ('ldelem.i8', INLINE_NONE), ('ldelem.i', INLINE_NONE),
+    ('ldelem.r4', INLINE_NONE), ('ldelem.r8', INLINE_NONE), ('ldelem.ref', INLINE_NONE), ('stelem.i', INLINE_NONE),
+    ('stelem.i1', INLINE_NONE), ('stelem.i2', INLINE_NONE), ('stelem.i4', INLINE_NONE), ('stelem.i8', INLINE_NONE),
+    ('stelem.r4', INLINE_NONE), ('stelem.r8', INLINE_NONE), ('stelem.ref', INLINE_NONE), ('conv.ovf.i1', INLINE_NONE),
+    ('conv.ovf.u1', INLINE_NONE), ('conv.ovf.i2', INLINE_NONE), ('conv.ovf.u2', INLINE_NONE), ('conv.ovf.i4', INLINE_NONE),
+    ('conv.ovf.u4', INLINE_NONE), ('conv.ovf.i8', INLINE_NONE), ('conv.ovf.u8', INLINE_NONE), ('unused_ab', INLINE_NONE),
+    ('unused_ac', INLINE_NONE), ('unused_ad', INLINE_NONE), ('unused_ae', INLINE_NONE), ('unused_af', INLINE_NONE),
+    ('unused_b0', INLINE_NONE), ('unused_b1', INLINE_NONE), ('unused_b2', INLINE_NONE), ('unused_b3', INLINE_NONE),
+    ('unused_b4', INLINE_NONE), ('unused_b5', INLINE_NONE), ('unused_b6', INLINE_NONE), ('unused_b7', INLINE_NONE),
+    ('unused_b8', INLINE_NONE), ('unused_b9', INLINE_NONE), ('unused_ba', INLINE_NONE), ('unused_bb', INLINE_NONE),
+    ('unused_bc', INLINE_NONE), ('unused_bd', INLINE_NONE), ('unused_be', INLINE_NONE), ('unused_bf', INLINE_NONE),
+    ('unused_c0', INLINE_NONE), ('unused_c1', INLINE_NONE), ('refanyval', INLINE_TOKEN), ('ckfinite', INLINE_NONE),
+    ('unused_c4', INLINE_NONE), ('unused_c5', INLINE_NONE), ('mkrefany', INLINE_TOKEN), ('unused_c7', INLINE_NONE),
+    ('unused_c8', INLINE_NONE), ('unused_c9', INLINE_NONE), ('unused_ca', INLINE_NONE), ('unused_cb', INLINE_NONE),
+    ('unused_cc', INLINE_NONE), ('unused_cd', INLINE_NONE), ('unused_ce', INLINE_NONE), ('unused_cf', INLINE_NONE),
+    ('ldtoken', INLINE_TOKEN), ('conv.u2', INLINE_NONE), ('conv.u1', INLINE_NONE), ('conv.i', INLINE_NONE),
+    ('conv.ovf.i', INLINE_NONE), ('conv.ovf.u', INLINE_NONE), ('add.ovf', INLINE_NONE), ('add.ovf.un', INLINE_NONE),
+    ('mul.ovf', INLINE_NONE), ('mul.ovf.un', INLINE_NONE), ('sub.ovf', INLINE_NONE), ('sub.ovf.un', INLINE_NONE),
+    ('endfinally', INLINE_NONE), ('leave', INLINE_BR), ('leave.s', INLINE_BRS), ('stind.i', INLINE_NONE),
+    ('conv.u', INLINE_NONE), ('unused_e1', INLINE_NONE), ('unused_e2', INLINE_NONE), ('unused_e3', INLINE_NONE),
+    ('unused_e4', INLINE_NONE), ('unused_e5', INLINE_NONE), ('unused_e6', INLINE_NONE), ('unused_e7', INLINE_NONE),
+    ('unused_e8', INLINE_NONE), ('unused_e9', INLINE_NONE), ('unused_ea', INLINE_NONE), ('unused_eb', INLINE_NONE),
+    ('unused_ec', INLINE_NONE), ('unused_ed', INLINE_NONE), ('unused_ee', INLINE_NONE), ('unused_ef', INLINE_NONE),
+    ('unused_f0', INLINE_NONE), ('unused_f1', INLINE_NONE), ('unused_f2', INLINE_NONE), ('unused_f3', INLINE_NONE),
+    ('unused_f4', INLINE_NONE), ('unused_f5', INLINE_NONE), ('unused_f6', INLINE_NONE), ('unused_f7', INLINE_NONE),
+    ('unused_f8', INLINE_NONE), ('unused_f9', INLINE_NONE), ('unused_fa', INLINE_NONE), ('unused_fb', INLINE_NONE),
+    ('unused_fc', INLINE_NONE), ('unused_fd', INLINE_NONE), ('unused_fe', INLINE_NONE), ('unused_ff', INLINE_NONE),
 ]
 
 OPCODES_2 = {
@@ -754,11 +779,12 @@ def decode_length(code: bytes) -> int:
     This is a **check, not the identity** (see `il_hash`). What it is relied on for is that
     the walk consumes the stream *exactly* -- no overrun, no shortfall -- which is what
     detects a body this reader mislocated (the MoreSects header trap in `method_body` is
-    the real instance of that). Its instruction *boundaries* are not perfect: a couple of
-    operand widths in IL_OPCODES_1 are not right for this build, so on the four targets the
-    walk lands on 96-100 % of the disassembler's instruction offsets while still ending at
-    exactly the right byte. That is stated rather than hidden, and it is harmless here
-    precisely because the hash covers the raw bytes and no interpretation of them.
+    the real instance of that). Its instruction *boundaries* are only as good as
+    `OPCODES_1`, and the note on that table records the shift that used to sit in it: with
+    the corrected table the walk consumes 20 413 of the 20 418 method bodies the IL dump
+    describes exactly, and lands every visited offset among the dump's own for 19 667 of
+    them (`tools/check_opcode_table.py` re-measures both). A body it cannot consume is
+    reported, never silently hashed differently.
     Returns -1 if the stream does not decode cleanly.
     """
     p = code_entry(code)

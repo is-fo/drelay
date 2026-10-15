@@ -213,6 +213,30 @@ bool ReadMovementReplacementEnabled() {
     return enabled;
 }
 
+// The auto-aim module's switch.  `DRELAY_HOOK_AIM_REPLACEMENT` is set by the launcher's
+// `--autoaim`, so it is in the namespace an inherited shell variable cannot reach.  The
+// *value* (`DRELAY_AIM_MODE`) is read by the managed side, which is where the selection
+// lives; this flag's only job is to decide whether MinHook's `jmp` lands in managed code.
+//
+// IT IS DELIBERATELY NOT TIED TO `DRELAY_HOOK_FRAME_REPLACEMENT`.  The collision
+// replacement is, because it observes the sensor that the frame replacement calls -- but
+// the aim replacement shares nothing with the frame path: it is driven by the game's own
+// `AimbotSystem.UpdateTarget`, it reads the world through its own accessors, and it must
+// work on a run where the frame tick is patched natively or not at all.  Tying the two
+// would make `--autoaim` silently do nothing whenever the frame replacement was off.
+bool ReadAimReplacementEnabled() {
+    static int resolved = -1;
+    static bool enabled = false;
+    if (resolved >= 0) {
+        return enabled;
+    }
+    resolved = 1;
+    char value[8] = {};
+    enabled = GetEnvironmentVariableA("DRELAY_HOOK_AIM_REPLACEMENT", value, sizeof(value)) != 0 &&
+              value[0] == '1';
+    return enabled;
+}
+
 void ResolveFrameHelperInputs() {    g_frameHelperResolved = true;
     if (g_shared == nullptr) {
         return;
@@ -719,6 +743,32 @@ static uint32_t PatchTargetsPass(bool initialPass) {
                 detour = reinterpret_cast<void*>(static_cast<uintptr_t>(replacement));
                 managedReplacement = true;
                 trampolineSlot = &g_shared->managedMovementTrampoline;
+            }
+        } else if (strcmp(t->name, "aimTarget") == 0) {
+            // THE AUTO-AIM MODULE, AND IT IS OPT-IN FOR THE SAME REASON THE ACTUATOR IS.
+            // The target is in the table on every run, so its IL hash is verified and a
+            // game patch that moved it is reported whether or not the operator asked for
+            // auto-aim; it is only *patched* when the launcher passed `--autoaim`, because
+            // a replacement here decides what the player shoots at.
+            //
+            // THE MANAGED SIDE PUBLISHES ON EVERY RUN, so with the variable unset the
+            // replacement exists but is never reached -- the plumbing (shared slot, this
+            // dispatch, the trampoline handshake) is exercised by every run rather than
+            // first by the run whose mistake would aim the player somewhere.
+            //
+            // A ZERO REPLACEMENT IS NOT AN ERROR HERE, AND THAT IS THE DIFFERENCE FROM THE
+            // FRAME TICK. `frameTick` is entered within milliseconds of the patch, so a
+            // missing replacement would stop the game updating. `FindTarget` is entered
+            // only once a world exists and the aimbot flag is set -- seconds later at the
+            // earliest -- so a zero here means the bootstrap's publish failed, which the
+            // bootstrap has already logged. Patching anyway would aim the game's own call
+            // at address zero, so it does not: the target is simply left unpatched, and
+            // the line printed below names it.
+            const uint64_t replacement = (g_shared != nullptr) ? g_shared->managedAimReplacement : 0;
+            if (ReadAimReplacementEnabled() && replacement != 0) {
+                detour = reinterpret_cast<void*>(static_cast<uintptr_t>(replacement));
+                managedReplacement = true;
+                trampolineSlot = &g_shared->managedAimTrampoline;
             }
         }
         if (detour == nullptr) {
