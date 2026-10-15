@@ -195,7 +195,11 @@ foreach ($s in 'peaceful','headon','dodge','volley','corridor','passingby') {
     $fails = ([regex]::Matches($out,'\[FAIL\]')).Count
     $passes = ([regex]::Matches($out,'\[PASS\]')).Count
     $scenMoved[$s] = [int]([regex]::Match($out,'frames that moved\s+: (\d+)').Groups[1].Value)
-    if ($fails -eq 0 -and $passes -ge 5) { $scenPass++ }
+    # SIX ASSERTIONS PER SCENARIO, AND THE SIXTH IS THE SETTINGS-STRING SHAPE. It was five until the
+    # trace-writer defect (SPIKE3.2 section 15.12) turned a fourth line in `DodgeConfig.Describe` into an
+    # unescaped newline inside a JSON string -- so the check that the string is three log lines and ONE
+    # json line now runs on every invocation, and this threshold moves with it.
+    if ($fails -eq 0 -and $passes -ge 6) { $scenPass++ }
     else { Write-Host "  scenario $s FAILED: $fails failure(s), $passes pass(es)" -ForegroundColor Red }
 }
 Add-Check "all six scenarios pass every asserted invariant" ($scenPass -eq 6) "$scenPass of 6 green"

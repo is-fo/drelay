@@ -659,11 +659,39 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             _solver = new DodgeSolver(config);
         }
 
+        /// <summary>
+        /// THE SHAPE OF THE SETTINGS STRING IS AN INVARIANT, AND IT BROKE A TRACE.
+        ///
+        /// `DodgeConfig.Describe` is written verbatim into two places: `hook.log`, where it is meant to be
+        /// three readable lines, and the `dodge` FIELD OF THE TRACE HEADER, which is a JSON string. The
+        /// recorder escaped the backslash and the quote and not the newline, so a settings line that grew
+        /// a fourth line -- which it did, when `WeightAxial` and the path's numbers were added -- put an
+        /// unescaped newline inside a JSON string and made a healthy 11725-frame recording read as
+        /// CORRUPT at line 3. The writer escapes control characters now, and this is the check that makes
+        /// the same mistake a named failure instead of a silently broken file.
+        ///
+        /// It runs on every harness invocation, including all six scenarios, so it costs nothing to keep.
+        /// </summary>
+        private void ReportConfigShape()
+        {
+            string describe = _config.Describe();
+            string oneLine = _config.DescribeOneLine();
+            bool describeHasLines = describe.Split('\n').Length >= 3;
+            bool oneLineIsOneLine = oneLine.IndexOf('\n') < 0 && oneLine.IndexOf('\r') < 0;
+            Report("CONFIG the settings string is three log lines and ONE json line",
+                   describeHasLines && oneLineIsOneLine,
+                   "Describe(): " + describe.Split('\n').Length + " line(s) (three or more expected); "
+                   + "DescribeOneLine(): " + (oneLineIsOneLine
+                       ? "no control characters, " + oneLine.Length + " chars"
+                       : "CONTAINS A CONTROL CHARACTER -- this is the shape that broke a trace header"));
+        }
+
         public void Run(bool verbose)
         {
             Console.WriteLine();
             Console.WriteLine("== Spike 3.2 offline harness ==");
             Console.WriteLine("solver   : " + _config.Describe());
+            ReportConfigShape();
             Console.WriteLine();
 
             float previousX = float.NaN;
