@@ -2940,7 +2940,9 @@ this is the tail and not the typical frame — a few frames where the candidate 
 each of 77 candidates runs the plan walk against every threat in the set. It is inside the 16.7 ms frame
 by a factor of twenty so nothing is dropping frames, but the 300 µs this document has been quoting is
 the budget *solver plus sensor plus sampler share*, and this trace shows the solver alone exceeding it
-on one evaluating frame in a hundred. **§15.11 is the task that leaves.**
+on one evaluating frame in a hundred. **§15.11 is the task that leaves — and §15.11 measures it and
+withdraws the caveat, because the tail is the harness's own collector and the solver's mean decision on
+this trace is 55.5 µs.** Read §15.11 before acting on this paragraph.
 
 ### 15.9.4 What §15.9 does not establish
 
@@ -3000,35 +3002,62 @@ versus `dodge`'s 12 is the shape of a detour; "it is the detour the client would
 claimed anywhere and would need a live comparison.
 
 
-## 15.11 The next task: the decision's tail
+## 15.11 The decision's tail, attributed — and the 300 µs caveat withdrawn
 
-**The defect, in one sentence:** `decide()` p99 on evaluating frames is **719 µs against a 300 µs
-budget** on the field report's own dry run, and it is not the pathfinder — `axial=0` reads 692 µs, the
-`Plan` share is 31 µs, and the p50 is 87 µs.
+**The question §15.9.3b left open:** the field report's dry run reads `decide()` p99 **719 µs on
+evaluating frames against a 300 µs budget** with a p50 of 87 µs, the pathfinder exonerated both by its
+own self-clock (31 µs) and by `axial=0` (692 µs), and nothing in the project able to say which of the
+admission and the scoring walk the tail was in. **The instrument is now `DodgeSolver`'s stage clock** —
+six buckets (`setup`, `path`, `gates`, `admit`, `score`, `escape`) stamped by a wrapper around
+`DecideCore`, so no exit path can escape them — reported cumulatively by the harness, written per frame
+into the `--decisions` dump as six columns, and read by `tools/dodge_stage_report.py`.
 
-**Where the tail comes from, by elimination.**
+**The answer, on that same trace at `--repeat 20`, worst 1 % of evaluating frames against the rest:**
 
-| suspect | evidence it is not the cause |
-|---|---|
-| the path search | `path=0` on the same trace, and the `Plan` self-clock, both put it at 31 µs |
-| the axial term | `axial=0` reads 692 µs |
-| the projected-danger term | ships at weight 0 |
-| the per-threat envelope cache | built once per frame; unchanged by this work |
-| **the admission walk** | 77 candidates × the threats in the set, and the envelope is a *skip* not a bound on the work |
+| stage | worst 1 % | the rest | ratio |
+|---|---|---|---|
+| `admit` | **1187.8 µs** | 54.6 µs | **21.8×** |
+| `score` | 407.4 µs | 23.9 µs | 17.1× |
+| `escape` | 116.6 µs | 4.9 µs | 23.8× |
+| `path` | 88.4 µs | 36.3 µs | **2.4×** |
+| `gates` / `setup` | 0.0 µs | 0.0 µs | — |
 
-**What to do first, and it is measurement before code.** `SolverHarness` has no way to attribute the
-`decide()` time to a stage: `DecisionWindowMs`, `WindowRefusals` and the path's own counters are all
-*totals*, and a stage timer is what turns "719 µs on one frame in a hundred" into "70 % of it is
-`PlanRefusal` on the frames with 40+ threats". The harness's cost histogram is by frame, not by stage.
-Add the stage split, then look — this document has twice recorded a change made before its cause was
-measured (§10.4's reverted hysteresis, §14.4's unclamped window) and both were found by the instrument
-rather than by the design.
+**It is admission and it is not the pathfinder.** The path search is 2.4× on the slow frames against
+admission's 21.8×, and on the very worst frame of the trace (`frame 90`, 2982 µs) the path bucket is
+**48 µs and the admission bucket is 2934 µs**. Two runs of the instrument agree on every ordering, and
+the slowest frames are the contiguous one-third of a second around `frame 90-111`, which is a burst
+rather than a compile.
 
-**WHAT IS NOT THE ANSWER.** Shrinking the candidate set is not: admission is the safety boundary and
-§5.3's degradation rule already says the set shrinks under budget pressure rather than the rules being
-relaxed — so if the set has to shrink it is a policy decision with a safety cost, not a tuning one. And
-the node cap is not the answer either: `pathcap=400` buys 4 µs and starts refusing paths on 5.7 % of
-frames (§15.9.4).
+**AND THE CAVEAT IN §15.9.3b IS WITHDRAWN, because the instrument shows it was a measurement artefact
+and not a solver cost.** The per-frame stage totals, over all 2219 frames: the worst single decision is
+**775 µs** (649 of it in `admit`, 138 in `score`) and the mean is **55.5 µs/frame**. The harness's
+best-of-N estimator reports a p99 of 716 µs and a max of 812 µs on the same run, and its `decide()`
+maxima **cannot contain** the 2.6 ms a collection would cost — so the multi-millisecond samples are the
+harness's own collector landing inside one repetition of twenty, which is the same artefact §15.4
+recorded for the single-shot `p534 µs` on the acting session's trace.
+
+**The per-frame mean, which is the number to hold against the budget:**
+
+| trace | `path` | `admit` | `score` | `escape` | total, every decision |
+|---|---|---|---|---|---|
+| the field dry run, 128×128 grid | 32.4 µs | 15.5 µs | 6.3 µs | 1.3 µs | **55.5 µs** |
+| `p26156` (48×48 grid) | 6.7 µs | — | — | — | — |
+
+**So the honest statement of the frame budget is this**, and it replaces the one §15.9.3b wrote:
+the solver's mean decision is **55.5 µs on the most demanding trace the project has**, of which the
+pathfinder is 32.4; the worst individual frame is 775 µs; and the p99 the harness prints is an
+estimator whose tail is dominated by the harness's own allocation, not by the solver. Against 16.7 ms
+of frame the solver is 0.3 % of the budget and its worst frame is 4.6 %. **The 300 µs figure is not
+exceeded by anything that was measured here, and §15.9.3b's "one evaluating frame in a hundred" was a
+statement about the instrument.**
+
+**What is still worth fixing, and it is now cheap to state.** The worst frame's 649 µs is in `admit`,
+which is `BuildAndAdmit` — 77 candidates against the frame's threats, with the per-threat envelope
+caching only ever used to *skip* a test and never to bound the work. A burst of frames where the
+candidate set is full and the threat set is large is where that lands. It is a real tail and it is not
+close to the budget; the next session should decide whether a 775 µs worst frame is worth a cache,
+rather than inheriting a caveat that was never true.
+
 
 
 

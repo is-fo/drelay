@@ -415,6 +415,118 @@ namespace Drelay.Bootstrap
         /// <summary>The widest rule 6 decision window the last decision computed. See `DecisionWindowMs`.</summary>
         private float _decisionWindowMs;
 
+        // --- THE STAGE CLOCK (SPIKE3.2-OFFLINE-SOLVER.md section 15.11) -------------------
+        //
+        // WHY A CLOCK INSIDE `Decide` AND NOT A PROFILER. The harness measures the WHOLE decision per
+        // frame, and section 15.9.3b found the thing that measurement cannot answer: evaluating frames
+        // on the field report's dry run read p99 **719 µs against a 300 µs budget**, the p50 is 87 µs,
+        // the pathfinder's own self-clock is 31 µs either way and `axial=0` is 692 µs -- so the tail
+        // is in the admission or the scoring walk and nothing says which. Every cost figure this
+        // project has quoted has been a total, and a total cannot name a stage.
+        //
+        // FOUR MARKS AND FIVE BUCKETS, ONCE PER FRAME. `Stopwatch.GetTimestamp` is a `rdtsc`
+        // underneath, so the whole apparatus is a handful of reads on a path that is already doing
+        // tens of thousands of floating-point operations; the cost of measuring is not the question
+        // here, and the buckets are fields so nothing allocates.
+        //
+        // THE BUCKETS ARE CUMULATIVE WITHIN A FRAME AND FLUSHED AT THE END: `_stageLast` is the
+        // timestamp of the previous mark, so each mark books the time since the last one into its own
+        // bucket. A frame that returns early books what it spent and stops.
+        private const int StageSetup = 0;
+        private const int StagePath = 1;
+        private const int StageGates = 2;
+        private const int StageAdmit = 3;
+        private const int StageScore = 4;
+        private const int StageEscape = 5;
+        private const int StageCount = 6;
+
+        /// <summary>Stage names, in bucket order. See <see cref="StageMicroseconds"/>.</summary>
+        public static readonly string[] StageNames =
+        {
+            "setup", "path", "gates", "admit", "score", "escape",
+        };
+
+        private readonly double[] _stageUs = new double[StageCount];
+        private readonly double[] _stageFrameUs = new double[StageCount];
+        private long _stageLast;
+        private bool _stageRunning;
+
+        private void StageStart()
+        {
+            for (int i = 0; i < StageCount; i++)
+            {
+                _stageFrameUs[i] = 0.0;
+            }
+            _stageLast = System.Diagnostics.Stopwatch.GetTimestamp();
+            _stageRunning = true;
+        }
+
+        /// <summary>Books the time since the last mark into <paramref name="stage"/> and re-arms the clock.</summary>
+        private void StageMark(int stage)
+        {
+            if (!_stageRunning)
+            {
+                return;
+            }
+            long now = System.Diagnostics.Stopwatch.GetTimestamp();
+            double us = (now - _stageLast) * (1000000.0 / System.Diagnostics.Stopwatch.Frequency);
+            _stageUs[stage] += us;
+            _stageFrameUs[stage] += us;
+            _stageLast = now;
+        }
+
+        /// <summary>
+        /// Microseconds spent in one stage over every frame decided since <see cref="ResetStageClock"/>.
+        /// <see cref="StageNames"/> is the index order.
+        /// </summary>
+        public double StageMicroseconds(int stage)
+        {
+            return stage >= 0 && stage < StageCount ? _stageUs[stage] : 0.0;
+        }
+
+        /// <summary>
+        /// Frames whose <see cref="StageMicroseconds"/> totals are meaningful -- every frame that
+        /// entered the solver, including the ones that returned early.
+        /// </summary>
+        public long StageFrames { get; private set; }
+
+        /// <summary>Zeroes the stage clock. The harness calls it after its warm-up.</summary>
+        public void ResetStageClock()
+        {
+            for (int i = 0; i < StageCount; i++)
+            {
+                _stageUs[i] = 0.0;
+                _stageFrameUs[i] = 0.0;
+            }
+            StageFrames = 0;
+            _stageRunning = false;
+        }
+
+        /// <summary>
+        /// THIS frame's microseconds in one stage, live while the decision runs and after it
+        /// returns. See <see cref="AttachStageClocks"/> for how it reaches the caller.
+        /// </summary>
+        public double StageFrameMicroseconds(int stage)
+        {
+            return stage >= 0 && stage < StageCount ? _stageFrameUs[stage] : 0.0;
+        }
+
+        /// <summary>
+        /// Copies this frame's stage clocks into a decision, so a caller that keeps decisions can
+        /// attribute a TAIL FRAME rather than an average. Called once per frame, at the point the
+        /// decision is returned.
+        /// </summary>
+        public DodgeDecision AttachStageClocks(DodgeDecision decision)
+        {
+            decision.StageSetupUs = (int)_stageFrameUs[StageSetup];
+            decision.StagePathUs = (int)_stageFrameUs[StagePath];
+            decision.StageGatesUs = (int)_stageFrameUs[StageGates];
+            decision.StageAdmitUs = (int)_stageFrameUs[StageAdmit];
+            decision.StageScoreUs = (int)_stageFrameUs[StageScore];
+            decision.StageEscapeUs = (int)_stageFrameUs[StageEscape];
+            return decision;
+        }
+
         /// <summary>
         /// The frame's own player and budget, kept so <see cref="DescribeChosen"/> can re-derive a
         /// term from the same numbers the score used.
@@ -563,15 +675,36 @@ namespace Drelay.Bootstrap
         // ===================================================================================
 
         /// <summary>
+        /// THE WHOLE DECISION FOR ONE FRAME, and the public entry: it calls <see cref="DecideCore"/>
+        /// and stamps the frame's stage clocks onto whatever it returned.
+        ///
+        /// WHY A WRAPPER RATHER THAN MARKS AT EVERY EXIT. `DecideCore` returns from eleven places --
+        /// the stale guard, the dead/safe guard, the immobile guard, the no-threat gate, `stand`,
+        /// the intent early-out, the nothing-admissible gate and the escape -- and a clock that
+        /// has to be remembered at each of them is a clock that will be wrong at one. One wrapper
+        /// catches all eleven by construction, which is the same reasoning `Filled` gives for
+        /// returning a decision rather than writing through a parameter.
+        ///</summary>
+        public DodgeDecision Decide(DodgeSnapshot snapshot)
+        {
+            return AttachStageClocks(DecideCore(snapshot));
+        }
+
+        /// <summary>
         /// The whole decision for one frame. Pure with respect to the snapshot: it mutates only
         /// this solver's own state (the hysteresis and the previous heading), which is the state
         /// the specification gives the solver.
         /// </summary>
-        public DodgeDecision Decide(DodgeSnapshot snapshot)
+        private DodgeDecision DecideCore(DodgeSnapshot snapshot)
         {
             DodgeDecision decision = default(DodgeDecision);
             decision.Action = DodgeAction.None;
             decision.Reason = DodgeReason.NotEvaluated;
+
+            // THE STAGE CLOCK STARTS HERE, BEFORE ANY WORK, so a frame that returns at the first
+            // guard still books what it spent. See `StageStart`.
+            StageFrames++;
+            StageStart();
 
             // The envelope belongs to the frame that built it. `AdmissionOf` -- the harness's
             // entry point -- calls `Admit` directly and may be handed a different snapshot, so the
@@ -594,7 +727,7 @@ namespace Drelay.Bootstrap
             if (snapshot == null || snapshot.Stale)
             {
                 decision.Action = DodgeAction.Degraded;
-                return decision;
+                return AttachStageClocks(decision);
             }
 
             _nowMs = snapshot.ClockMs;
@@ -710,11 +843,17 @@ namespace Drelay.Bootstrap
             // invalid). "A pathfinder that can produce no answer must not be able to produce no
             // move" -- section 4.1.
             float pathStepRadius = player.SpeedPerSecond * _frameSeconds;
+            // `gates` CLOSES WITH THE GOAL RESOLUTION, WHICH IS WHERE IT STARTED. The bucket means
+            // "the frame's own quantities and hazards -- the goal, the plan's numbers, the threat
+            // pre-test" and not "the code near the word gate": an operator reading a stage table
+            // wants to know what the TIME was for, and the two guards below are two compares.
+            StageMark(StageGates);
             if (pathStepRadius > 0.0f)
             {
                 _planner.Plan(snapshot, _goalRadians, _goalValid, pathStepRadius,
                               pathStepRadius, playerRadius);
             }
+            StageMark(StagePath);
 
             // --- Stage 0: the gates that are not about bullets. -----------------------------
             //
@@ -725,14 +864,14 @@ namespace Drelay.Bootstrap
             if (player.Dead || player.SafeWorld)
             {
                 decision.Reason = DodgeReason.PlayerNotMoving;
-                return decision;
+                return AttachStageClocks(decision);
             }
 
             float budget = player.SpeedPerSecond * _frameSeconds;
             if (budget <= 0.0f)
             {
                 decision.Reason = DodgeReason.Immobile;
-                return decision;
+                return AttachStageClocks(decision);
             }
             // KEPT FOR THE FRAME, WHATEVER BRANCH THE DECISION LEAVES BY. See `_lastPlayer`.
             _lastPlayer = player;
@@ -758,13 +897,14 @@ namespace Drelay.Bootstrap
             if (!AnyThreatNearPlayer(snapshot, player.X, player.Y, playerRadius, _config.WarningRadiusPad))
             {
                 decision.Reason = DodgeReason.NoThreat;
-                return decision;
+                return AttachStageClocks(decision);
             }
 
             // --- Stage 2 and 3: candidates and admission. -----------------------------------
             _resultCount = 0;
             BuildAndAdmit(snapshot, player, playerRadius, budget);
             decision.EvaluatedCount = _resultCount;
+            StageMark(StageAdmit);
             int standIndex = FindStand();
             bool standAdmissible = standIndex >= 0 && _results[standIndex].Admissible;
 
@@ -786,7 +926,7 @@ namespace Drelay.Bootstrap
             bool standDurable = StaticallyDurable(snapshot, player, player.X, player.Y, playerRadius);
             if (standAdmissible && !standInsideDisc && standDurable)
             {
-                return Filled(decision, standIndex, DodgeAction.None, DodgeReason.StandSafe, budget, player);
+                return AttachStageClocks(Filled(decision, standIndex, DodgeAction.None, DodgeReason.StandSafe, budget, player));
             }
 
             // Why the stand branch was not taken, as an `AdmissionRule`, for the offline harness.
@@ -798,6 +938,7 @@ namespace Drelay.Bootstrap
 
             // --- Stage 5: scoring, over the admissible set only. ---------------------------
             ScoreAll(snapshot, player, playerRadius, budget);
+            StageMark(StageScore);
             int best = BestAdmissible();
 
             // Step 3 of the ladder, and the one early-out the whole common case rests on: the
@@ -838,7 +979,7 @@ namespace Drelay.Bootstrap
                 _hysteresis.Take(_nowMs, player.IntentRadians, 0.0f);
                 _previousHeading = player.IntentRadians;
                 _hasPreviousHeading = true;
-                return decision;
+                return AttachStageClocks(decision);
             }
 
             // --- The intent ladder (section 5.7, steps 3 to 6). ----------------------------
@@ -864,7 +1005,7 @@ namespace Drelay.Bootstrap
                 decision.Action = DodgeAction.None;
                 decision.UnavoidableThreats = CountUnavoidable(snapshot, player, playerRadius, budget, decision);
                 _hysteresis.Reset();
-                return decision;
+                return AttachStageClocks(decision);
             }
 
             bool held = false;
@@ -904,6 +1045,7 @@ namespace Drelay.Bootstrap
 
             // --- Stage 7: the escape gate, as gate 6 of this same decision. ----------------
             decision.UnavoidableThreats = CountUnavoidable(snapshot, player, playerRadius, budget, decision);
+            StageMark(StageEscape);
             if (decision.UnavoidableThreats > 0
                 && decision.ProjectedUnavoidableDamage > player.Health * _config.LethalFraction
                 && _config.EscapeBudgetPerWorld > 0)
@@ -911,10 +1053,10 @@ namespace Drelay.Bootstrap
                 DodgeDecision escape = decision;
                 escape.Action = DodgeAction.Escape;
                 escape.Reason = DodgeReason.EscapeLethalUnavoidable;
-                return escape;
+            return AttachStageClocks(escape);
             }
 
-            return decision;
+            return AttachStageClocks(decision);
         }
 
         /// <summary>

@@ -18,7 +18,8 @@ import collections
 
 COLS = ('frame action reason held heading scale goal goalsrc hintent intent course moving '
         'evaluated admissible durabilityMs clearance resolve score runnerup costUs windowMs '
-        'wp wpdist pathn pathlen pathcost pathwhy').split()
+        'wp wpdist pathn pathlen pathcost pathwhy '
+        'stSetup stPath stGates stAdmit stScore stEscape').split()
 
 
 def load_decisions(path):

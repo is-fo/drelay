@@ -1319,6 +1319,37 @@ namespace Drelay.Bootstrap
         public int CostMicroseconds;
 
         /// <summary>
+        /// The same decision's own stage clocks, in `DodgeSolver.StageNames` order, microseconds.
+        ///
+        /// FIXED FIELDS RATHER THAN AN ARRAY, because `DodgeDecision` is a struct that is copied at
+        /// several points in `Decide` and must stay allocation-free. Six `int`s is the cost of being
+        /// able to say WHICH STAGE the tail frame spent its time in -- `SPIKE3.2-OFFLINE-SOLVER.md`
+        /// section 15.11 -- and an aggregate cannot say it, because the tail is a hundredth of the
+        /// frames and the mean is the other ninety-nine.
+        /// </summary>
+        public int StageSetupUs;
+        public int StagePathUs;
+        public int StageGatesUs;
+        public int StageAdmitUs;
+        public int StageScoreUs;
+        public int StageEscapeUs;
+
+        /// <summary>One stage of <see cref="DodgeDecision"/> by index; 0 when the index is out of range.</summary>
+        public int StageUs(int stage)
+        {
+            switch (stage)
+            {
+                case 0: return StageSetupUs;
+                case 1: return StagePathUs;
+                case 2: return StageGatesUs;
+                case 3: return StageAdmitUs;
+                case 4: return StageScoreUs;
+                case 5: return StageEscapeUs;
+                default: return 0;
+            }
+        }
+
+        /// <summary>
         /// Why the zero-length `stand` candidate was not taken, as an <c>AdmissionRule</c>.
         ///
         /// A DIAGNOSTIC WITH AN OFF-LINE READER, AND IT EXISTS BECAUSE THE AGGREGATE NUMBERS COULD

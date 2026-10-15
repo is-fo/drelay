@@ -683,6 +683,9 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // report prints -- including the pathfinder's -- starts from here rather than including
             // eight frames nobody asked about.
             _solver.Path.ResetCounters();
+            // AND THE STAGE CLOCK, for the same reason: eight warm-up frames are compilation, not
+            // decision. See `DodgeSolver.StageMicroseconds`.
+            _solver.ResetStageClock();
 
             foreach (RecordedFrame frame in _trace.Frames)
             {
@@ -1094,6 +1097,15 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             w.Write(path.Reason == PathReason.Found ? F(path.Length) : "nan");   w.Write(" | ");
             w.Write(path.Reason == PathReason.Found ? F(path.Cost) : "nan");     w.Write(" | ");
             w.Write(PathReasonName(path.Reason));
+            // WHERE THIS FRAME'S OWN TIME WENT, per stage, so a TAIL frame can be attributed and
+            // not just an average -- SPIKE3.2-OFFLINE-SOLVER.md section 15.11. Six columns because
+            // a mean cannot answer "which stage made this frame slow" when the slow frames are one
+            // in a hundred.
+            for (int stage = 0; stage < DodgeSolver.StageNames.Length; stage++)
+            {
+                w.Write(" | ");
+                w.Write(decision.StageUs(stage));
+            }
             w.Write(Environment.NewLine);
         }
 
@@ -2611,6 +2623,37 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             }
             Console.WriteLine("  the 300 us frame budget is shared with the sampler and the sensor;");
             Console.WriteLine("  this number is only the solver's slice of it.");
+            // WHERE THE TIME WENT, WHICH IS THE QUESTION A TOTAL CANNOT ANSWER. SPIKE3.2 section
+            // 15.9.3b found p99 719 us on evaluating frames with the pathfinder exonerated both by its
+            // own self-clock and by `axial=0` -- leaving the admission and the scoring walk, and
+            // nothing in the project able to separate them. This is that separation: cumulative
+            // microseconds per stage and each one's share of the whole decision.
+            long stageFrames = _solver.StageFrames;
+            if (stageFrames > 0)
+            {
+                double stageTotal = 0.0;
+                for (int stage = 0; stage < DodgeSolver.StageNames.Length; stage++)
+                {
+                    stageTotal += _solver.StageMicroseconds(stage);
+                }
+                // THE STAGE CLOCKS ARE THE PER-FRAME ESTIMATOR, NOT A BEST-OF-N. Every repetition
+                // runs `Decide` again and the stage buckets accumulate all of them, so dividing by
+                // `StageFrames` gives the mean of every decision taken rather than the best one.
+                // That is what makes it the number to compare against the frame budget: the
+                // `decide()` p99 above is a best-of-N and therefore cannot see a collection that
+                // landed in one repetition out of twenty.
+                Console.WriteLine("  stage split (" + F((float)(stageTotal / stageFrames))
+                                  + " us/frame over " + stageFrames + " decision(s), every"
+                                  + " repetition counted):");
+                for (int stage = 0; stage < DodgeSolver.StageNames.Length; stage++)
+                {
+                    double us = _solver.StageMicroseconds(stage);
+                    Console.WriteLine("    " + DodgeSolver.StageNames[stage].PadRight(8)
+                                      + " : " + F((float)(us / stageFrames)).PadLeft(8)
+                                      + " us/frame, " + Percent((long)Math.Round(us), (long)Math.Round(stageTotal))
+                                      + " of it");
+                }
+            }
             if (Repeat == 1)
             {
                 Console.WriteLine("  A SINGLE-SHOT p99 IS NOT THE SOLVER'S COST: the harness allocates a"
