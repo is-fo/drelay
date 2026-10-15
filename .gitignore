@@ -69,6 +69,18 @@ bin/
 __pycache__/
 *.pyc
 
+# The spike's scratch: per-run decision dumps, cost tables and probe output. Regenerable with
+# `Capture-DodgeDecisions.ps1` and the harness, and never the evidence itself -- the numbers that
+# matter are quoted into the reports, which ARE tracked.
+/autododgeresearch/work/
+
+# Linker and compiler program-database droppings, written beside whatever was built.
+vc140.pdb
+vc142.pdb
+*.ilk
+*.exp
+*.lib
+
 ### Subagent scratch directories ###
 # Research agents download reference sources (e.g. JNA jars and sources) into a scratch
 # directory. It is regenerable and never published; the distilled findings live in
