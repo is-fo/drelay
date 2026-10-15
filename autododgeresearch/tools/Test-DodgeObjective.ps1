@@ -164,7 +164,10 @@ foreach ($d in $Recordings) {
         # a single 4 ms frame is a collection, and section 15.11 records exactly that mistake.
         Add-Check "$tag the mean decision is inside the budget" ($mean -lt $BudgetUs) `
             ("mean {0} us/frame over {1} decided frame(s), worst {2} us, against a {3} us budget" -f `
-             $mean, $decided, $worst, $BudgetUs)
+             $mean, $decided, $worst, $BudgetUs) +
+            " -- ONE PASS, SO THE MEAN INCLUDES WHATEVER THE HARNESS'S OWN COLLECTOR PUT INSIDE" +
+            " `Decide`: section 15.11 measures 55.5 us/frame at --repeat 20 on the most demanding" +
+            " trace, and the live run's own log reads p50<=50us p99<=300us"
     }
 }
 

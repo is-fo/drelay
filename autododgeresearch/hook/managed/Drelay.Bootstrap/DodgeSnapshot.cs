@@ -1207,10 +1207,41 @@ namespace Drelay.Bootstrap
             return fallback;
         }
 
+        /// <summary>
+        /// THE SAME SETTINGS ON ONE LINE, for a field that lives inside JSON.
+        ///
+        /// THE TRACE HEADER IS NOT A LOG LINE AND MUST NOT CARRY A NEWLINE. The `dodge` field of the
+        /// `H` record is written by a hand-rolled JSON writer that does not escape control
+        /// characters, so `Describe`'s three lines became an unescaped newline inside a JSON string --
+        /// and line 3 of `trace.jsonl` then read `path enable=...`, which every line-by-line reader
+        /// reported as a CORRUPT RECORDING at line 3. Measured on `20261015-214418-p6412`, whose
+        /// trace is otherwise healthy and 11400 frames long.
+        /// </summary>
+        public string DescribeOneLine()
+        {
+            string plan = DescribePlan().Replace("\n", " ").Replace("\r", " ").Trim();
+            string weights = DescribeWeights().Replace("\n", " ").Replace("\r", " ").Trim();
+            string path = DescribePath().Replace("\n", " ").Replace("\r", " ").Trim();
+            return plan + " " + weights + " " + path;
+        }
+
         /// <summary>A one-line description for the log, so a run's own settings are readable from it.</summary>
         public string Describe()
         {
-            return DescribePlan() + DescribeWeights() + DescribePath();
+            // THE JOIN IS HERE AND IT IS `\n`, NOT `Environment.NewLine`, AND IT IS NOT COSMETIC.
+            // `DescribePlan`, `DescribeWeights` and `DescribePath` each end their own line with `\n`
+            // and this concatenation relied on that -- so when the path's line was appended without
+            // one, the settings line read `... lookahead=0.8s x3path enable=True ...`. The damage did
+            // not stop at the log: the same string is written into the TRACE HEADER as a JSON field,
+            // and a raw newline inside a JSON string is not escaped by the recorder's hand-rolled
+            // writer, so `trace.jsonl` acquired a line that is a bare `path enable=...` -- and every
+            // reader that parses the file line by line reported the recording as CORRUPT at line 3.
+            // Joining with an explicit separator makes the three parts independent of each other's
+            // trailing bytes.
+            string plan = DescribePlan().TrimEnd('\r', '\n');
+            string weights = DescribeWeights().TrimEnd('\r', '\n');
+            string path = DescribePath().TrimEnd('\r', '\n');
+            return plan + "\n" + weights + "\n" + path + "\n";
         }
 
         /// <summary>

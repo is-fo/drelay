@@ -820,7 +820,19 @@ namespace Drelay.Bootstrap
             {
                 return "";
             }
-            return text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            // THE CONTROL CHARACTERS ARE ESCAPED, AND FOR A WHILE THEY WERE NOT. This handled the
+            // backslash and the quote and nothing else, on the reasoning that a settings string has no
+            // exotica in it -- and then `DodgeConfig.Describe` grew a multi-line form, and an
+            // UNESCAPED NEWLINE went into a JSON string. The result was not a bad value but a BROKEN
+            // FILE: line 3 of `trace.jsonl` read `path enable=True target=1.5s ...`, which every
+            // line-by-line reader reports as a corrupt recording, and the blame lands on the trace
+            // rather than on the writer. A JSON writer that does not escape control characters is a
+            // writer that is one string away from this, so it escapes them.
+            return text.Replace("\\", "\\\\")
+                       .Replace("\"", "\\\"")
+                       .Replace("\r", "\\r")
+                       .Replace("\n", "\\n")
+                       .Replace("\t", "\\t");
         }
     }
 }

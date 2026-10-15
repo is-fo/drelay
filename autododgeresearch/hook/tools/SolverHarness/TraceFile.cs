@@ -226,6 +226,34 @@ namespace Drelay.SolverHarness
             var trace = new DodgeTrace();
             trace.Source = tracePath;
 
+            // A TRACE THAT IS STILL BEING WRITTEN IS A NAMED FAILURE, AND THE GUARD IS REFUSING RATHER
+            // THAN PROBING. The recorder holds the file open for the whole session, and the two ways
+            // a replay of a live run can go are BOTH wrong: opened read-only it fails with "being
+            // used by another process", and opened shared it reads HALF A SESSION and reports the
+            // line it is halfway through as `a second malformed line: the recording is corrupt, not
+            // truncated` -- which is a worse lie than the first, because it accuses a healthy
+            // recording.
+            //
+            // So the file is opened with the sharing the recorder GRANTS (`FileShare.Read`, its own
+            // creation mode) and nothing else: if another process holds it for writing, this fails
+            // and says why. `20261015-214418-p6412` is that case -- an acting session with `-Trace`,
+            // measured while the operator was still playing it.
+            try
+            {
+                using (var probe = new FileStream(tracePath, FileMode.Open, FileAccess.Read,
+                                                  FileShare.Read))
+                {
+                    probe.ReadByte();
+                }
+            }
+            catch (IOException ex)
+            {
+                throw new IOException("the trace at " + tracePath + " is STILL BEING WRITTEN -- close"
+                    + " the game first. The recorder holds it open for the whole session, so a run"
+                    + " that is in progress cannot be replayed: half of it is not on disk yet and the"
+                    + " numbers would describe part of a session. (" + ex.Message + ")", ex);
+            }
+
             // THE LAST RECORD OF A RECORDED RUN CAN BE HALF-WRITTEN, AND THAT IS NOT A CORRUPT FILE.
             //
             // The recorder appends a line per frame and flushes every 30 frames, and the operator

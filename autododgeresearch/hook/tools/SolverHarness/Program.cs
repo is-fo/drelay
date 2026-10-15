@@ -40,6 +40,24 @@ namespace Drelay.SolverHarness
             }
             catch (Exception ex)
             {
+                // THE ONE INPUT ERROR THAT DESERVES AN INSTRUCTION RATHER THAN A STACK TRACE. A trace
+                // whose game is still running is open for writing, and `File.ReadLines` -- which the
+                // reader uses for the reasons its own comment gives -- cannot open it. The first time
+                // this happened it was a session the operator was still playing, and the message was
+                // a raw `IOException` about another process, which reads as a harness defect. See
+                // `TraceFile.Load`'s own guard for why the check there is not enough.
+                if (ex is System.IO.IOException
+                    && ex.Message.IndexOf("being used by another process", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    Console.Error.WriteLine("FAILED: this trace is STILL BEING WRITTEN -- close the game"
+                                            + " first.");
+                    Console.Error.WriteLine("        the recorder holds trace.jsonl open for the whole"
+                                            + " session, so a run that is in progress cannot be"
+                                            + " replayed: half of it is not on disk yet, and the"
+                                            + " numbers would describe part of a session.");
+                    Console.Error.WriteLine("        " + ex.Message);
+                    return 2;
+                }
                 Console.Error.WriteLine("FAILED: " + ex.GetType().Name + ": " + ex.Message);
                 Console.Error.WriteLine(ex.StackTrace);
                 return 2;
