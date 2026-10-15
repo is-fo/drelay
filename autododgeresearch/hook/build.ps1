@@ -380,6 +380,30 @@ if ($doManaged) {
             }
         }
     }
+
+    # ---------------------------------------------------------------------------
+    # Spike 3.2's offline half: SolverHarness, which is NOT part of the hook.
+    # ---------------------------------------------------------------------------
+    #
+    # IT IS BUILT HERE ANYWAY, AND NOT COPIED TO `out`.  The harness compiles the same two source
+    # files the solver does (`DodgeSnapshot.cs`, `DodgeSolver.cs`) rather than referencing the
+    # hook's DLL, so building it is the check that the solver is still a pure function of plain
+    # data -- a change that reaches for a game type breaks this build, and that is exactly the
+    # moment to find out.  It stays out of `out` because `out` is the directory that gets copied
+    # next to the game, and a test program has no business there.
+    $harnessProj = Join-Path $root 'tools\SolverHarness\SolverHarness.csproj'
+    if (Test-Path -LiteralPath $harnessProj) {
+        Write-Note 'building SolverHarness (Spike 3.2 offline)'
+        $harnessOut = & dotnet build $harnessProj -c Release -v minimal --nologo 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Bad 'SolverHarness build FAILED -- and because it compiles the solver''s own source,'
+            Write-Bad 'that means the pure-data contract is broken, not that the harness is wrong.'
+            $harnessOut | Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
+            $failures += 'SolverHarness'
+        } else {
+            Write-Ok 'SolverHarness built'
+        }
+    }
 }
 
 Write-Host ''

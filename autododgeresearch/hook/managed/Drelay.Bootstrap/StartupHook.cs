@@ -1580,6 +1580,28 @@ namespace Drelay.Bootstrap
             {
                 SensorRead.OnFrame();
 
+                // A TRACE, WHEN ASKED FOR, AND IT RIDES ON THE SENSOR RATHER THAN REPEATING IT.
+                // The recorder needs the same live-object list the sensor has just built, and
+                // walking the game's drawing layer a second time would double the frame cost of a
+                // run whose whole purpose is to be an ordinary run. So it runs immediately after
+                // the sensor, on the sensor's own lists, inside the sensor's own switch: a trace
+                // with no sensor has no projectiles to record.
+                TraceRecorder.OnFrame(SensorRead.LiveObjects, SensorRead.LiveKeys,
+                                      (int)SensorRead.Frame, TrajectorySampler.LastFrameSeconds());
+
+                // DELIVERABLE 3.3'S DECIDING END, AND IT RUNS HERE FOR THE REASON SECTION 4 OF
+                // PHASE3-HANDOFF.md GIVES: the frame tick is where the world is freshest and where
+                // the snapshot belongs. It borrows the sensor's own projectile list for the same
+                // reason the recorder does -- walking the game's drawing layer twice would double
+                // the frame cost of a run whose purpose is to be an ordinary run.
+                //
+                // IT RUNS BEFORE `ReleaseTrajectories` AND THEREFORE RENTS ITS OWN PATHS OUT OF THE
+                // SAME POOL. The pool only grows to the number of bullets in a frame, once.
+                DodgeAdapter.OnFrame(SensorRead.LiveObjects, SensorRead.LiveKeys,
+                                     (int)SensorRead.Frame);
+
+                TrajectorySampler.ReleaseTrajectories();
+
                 // THE PHASE'S FOUR NUMBERS, PERIODICALLY RATHER THAN AT AN END THIS CODE
                 // CANNOT SEE.  The replacement does not know when the recording window
                 // closes -- the native side owns that -- so the report is emitted every few
@@ -1654,9 +1676,22 @@ namespace Drelay.Bootstrap
         /// cannot eat it (PHASE1-HANDOFF.md section 4 trap 1).  Off by default: the read
         /// path reflects over the live-object dictionary every frame, which is exactly
         /// the cost Phase 2 has to measure and exactly what no other run should pay.
+        ///
+        /// **AND THE TRACE TURNS IT ON FOR ITSELF**, which is the difference between a recording
+        /// run and a run that writes an empty file. The recorder's input is this read path's
+        /// projectile list; an operator who set `DRELAY_TRACE=1` and forgot `DRELAY_FRAME_SENSOR=1`
+        /// would get a valid, empty trace -- and "the model predicted nothing" and "the recorder
+        /// saw nothing" are the same four bytes on disk. A dependency that can be satisfied
+        /// automatically is one the operator cannot get wrong.
         /// </summary>
         private static bool _frameSensorEnabled =
-            Environment.GetEnvironmentVariable("DRELAY_FRAME_SENSOR") == "1";
+            Environment.GetEnvironmentVariable("DRELAY_FRAME_SENSOR") == "1"
+            || Environment.GetEnvironmentVariable("DRELAY_TRACE") == "1"
+            // AND THE DODGE TURNS IT ON FOR ITSELF, for exactly the reason above: the adapter's
+            // input is this read path's projectile list, so `DRELAY_DODGE=1` without the sensor is
+            // a solver that decides about an empty world and reports `NoThreat` on every frame --
+            // which is an empty recording's twin, and that one already cost a session (defect 3.8).
+            || Environment.GetEnvironmentVariable("DRELAY_DODGE") == "1";
 
         /// <summary>
         /// Continue into the real method.  Separate and marked NoInlining so it can be
@@ -1715,6 +1750,14 @@ namespace Drelay.Bootstrap
             // game frame. `Resolve` deliberately is not warmed -- it runs on the resolve
             // callback, where a JIT is ordinary work.
             PrepareStatic(typeof(EscapeTest), "OnFrame");
+            // The dodge's frame path, for the same reason: a decision compiled on its first call is
+            // compiled from inside a patched game frame. `DodgeAdapter.Warm` names the callees --
+            // including `DodgeSolver.Decide`, which is an INSTANCE method and therefore invisible to
+            // `PrepareStatic` above. It was written as `PrepareStatic(typeof(DodgeSolver), "Decide")`
+            // for one revision and prepared nothing at all: `PrepareStatic` searches for
+            // `BindingFlags.Static`, finds no such method, and returns quietly. A warm-up that
+            // silently prepares nothing is worse than none, because it is believed.
+            DodgeAdapter.Warm();
             MethodInfo dispatch = typeof(StraightTrajectoryProbe).GetMethod(
                 "GetPosition", BindingFlags.Public | BindingFlags.Instance);
             if (dispatch != null)
@@ -2307,10 +2350,57 @@ namespace Drelay.Bootstrap
                                        + " -- nothing else is affected, but no predicted-versus-"
                                        + "actual comparison will be made");
                 }
+                else if (!TraceRecorder.Resolve(game, Environment.GetEnvironmentVariable("DRELAY_HOOK_RUNDIR")))
+                {
+                    // NOT AN ERROR WHEN THE SWITCH IS SIMPLY UNSET, which is every run but the
+                    // recording ones. The recorder says which of the two it was, so a run where
+                    // the operator asked for a trace and did not get one is distinguishable in
+                    // the log from a run that never wanted one.
+                    string why = TraceRecorder.UnresolvedReason;
+                    if (why != null && why.IndexOf("DRELAY_TRACE", StringComparison.Ordinal) >= 0)
+                    {
+                        AppendLog("INFO", "trace recorder idle: " + why);
+                    }
+                    else
+                    {
+                        AppendLog("ERROR", "the trace recorder was asked for and is NOT available: "
+                                           + why + " -- no trace will be written");
+                    }
+                }
             }
             catch (Exception ex)
             {
                 AppendLog("ERROR", "resolving the sensor's read path threw: " + ex);
+            }
+
+            // DELIVERABLE 3.3, RESOLVED OUTSIDE THE CHAIN ABOVE AND DELIBERATELY.
+            //
+            // The chain above is a chain of `else if`s, so a failure anywhere in it silently skips
+            // everything after it -- which is why this is not another `else if`. The dodge depends
+            // on the sensor's *frame path* (it is called from it) but not on the recorder or on the
+            // collision observation resolving, and a run that asked for a dodge and lost it because
+            // the trace could not open its file would be a run whose report says "no threat" for
+            // reasons that have nothing to do with the world.
+            try
+            {
+                if (!DodgeAdapter.Resolve(game))
+                {
+                    string why = DodgeAdapter.UnresolvedReason;
+                    if (why != null && why.IndexOf("DRELAY_DODGE", StringComparison.Ordinal) >= 0)
+                    {
+                        AppendLog("INFO", "dodge idle: " + why);
+                    }
+                    else
+                    {
+                        AppendLog("ERROR", "the dodge adapter was asked for and is NOT available: "
+                                           + why + " -- the sensor, the trace and the actuator are "
+                                           + "unaffected, but no live decision will be made");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                AppendLog("ERROR", "resolving the dodge adapter threw: " + ex);
             }
 
             AppendLog("INFO", string.Format(

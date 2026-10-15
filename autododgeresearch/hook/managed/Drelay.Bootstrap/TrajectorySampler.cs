@@ -99,6 +99,46 @@ namespace Drelay.Bootstrap
         private static FieldInfo _pointY;
         private static FieldInfo _radiusField;
 
+        // THE TWO FLAGS THAT DECIDE WHETHER A PROJECTILE IS A THREAT TO THE PLAYER AT ALL.
+        // `Projectile.HitsPlayer` is the client's own dispatch condition -- `Hit()` sends a
+        // `HitsPlayer == false` projectile to `HitEnemy()` and never to `HitCharacter()` -- and the
+        // client's spawn path sets it to `this is Enemy` (`Entity.cs:1600`). So a projectile the
+        // local player fired can never reach the player, and neither can an ally's. Both are
+        // otherwise indistinguishable from an enemy bullet here: same type, same radius, same
+        // position, and they are born at the muzzle, which is inside the player's collision disc.
+        //
+        // THE MEASUREMENT THAT PUT THEM HERE. On `20261015-151232-p5424`, 932 of 1210 tracked
+        // bullets first appear within 0.3 units of the player and fly away -- a three-shot spread
+        // every 8 frames -- and they were **51.8 % of every threat record in the session**, 959 of
+        // its 971 "already touching" verdicts, and the cause of 255 of its 1140 moves. A player who
+        // was merely shooting had the dodge taking the wheel around its own muzzle.
+        private static FieldInfo _hitsPlayerField;
+        private static FieldInfo _localSeedField;
+        private static Func<object, bool> _getHitsPlayer;
+        private static Func<object, bool> _getLocalSeed;
+
+        /// <summary>What the resolution log calls the two exclusion flags, found or MISSING.</summary>
+        private static string _cannotHitNames = "not attempted";
+
+        /// <summary>
+        /// Projectiles the sampler declined because the client says they cannot hit a player.
+        ///
+        /// IT COUNTS OBSERVATIONS, NOT PROJECTILES, AND EVERY CONSUMER TAKES A DELTA. Three callers
+        /// walk the same frame's projectile list -- the sensor's own predictor, the adapter and the
+        /// recorder -- so one own shot is declined three times here and this number is roughly three
+        /// times the number of own shots fired. That is harmless and intended, because no consumer
+        /// reads it as a total: each wraps its own loop and reports the difference, which is that
+        /// caller's own count for that frame.
+        /// </summary>
+        public static long Declined;
+
+        /// <summary>
+        /// True when the exclusion is actually in force. False means `HitsPlayer` did not resolve and
+        /// the threat set still contains the player's own shots -- a degraded run, and one the
+        /// reports say so on rather than leaving to be inferred from a count.
+        /// </summary>
+        public static bool CannotHitFilterResolved => _getHitsPlayer != null || _getLocalSeed != null;
+
         // THE TIME BASE, WHICH IS THE ONE THING THE CLIENT DOES NOT STORE.  The host carries
         // an AgeMs per projectile; the client does not, and computes the age itself as
         // 	ime.LogicTotal - _startTime (CLIENT-FINDINGS.md section 4, Projectile.cs:670).
@@ -117,6 +157,10 @@ namespace Drelay.Bootstrap
         private static FieldInfo _playerPositionField;
         private static FieldInfo _playerX;
         private static FieldInfo _playerY;
+        private static FieldInfo _playerRadiusField;
+
+        /// <summary>Reads `World.Player.Radius`. Null when the field was not found.</summary>
+        private static Func<object, float> _getPlayerRadius;
 
         private static readonly float[] Xs = new float[SampleCount];
         private static readonly float[] Ys = new float[SampleCount];
@@ -195,9 +239,16 @@ namespace Drelay.Bootstrap
                 _sinField = FieldLookup.Find(projectileType, out sinName, "_angleSin", "Sin", "sin");
                 _cosField = FieldLookup.Find(projectileType, out cosName, "_angleCos", "Cos", "cos");
                 _ageField = FieldLookup.Find(projectileType, out ageName, "AgeMs", "_ageMs", "Age");
-                if (_ageField == null)
+
+                // THE GAME'S CLOCK IS RESOLVED WHETHER OR NOT THE AGE NEEDS IT, and that is a
+                // correction rather than tidiness. The clock has two jobs here: it is the fallback
+                // for the age (which the real `Projectile` needs, because it stores none), and it
+                // is the source of the frame delta the solver's move budget is built from. The
+                // first version assembled it only when the age field was missing, so on a build
+                // that has an age field the move budget would silently have fallen back to 60 Hz
+                // -- right up to the frame where it was not 60 Hz, which is the frame the budget
+                // is supposed to stay legal through.
                 {
-                    // No age field: derive it, the way the client does.
                     string startName = null;
                     string timeName = null;
                     string logicName = null;
@@ -212,14 +263,33 @@ namespace Drelay.Bootstrap
                     }
                     _deriveAgeFromClock = _startTimeField != null && _clientTimeField != null
                                           && _logicTotalField != null;
-                    ageName = _deriveAgeFromClock
-                        ? "DERIVED (" + timeName + "." + logicName + " - " + startName + ")"
-                        : "MISSING";
+                    if (_ageField == null)
+                    {
+                        ageName = _deriveAgeFromClock
+                            ? "DERIVED (" + timeName + "." + logicName + " - " + startName + ")"
+                            : "MISSING";
+                    }
+                    else
+                    {
+                        ageName = ageName + (_deriveAgeFromClock ? " (clock also resolved)" : "");
+                    }
                 }
                 _positionField = FieldLookup.Find(projectileType, out positionName,
                                                   "Position", "ExactPosition", "_position");
                 _radiusField = FieldLookup.Find(projectileType, out radiusName,
                                                 "Radius", "_radius", "TouchRadius");
+                // THE EXCLUSION'S OWN TWO FIELDS. Neither is required: a build without them runs the
+                // way every run before this one did, and says so (`hittable-filter MISSING`). What is
+                // not allowed is resolving them and then not using them.
+                {
+                    string hitsName;
+                    string localName;
+                    _hitsPlayerField = FieldLookup.Find(projectileType, out hitsName, "HitsPlayer");
+                    _localSeedField = FieldLookup.Find(projectileType, out localName, "LocalSeedDerived");
+                    _getHitsPlayer = _hitsPlayerField != null ? FieldAccessor.Bool(_hitsPlayerField) : null;
+                    _getLocalSeed = _localSeedField != null ? FieldAccessor.Bool(_localSeedField) : null;
+                    _cannotHitNames = (hitsName ?? "MISSING") + "/" + (localName ?? "MISSING");
+                }
                 // `_ageField` MAY LEGITIMATELY BE NULL, and the live client is why.  The real
                 // `Projectile` stores no age at all -- the client derives it from its own
                 // clock -- so an age field is required only when the clock derivation could
@@ -248,15 +318,22 @@ namespace Drelay.Bootstrap
                     return false;
                 }
 
-                // The player's own position, for the intersection test.  Deliverable 2.3
-                // asks whether the sensor had PREDICTED a hit, and a prediction is exactly
-                // this: a sampled point inside the hit disc, on a frame before the game's
-                // own collision decision fires.  The disc is the projectile's radius,
-                // because the game's own test is `DistanceSquared(player.Position) < r*r`
-                // (CLIENT-FINDINGS.md section 4) -- using anything else would make the
-                // sensor's prediction disagree with the collision it is compared against.
+                // The player's own position AND RADIUS, for the intersection test.  Deliverable 2.3
+                // asks whether the sensor had PREDICTED a hit, and a prediction is exactly this: a
+                // sampled point inside the hit disc, on a frame before the game's own collision
+                // decision fires.
+                //
+                // THE DISC IS `World.Player.Radius + Radius`, AND THE COMMENT HERE USED TO SAY IT
+                // WAS THE PROJECTILE'S RADIUS ALONE, quoting "the game's own test is
+                // `DistanceSquared(player.Position) < r*r`". That quotation is wrong -- the client's
+                // predicate is `DistanceSquared(World.Player.Position) < (World.Player.Radius +
+                // Radius)^2` (CLIENT-MAP.md, `Projectile.cs:1573`) -- and the comment is what made
+                // the wrong code beside it look deliberate. **A comment that misquotes the client is
+                // worse than no comment: it is a licence to keep the bug.** The radius is resolved
+                // here, unconditionally, so that the name is in scope for the resolution log too.
                 Type worldType = game.GetType(ManagedArmingProbe.WorldTypeName);
                 Type playerType = game.GetType(ManagedArmingProbe.PlayerTypeName);
+                string playerRadiusName = null;
                 if (worldType != null && playerType != null)
                 {
                     string sharedName2;
@@ -264,6 +341,8 @@ namespace Drelay.Bootstrap
                     string playerPositionName;
                     string playerXName;
                     string playerYName;
+                    _playerRadiusField = FieldLookup.Find(playerType, out playerRadiusName,
+                                                          "Radius", "_radius", "TouchRadius");
                     _worldSharedField = FieldLookup.Find(worldType, out sharedName2, "Shared", "_shared");
                     _worldPlayerField = FieldLookup.Find(worldType, out playerName, "Player", "_player");
                     _playerPositionField = FieldLookup.Find(playerType, out playerPositionName,
@@ -336,6 +415,10 @@ namespace Drelay.Bootstrap
                     _getPlayer = FieldAccessor.Reference(_worldPlayerField);
                     _getPlayerX = FieldAccessor.NestedFloat(_playerPositionField, _playerX);
                     _getPlayerY = FieldAccessor.NestedFloat(_playerPositionField, _playerY);
+                    if (_playerRadiusField != null)
+                    {
+                        _getPlayerRadius = FieldAccessor.Float(_playerRadiusField);
+                    }
                 }
                 _sample = EmitSample(getPosition, descType, getPosition.ReturnType == typeof(bool));
                 _resolved = true;
@@ -345,7 +428,17 @@ namespace Drelay.Bootstrap
                                             + " ms to a " + HorizonMs + " ms horizon; fields "
                                             + descName + ", " + sinName + ", " + cosName + ", "
                                             + ageName + ", " + positionName + "(" + pointXName + "/"
-                                            + pointYName + "), " + radiusName);
+                                            + pointYName + "), " + radiusName
+                                            + ", player radius "
+                                            + (_getPlayerRadius != null
+                                               ? playerRadiusName
+                                               : "MISSING (the prediction falls back to 0.25)")
+                                            + ", cannot-hit-the-player filter "
+                                            + (CannotHitFilterResolved
+                                               ? "ON (" + _cannotHitNames + ")"
+                                               : "MISSING (" + _cannotHitNames
+                                                 + ") -- the threat set WILL contain the player's"
+                                                 + " own shots"));
                 HookEntry.FlushLog();
                 return true;
             }
@@ -426,6 +519,234 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
+        /// Samples one bullet's path onto the fixed grid and anchors it on the live position.
+        ///
+        /// THE ANCHOR IS THE POINT (section 4.4 rule 1). The game is asked where the bullet will
+        /// be at `age + 30s ms` for twenty-one values of `s`, and the resulting polyline is then
+        /// translated by `live - predicted(now)` so that the sample at delta zero agrees with the
+        /// bullet's live position exactly. Model error therefore stays **relative** rather than
+        /// accumulating across frames: whatever the family is wrong about, it is wrong about by
+        /// the same amount here and at the horizon, and the decision never inherits yesterday's
+        /// mistake as today's starting point.
+        ///
+        /// THE RETURN OF `GetPosition` IS KEPT (this file's session-long gripe about the sampler
+        /// throwing it away). The real client's signature returns `bool`; the existing caller
+        /// discards it because the Phase 2 measurement is about positions. For the solver it is
+        /// the honest end-of-shot signal, so `Alive[s]` records it per sample and everything past
+        /// the first false is **frozen at that position** rather than extrapolated -- section
+        /// 4.4's "freeze past the trace, never extrapolate". A bullet frozen past its own death
+        /// paints danger where there is none and would refuse a safe move.
+        /// </summary>
+        private static void FillSamples(object desc, int age, float sin, float cos,
+                                        float liveX, float liveY, Trajectory into)
+        {
+            int n = SampleCount;
+            if (n > Trajectory.MaxSamples)
+            {
+                n = Trajectory.MaxSamples;
+            }
+
+            bool ended = false;
+            float lastX = liveX;
+            float lastY = liveY;
+            for (int s = 0; s < n; s++)
+            {
+                if (ended)
+                {
+                    // Frozen: the family has already said the shot is over, so the honest
+                    // prediction for every later sample is the position it ended at.
+                    into.Xs[s] = lastX;
+                    into.Ys[s] = lastY;
+                    into.Alive[s] = false;
+                    continue;
+                }
+                _sample(desc, age + (s * StepMs), sin, cos, Pair, 0);
+                into.Xs[s] = Pair[0];
+                into.Ys[s] = Pair[1];
+                lastX = Pair[0];
+                lastY = Pair[1];
+                into.Alive[s] = true;
+            }
+
+            float offsetX = liveX - into.Xs[0];
+            float offsetY = liveY - into.Ys[0];
+            for (int s = 0; s < n; s++)
+            {
+                into.Xs[s] += offsetX;
+                into.Ys[s] += offsetY;
+            }
+
+            into.Count = n;
+            into.StepMs = StepMs;
+            into.LiveX = liveX;
+            into.LiveY = liveY;
+            into.Projectable = LinearityGate.IsLinear(into.Xs, into.Ys, n, LinearityGate.DefaultTolerance);
+        }
+
+        /// <summary>Fills a caller-owned trajectory from a live projectile object.</summary>
+        public static bool FillTrajectory(object projectile, out Trajectory into)
+        {
+            into = null;
+            if (!_resolved || projectile == null)
+            {
+                return false;
+            }
+
+            // THE CLIENT'S OWN EXCLUSION COMES FIRST, BEFORE A SINGLE SAMPLE IS TAKEN, and the
+            // ordering is both the fix and half its cost. A projectile the client will never test
+            // against the player is not a threat, so it must not be sampled, must not be culled,
+            // must not be recorded and must not reach the solver -- and skipping it here is what
+            // makes that true for the live decision and the recorded trace with one line, rather
+            // than for one of them and not the other. See `_hitsPlayerField` for the measurement.
+            if (CannotHitPlayer(projectile))
+            {
+                return false;
+            }
+
+            try
+            {
+                object desc = _getDesc(projectile);
+                if (desc == null)
+                {
+                    return false;
+                }
+                float sin = _getSin(projectile);
+                float cos = _getCos(projectile);
+                float clockLogicTotal = 0.0f;
+                if (_deriveAgeFromClock)
+                {
+                    object clock = _getClock();
+                    if (clock != null)
+                    {
+                        clockLogicTotal = _getLogicTotal(clock);
+                    }
+                }
+                int age = _getAge != null
+                    ? _getAge(projectile)
+                    : (int)clockLogicTotal - _getStartTime(projectile);
+
+                into = RentTrajectory();
+                // IDENTITY IS NOT THIS FILE'S TO READ. `GameId` lives on `GameObject` and
+                // `_startTime` on `Projectile`; the sensor resolves both and hands the caller a
+                // `ThreatKey`, which is what the recorder writes (see `Trajectory.Key`). Resolving
+                // them again here would be a second definition of the identity this project has
+                // already been bitten by (HOOK-ARCHITECTURE.md section 5.4), so the key is left
+                // untouched for the caller and only the start time -- a diagnostic -- is read.
+                into.StartTime = _startTimeField != null ? _getStartTime(projectile) : 0;
+                into.Radius = _getRadius(projectile);
+                into.HitsPlayer = _getHitsPlayer != null && _getHitsPlayer(projectile);
+                into.LocalSeedDerived = _getLocalSeed != null && _getLocalSeed(projectile);
+                FillSamples(desc, age, sin, cos,
+                            _getProjectileX(projectile), _getProjectileY(projectile), into);
+                return true;
+            }
+            catch (Exception)
+            {
+                into = null;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Whether the client would refuse to collide this projectile with the player, ever.
+        ///
+        /// IT FAILS OPEN, AND THAT IS THE ONLY SAFE DIRECTION. If the fields did not resolve, or a
+        /// read throws, the answer is "no, it might be a threat" -- so the worst case of a broken
+        /// resolution is the behaviour every run before this one had, and never a threat silently
+        /// dropped. The counter (`Declined`) and the resolution line are what make the difference
+        /// between "there were no own shots" and "the exclusion is not in force" visible.
+        /// </summary>
+        private static bool CannotHitPlayer(object projectile)
+        {
+            if (_getHitsPlayer == null && _getLocalSeed == null)
+            {
+                return false;
+            }
+            try
+            {
+                if (_getHitsPlayer != null && !_getHitsPlayer(projectile))
+                {
+                    Declined++;
+                    return true;
+                }
+                if (_getLocalSeed != null && _getLocalSeed(projectile))
+                {
+                    Declined++;
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+            return false;
+        }
+
+        // A small free list, so the recorder can fill a trajectory per bullet per frame without
+        // allocating one per bullet per frame. The recorder returns each one when it is done;
+        // the list only ever grows to the maximum number of bullets recorded in a frame.
+        private static readonly List<Trajectory> Pool = new List<Trajectory>();
+        private static int _poolUsed;
+
+        private static Trajectory RentTrajectory()
+        {
+            if (_poolUsed < Pool.Count)
+            {
+                Trajectory t = Pool[_poolUsed];
+                _poolUsed++;
+                return t;
+            }
+            Trajectory created = new Trajectory();
+            Pool.Add(created);
+            _poolUsed++;
+            return created;
+        }
+
+        /// <summary>Returns every rented trajectory to the pool. Called once per frame by the recorder.</summary>
+        public static void ReleaseTrajectories()
+        {
+            _poolUsed = 0;
+        }
+
+        /// <summary>One reusable trajectory, for the sampler's own per-frame path.</summary>
+        private static readonly Trajectory ScratchTrajectory = new Trajectory();
+
+        /// <summary>
+        /// The frame's own delta, in seconds, for `b = speed * frameSeconds`.
+        ///
+        /// THE GAME'S CLOCK, NOT WALL TIME. `ClientTime.LogicTotal` advances by the client's own
+        /// logic delta, and the movement integrator receives that same number; deriving the move
+        /// budget from wall-clock time would let a frame hitch grant a larger legal step than the
+        /// client actually took, which is the one way a legal-by-construction budget stops being
+        /// legal. Falls back to 60 Hz when the clock is unavailable, which is the frame rate the
+        /// Phase 3 sweep measured (16.680 ms).
+        /// </summary>
+        public static float LastFrameSeconds()
+        {
+            return _lastFrameSeconds;
+        }
+
+        private static float _lastFrameSeconds = 1.0f / 60.0f;
+
+        /// <summary>Updates the derived frame delta; called once per frame by the sensor path.</summary>
+        public static void NoteClock(float logicTotalMs)
+        {
+            if (_clockMsValid && logicTotalMs > _clockMs)
+            {
+                float dt = (logicTotalMs - _clockMs) / 1000.0f;
+                if (dt > 0.0f && dt < 0.5f)
+                {
+                    _lastFrameSeconds = dt;
+                }
+            }
+            _clockMs = logicTotalMs;
+            _clockMsValid = true;
+        }
+
+        private static float _clockMs;
+        private static bool _clockMsValid;
+
+        /// <summary>
         /// Samples every live projectile handed over by the read path, and reports what
         /// the linearity gate made of them.
         ///
@@ -452,9 +773,15 @@ namespace Drelay.Bootstrap
 
             // THE PLAYER, ONCE PER FRAME.  A prediction is a sampled point inside this
             // disc, and the disc is the game's own: `DistanceSquared(player.Position) < r*r`.
+            //
+            // THE RADIUS IS READ HERE AND NOT PER BULLET, for the reason the whole sampler is
+            // shaped this way: the frame budget is a per-frame [DODGE-ALGORITHM.md](DODGE-ALGORITHM.md)
+            // section 8 concern and this loop runs once per live bullet. One accessor call per frame
+            // instead of one per bullet is the difference between a fix and a regression.
             bool playerKnown = false;
             float playerX = 0.0f;
             float playerY = 0.0f;
+            float playerRadius = 0.25f;
             try
             {
                 object world = _getWorld == null ? null : _getWorld();
@@ -468,6 +795,10 @@ namespace Drelay.Bootstrap
                         {
                             playerX = _getPlayerX(playerPosition);
                             playerY = _getPlayerY(playerPosition);
+                            if (_getPlayerRadius != null)
+                            {
+                                playerRadius = _getPlayerRadius(player);
+                            }
                             playerKnown = true;
                         }
                     }
@@ -496,11 +827,33 @@ namespace Drelay.Bootstrap
                 }
             }
 
+            // THE FRAME DELTA IS DERIVED FROM THE GAME'S OWN CLOCK, and it is derived HERE
+            // because here is where the clock is read. `b = speed * frameSeconds` is the solver's
+            // move budget and its whole claim to legality (PHASE3-HANDOFF.md section 1.4); a wall
+            // clock would grant a larger legal step after a hitch than the client actually took.
+            if (clockLogicTotal > 0.0f)
+            {
+                NoteClock(clockLogicTotal);
+            }
+
             try
             {
                 for (int i = 0; i < liveProjectiles.Count; i++)
                 {
                     object projectile = liveProjectiles[i];
+
+                    // THE SAME EXCLUSION THE THREAT SET GETS, AND IT IS NOT OPTIONAL HERE EITHER.
+                    // This loop is what sets the live observer's `predicted=` flag, which is the
+                    // flag `T7P` compares against the harness and the flag every false-positive
+                    // rate in SPIKE3.2-OFFLINE-SOLVER.md is built from. A player's own shot is born
+                    // inside their collision disc, so leaving them in makes the live predictor claim
+                    // a hit on almost every shot fired -- which is exactly the "96 % predicted, no
+                    // hit" column those recordings report.
+                    if (CannotHitPlayer(projectile))
+                    {
+                        continue;
+                    }
+
                     object desc = _getDesc(projectile);
                     if (desc == null)
                     {
@@ -516,23 +869,18 @@ namespace Drelay.Bootstrap
                     float liveX = _getProjectileX(position);
                     float liveY = _getProjectileY(position);
 
-                    // The grid, at the live anchor: delta zero is the bullet's position now.
+                    // THE SAMPLE SET, TAKEN BY THE ONE ROUTINE THAT TAKES IT. This used to be
+                    // eleven lines inline here and is now a call, because the trace recorder needs
+                    // the same eleven lines and a second copy of them would be a second
+                    // definition of the anchor rule. See FillTrajectory: the anchoring is the
+                    // easy half to get subtly wrong, and the whole point of section 4.4 rule 1 is
+                    // that model error stays relative rather than accumulating.
+                    Trajectory scratch = ScratchTrajectory;
+                    FillSamples(desc, age, sin, cos, liveX, liveY, scratch);
                     for (int s = 0; s < SampleCount; s++)
                     {
-                        _sample(desc, age + (s * StepMs), sin, cos, Pair, 0);
-                        Xs[s] = Pair[0];
-                        Ys[s] = Pair[1];
-                    }
-
-                    // ANCHOR ON THE LIVE POSITION (section 4.4 rule 1).  Everything after
-                    // this reads a polyline whose origin is exact, so model error is
-                    // relative and does not accumulate across frames.
-                    float offsetX = liveX - Xs[0];
-                    float offsetY = liveY - Ys[0];
-                    for (int s = 0; s < SampleCount; s++)
-                    {
-                        Xs[s] += offsetX;
-                        Ys[s] += offsetY;
+                        Xs[s] = scratch.Xs[s];
+                        Ys[s] = scratch.Ys[s];
                     }
 
                     sampled++;
@@ -550,10 +898,30 @@ namespace Drelay.Bootstrap
                     // the hit disc; the time to that point is the warning, and it is
                     // recorded on the frame the sensor first sees it so the comparison at
                     // the collision gets the warning the sensor actually had.
+                    //
+                    // THE DISC IS THE CLIENT'S OWN, AND IT TOOK A RECORDED RUN TO NOTICE IT WAS NOT.
+                    // `Projectile.HitCharacter` (CLIENT-MAP.md, `Projectile.cs:1573`) is
+                    //
+                    //     DistanceSquared(World.Player.Position) < (World.Player.Radius + Radius)^2
+                    //
+                    // and this check used `radius * radius` -- the BULLET's radius alone, with the
+                    // player's half missing. For a 0.2-radius bullet that is a 0.2 disc where the
+                    // client uses 0.45, so the live predictor was answering a question the client
+                    // never asks, and `ThreatSet.MarkPredicted` was called far less often than the
+                    // geometry warranted. The run of `20261014-193728-p4508` is what surfaced it: the
+                    // live observer counted **11** false negatives there while the harness -- which
+                    // reads the recorded paths off line and uses `PlayerRadius + t.Radius` -- counted
+                    // **2**. The harness was right in every case that could be checked, and the
+                    // difference is exactly this line.
+                    //
+                    // The player's radius falls back to 0.25 when the field did not resolve, which is
+                    // `GameObject.Radius`'s documented default and the value `TraceRecorder` already
+                    // uses for the same quantity (`_getPlayerRadius != null ? ... : 0.25f`).
                     if (playerKnown && liveKeys != null && i < liveKeys.Count)
                     {
                         float radius = _getRadius(projectile);
-                        float radiusSquared = radius * radius;
+                        float disc = playerRadius + radius;
+                        float radiusSquared = disc * disc;
                         for (int s = 0; s < SampleCount; s++)
                         {
                             float dx = Xs[s] - playerX;

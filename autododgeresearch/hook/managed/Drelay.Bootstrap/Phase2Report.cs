@@ -120,10 +120,10 @@ namespace Drelay.Bootstrap
     /// The phase's four decision numbers, in one place.
     ///
     /// IMPLEMENTATION-PLAN.md names them, and each decides something different: the
-    /// warning distribution decides whether an escape can be dispatched in time (Phase 3's
-    /// thresholds), the false negatives decide whether the model is complete enough to
-    /// rely on at all, the false positives decide whether a dodge would be over-cautious,
-    /// and the cost decides whether the Phase 4 solver fits the frame at all.
+    /// warning distribution decides whether there is time to move (Phase 3's dodge budget
+    /// and escape-floor timing), the false negatives decide whether the model is complete
+    /// enough to rely on at all, the false positives decide whether a dodge would be
+    /// over-cautious, and the cost decides whether the Phase 3 solver fits the frame at all.
     ///
     /// They are printed together, on one line, on purpose: a reader who has to assemble
     /// the answer from four places in a log will assemble it wrongly, and a number that

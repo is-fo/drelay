@@ -80,10 +80,19 @@
 //
 // and a reader who has only the commanded number cannot tell a pilot that aimed wrong
 // from a camera that was rotated. The aim offset is `0` normally and a resolved constant
-// when the player has the effect at `Player.HasEffect(160)`; in `sweep` mode it is not
-// assumed at all -- the phases walk eight evenly spaced input angles and the *observed*
-// heading is what is logged, so the relation can be read off the table whether or not
-// the offset is known.
+// when the player has the effect at `Player.HasEffect(160)`.
+//
+// BOTH MODES NOW EXPRESS THE SAME KIND OF COMMAND -- A WORLD HEADING -- AND THE CAMERA IS
+// COMPENSATED IN BOTH. `sweep` used to write its target straight into `MoveAngle` with no
+// correction, so that the transform could be read off a table of written input against
+// observed heading. That table is only meaningful with a still camera, and the run of
+// `20261014-192048-p15744` proved it by rotating one: the per-phase cosines came out 0.829,
+// -0.493, -0.619, 0.672, 0.694, which is a measurement of the operator's mouse. With the
+// correction applied everywhere, the commanded world heading is the phase target in every
+// mode, the observed heading must match it, and the residual is the transform's error
+// rather than the camera's motion. The phase summary prints `mean WorldRotation` beside the
+// cosine so that the correction's input is evidence instead of an assumption, and a
+// `hold` run with the camera turned is now the cleanest way to read the transform's error.
 
 using System;
 using System.Globalization;
@@ -135,8 +144,53 @@ namespace Drelay.Bootstrap
         private static Func<object, object> _getInput;
         private static Action<object, bool> _setMoving;
         private static Action<object, float> _setMoveSpeed;
+
+        /// <summary>
+        /// Writes `GameInput.MoveAngle.Radians` on a live input object -- the actuator's own
+        /// instruction, and the whole of Phase 3's write path.
+        /// </summary>
         private static Action<object, float> _setMoveAngleRadians;
+
+        /// <summary>
+        /// Writes `Angle.Radians` on the pilot's own boxed `Angle`. Used by <see cref="Warm"/>'s
+        /// round trip and by nothing else: its receiver is an `Angle`, not a `GameInput`, so it
+        /// cannot write the input the client reads.
+        /// </summary>
+        private static Action<object, float> _setBoxedAngleRadians;
+
         private static Func<object, float> _getMoveAngleRadians;
+
+        /// <summary>
+        /// `float Get(object)` for the boxed `Angle` itself -- the receiver the write-read round
+        /// trip in <see cref="Warm"/> needs.
+        ///
+        /// THIS IS NOT `_getMoveAngleRadians`, AND CONFUSING THE TWO KILLED THE GAME AT STARTUP ON
+        /// EVERY RUN. `_getMoveAngleRadians` is
+        /// `FieldAccessor.NestedFloat(GameInput.MoveAngle, Angle.Radians)`: its IL casts the
+        /// receiver to `GameInput` and then takes the address of the inline `Angle` to read
+        /// `Radians` out of it. That is the right accessor for a live input object and the wrong
+        /// one for the pilot's own boxed `Angle`. Handing the box to it makes the runtime run
+        /// `castclass GameInput` on a boxed *value type*, and that is not an
+        /// `InvalidCastException` a `catch` can hold: `CastHelpers.ChkCastClassSpecial` walks the
+        /// cast source's method-table chain, the boxed struct has no such chain, and the walk
+        /// faults -- an `AccessViolationException` at `System.Private.CoreLib+0x420D03` that
+        /// terminates the process before any managed handler sees it. The captured managed stack
+        /// is the receipt:
+        ///
+        ///     Fatal error. System.AccessViolationException: Attempted to read or write protected memory.
+        ///        at System.Runtime.CompilerServices.CastHelpers.ChkCastClassSpecial(Void*, System.Object)
+        ///        at DynamicClass.DrelayField_MoveAngle.Radians(System.Object)
+        ///        at Drelay.Bootstrap.SteeringPilot.Warm()
+        ///        at Drelay.Bootstrap.HookEntry.ResolveOffsetsAfterStartup()
+        ///        at Drelay.Bootstrap.ManagedArmingProbe.OnResolve()
+        ///
+        /// It was first mis-attributed to the `RuntimeHelpers.PrepareMethod` pass that used to sit
+        /// in `Warm` (PHASE3-SCOPE.md section 5 recorded it that way, and the pass was removed on
+        /// that theory). Removing the pass did not stop the crash, because the crash was here. A
+        /// `castclass` whose source type is a boxed struct is not a check that fails safely, which
+        /// is why the accessor a round trip uses has to be typed to the receiver it is given.
+        /// </summary>
+        private static Func<object, float> _getBoxedAngleRadians;
         private static Func<object, object> _getPlayer;
         private static Func<object, bool> _getPlayerDead;
         private static Func<object, bool> _getSafeWorld;
@@ -167,8 +221,23 @@ namespace Drelay.Bootstrap
         private static object _boxedAngle;
         private static Type _angleType;
 
-        /// <summary>The world-frame radians the pilot last asked for.</summary>
+        /// <summary>
+        /// The input-frame radians the pilot last wrote -- `worldHeading + WorldRotation` since the
+        /// correction became unconditional in every mode.
+        /// </summary>
         private static float _commandedRadians = float.NaN;
+
+        /// <summary>
+        /// The input-frame radians written on the PREVIOUS call -- the one the displacement
+        /// measured at the start of this call was produced by. See `Accumulate`/`EndCall`.
+        /// </summary>
+        private static float _prevCommandedRadians = float.NaN;
+
+        /// <summary>`World.WorldRotation` as read on the previous call.</summary>
+        private static float _prevRotation;
+
+        /// <summary>`World.WorldRotation` as read on this call, aged into `_prevRotation` by `EndCall`.</summary>
+        private static float _lastRotation;
 
         // ---------------------------------------------------------------------------
         // Mode and state.
@@ -178,7 +247,19 @@ namespace Drelay.Bootstrap
         private static float[] _phaseTargets;          // degrees, in the frame the mode says
         private static string[] _phaseNames;
         private static int _phaseFrames = 240;         // frames per phase; 0 means "no limit"
-        private static bool _sweepMode;                // target is written straight into the input
+
+        /// <summary>
+        /// `DRELAY_MOVE_STEER=dodge`: the heading comes from `DodgeAdapter` instead of from a plan.
+        ///
+        /// THIS IS DELIVERABLE 3.3'S ACTING END -- the one path in this project that moves the player
+        /// on the solver's word. It runs no phases, so `_phaseTargets` is empty and every phase
+        /// helper returns immediately; what replaces them is one slot read per integrator call.
+        /// </summary>
+        private static bool _dodgeMode;
+        private static long _dodgeYielded;
+        private static long _dodgeWritten;
+        private static long _dodgeStopped;
+        private static bool _dodgeWarnedNotActing;
 
         private static long _frame;
         private static int _phase;
@@ -189,6 +270,11 @@ namespace Drelay.Bootstrap
         private static float _lastY = float.NaN;
         private static int _skippedNoPlayer;
         private static int _skippedNotAlive;
+
+        // The phase's circular accumulators for the correction's own evidence: the camera rotation
+        // the phase mixed in, so the transform's input is a printed number.
+        private static double _phaseSumRotSin;
+        private static double _phaseSumRotCos;
 
         // Per-phase accumulators for the live summary.
         private static long _phaseMoved;
@@ -329,8 +415,19 @@ namespace Drelay.Bootstrap
 
                 _setMoving = FieldAccessor.BoolSetter(_inputMovingField);
                 _setMoveSpeed = FieldAccessor.FloatSetter(_inputMoveSpeedField);
-                _setMoveAngleRadians = FieldAccessor.FloatSetter(_angleRadiansField);
+                // THE ACTUATOR'S REAL WRITE, AND IT IS THE NESTED ONE. `MoveAngle` is an inline
+                // `Angle` struct inside `GameInput`, so the setter has to address the field
+                // *through* the input object -- `ldflda MoveAngle; stfld Radians`. The box-shaped
+                // setter below is a different instruction with a different receiver, and using it
+                // here is what made the first live sweep walk due south whatever it commanded.
+                _setMoveAngleRadians = FieldAccessor.NestedFloatSetter(_inputMoveAngleField, _angleRadiansField);
                 _getMoveAngleRadians = FieldAccessor.NestedFloat(_inputMoveAngleField, _angleRadiansField);
+                // The box-shaped pair, for the warm-up round trip only. See their own notes: the
+                // live-input accessors above are not interchangeable with these, in either
+                // direction, and confusing them is not a rejected call but a frame that writes
+                // nowhere or an access violation.
+                _setBoxedAngleRadians = FieldAccessor.FloatSetter(_angleRadiansField);
+                _getBoxedAngleRadians = FieldAccessor.Float(_angleRadiansField);
 
                 // The box has to be the game's own struct type -- `Angle` has exactly one
                 // field (`Radians`, `Angle.cs:18`) but the runtime checks the type on the
@@ -386,6 +483,16 @@ namespace Drelay.Bootstrap
                 return "the steering pilot resolved all 15 field(s) and is IDLE "
                        + "(DRELAY_MOVE_STEER unset); the movement replacement, if patched, only calls through";
             }
+            // DODGE MODE HAS NO PHASES, AND THE CHECK BELOW USED TO CALL THAT A REJECTION. It read
+            // `_phaseTargets.Length == 0` as "the mode parser refused", which is true of every mode
+            // except the one whose whole definition is that it has no plan -- so the first live
+            // dodge would have reported itself disarmed on the line the operator reads first.
+            if (_dodgeMode)
+            {
+                return "the steering pilot is ARMED: mode 'dodge' -- the heading written each frame "
+                       + "is DodgeAdapter's decision, and a frame it publishes no command is left to "
+                       + "the player's own input";
+            }
             if (_phaseTargets.Length == 0)
             {
                 return "the steering pilot is ARMED but its mode was rejected: " + _unresolvedReason;
@@ -436,9 +543,9 @@ namespace Drelay.Bootstrap
             if (_enabled && _phaseTargets.Length > 0)
             {
                 HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
-                    "steering plan: {0} phase(s), {1} frame(s) each, target frame {2}",
-                    _phaseTargets.Length, _phaseFrames,
-                    _sweepMode ? "the client's own input angle" : "world heading + WorldRotation"));
+                    "steering plan: {0} phase(s), {1} frame(s) each, target frame world heading"
+                    + " (MoveAngle = world heading + WorldRotation, applied in every mode)",
+                    _phaseTargets.Length, _phaseFrames));
             }
             HookEntry.FlushLog();
         }
@@ -451,10 +558,11 @@ namespace Drelay.Bootstrap
         /// Parse the mode string. Grammar, in full:
         ///
         ///     off                     do nothing (the default)
-        ///     sweep[:frames]          walk 8 input angles 45 degrees apart
+        ///     sweep[:frames]          walk 8 world headings 45 degrees apart
         ///     sweepfast[:frames]      the same, 120 frames each unless overridden
         ///     hold:degrees[:frames]   hold one world heading
         ///     hold:degrees            hold until the run ends
+        ///     dodge                   the heading is `DodgeAdapter`'s decision, frame by frame
         ///
         /// A malformed mode is not fatal: it is logged and the pilot stays idle, because a
         /// typo in an experiment's name must not be a run that silently does something
@@ -470,17 +578,36 @@ namespace Drelay.Bootstrap
 
             switch (verb)
             {
+                case "dodge":
+                {
+                    // NO PHASES, AND THAT IS THE WHOLE MODE. The ring is not walked here: the
+                    // decision arrives from the frame tick and this pilot is only the writer.
+                    _dodgeMode = true;
+                    _phaseFrames = 0;
+                    _phaseTargets = new float[0];
+                    _phaseNames = new string[0];
+                    HookEntry.AppendLog("INFO", "steering mode `dodge`: the heading written each "
+                        + "frame is DodgeAdapter's decision, converted from a world heading to an "
+                        + "input angle; every frame the adapter publishes no command, the input is "
+                        + "left exactly as the player's own hands left it");
+                    HookEntry.FlushLog();
+                    break;
+                }
+
                 case "sweep":
                 case "sweepfast":
                 {
-                    // EIGHT EVENLY SPACED INPUT ANGLES, NOT EIGHT WORLD HEADINGS. The
-                    // point of the sweep is to measure the mapping, so the independent
-                    // variable has to be the thing written -- `GameInput.MoveAngle` -- and
-                    // the dependent variable is where the player actually went. A sweep in
-                    // world headings would presuppose the very transform it is there to
-                    // measure, and would hide a wrong `WorldRotation` sign behind a table
-                    // that looked plausible.
-                    _sweepMode = true;
+                    // EIGHT EVENLY SPACED WORLD HEADINGS, AND THE CORRECTION IS APPLIED TO ALL OF
+                    // THEM. The first version wrote the target straight into `GameInput.MoveAngle`
+                    // with no correction, reasoning that a sweep should measure the mapping by
+                    // writing a known input and reading the world heading back. That reasoning holds
+                    // only while the camera is still, and the session of `20261014-192048-p15744`
+                    // rotated the camera through every phase: the phase cosines came out 0.829,
+                    // -0.493, -0.619, 0.672, 0.694, which measures the mouse as much as the
+                    // transform. The correction now runs in every mode, so the commanded WORLD
+                    // heading is `target` whether or not the camera moves, and the observed heading
+                    // must match it -- a null test, and a stronger one. The camera's own contribution
+                    // is reported per phase (`mean WorldRotation`) rather than left to be guessed.
                     _phaseFrames = verb == "sweepfast" ? 120 : 240;
                     if (parts.Length > 1 && int.TryParse(parts[1], NumberStyles.Integer,
                                                          CultureInfo.InvariantCulture, out int frames)
@@ -493,7 +620,7 @@ namespace Drelay.Bootstrap
                     for (int i = 0; i < 8; i++)
                     {
                         _phaseTargets[i] = i * 45f;
-                        _phaseNames[i] = "input " + (i * 45) + "deg";
+                        _phaseNames[i] = "world heading " + (i * 45) + "deg";
                     }
                     break;
                 }
@@ -509,7 +636,6 @@ namespace Drelay.Bootstrap
                         _phaseNames = new string[0];
                         return;
                     }
-                    _sweepMode = false;
                     _phaseFrames = 0;
                     if (parts.Length > 2 && int.TryParse(parts[2], NumberStyles.Integer,
                                                          CultureInfo.InvariantCulture, out int frames)
@@ -607,7 +733,8 @@ namespace Drelay.Bootstrap
                 // the input it read last frame -- the number this spike exists to produce.
                 float dx = float.NaN;
                 float dy = float.NaN;
-                if (!float.IsNaN(_lastX) && !float.IsNaN(_lastY))
+                if (!float.IsNaN(_lastX) && !float.IsNaN(_lastY)
+                    && !float.IsNaN(_prevCommandedRadians))
                 {
                     dx = x - _lastX;
                     dy = y - _lastY;
@@ -616,12 +743,99 @@ namespace Drelay.Bootstrap
                 _lastX = x;
                 _lastY = y;
 
-                AdvancePhase();
+                // ONCE, BEFORE THE FIRST REAL WRITE, AND ON THE SAME OBJECT: the nested setter and
+                // the nested getter, so "the write landed" is measured rather than assumed.
+                ProveInputWrite(input);
 
-                float commanded = PhaseAngle(rotation);
-                WriteInput(input, commanded);
+                // WHERE THE COMMAND COMES FROM IS THE WHOLE OF DELIVERABLE 3.3.
+                //
+                // In every spike mode the heading is this pilot's own plan: eight phases, or one
+                // held heading. In `dodge` mode it comes from the solver, through the slot the
+                // adapter publishes from the frame tick -- and the pilot writes exactly what it is
+                // given and nothing else.
+                //
+                // `DodgeCommand.None` MEANS "WRITE NOTHING", NOT "WRITE ZERO". The client re-polls
+                // the real input in `PreUpdate`, every frame, so a frame this pilot does not write is
+                // a frame the player's own hands still own. That is section 5.7's intent
+                // preservation, and it is the difference between a dodge the operator can fight
+                // through and a dodge that takes the wheel.
+                float commanded = float.NaN;
+                bool wrote = true;
+                if (_dodgeMode)
+                {
+                    // THE LIKELIEST OPERATOR MISTAKE, NAMED ONCE. `--move-steer dodge` without
+                    // `--dodge-act` is a pilot that is armed, entered, and correct -- and writes
+                    // nothing, for ever, because no command is ever published. From the outside that
+                    // is indistinguishable from a solver that never got a threat, and both are
+                    // silent. `DodgeAdapter.Acts` is the difference, so it is said out loud.
+                    if (!_dodgeWarnedNotActing && !DodgeAdapter.Acts)
+                    {
+                        _dodgeWarnedNotActing = true;
+                        HookEntry.AppendLog("WARN", "steering mode `dodge` is on but DodgeAdapter is "
+                            + "NOT acting (DRELAY_DODGE_ACT unset, or DRELAY_DODGE unset, or the "
+                            + "adapter did not resolve), so no command will ever arrive and this "
+                            + "pilot will yield to the player's own input on every frame");
+                        HookEntry.FlushLog();
+                    }
 
-                LogFrame(input, rotation, x, y, dx, dy, commanded);
+                    DodgeCommand command = DodgeAdapter.TakeCommand(out float heading, out float scale);
+                    switch (command)
+                    {
+                        case DodgeCommand.Move:
+                            // THE WORLD-TO-INPUT CONVERSION IS THE SAME ONE `PhaseAngle` MAKES, and
+                            // it matters more here than anywhere: the solver's headings come from
+                            // world geometry, and `World.cs:12692` turns the input angle back into a
+                            // world heading by subtracting the camera's rotation. Writing the world
+                            // heading raw is a dodge that is correct only while the camera happens
+                            // to sit at zero -- which is exactly what the sweep of
+                            // `20261014-192048-p15744` measured, at 0.829, -0.493 and -0.619.
+                            commanded = heading + rotation;
+                            WriteInput(input, commanded, scale);
+                            _dodgeWritten++;
+                            break;
+
+                        case DodgeCommand.Stop:
+                            // Section 5.4's preferred answer, made real. `stand` is not "keep the
+                            // heading you had" -- it is not moving, and leaving the player's own
+                            // input in place would walk them on into the threat the solver had just
+                            // decided they were safe from.
+                            commanded = heading + rotation;
+                            StopInput(input);
+                            _dodgeStopped++;
+                            break;
+
+                        default:
+                            _dodgeYielded++;
+                            wrote = false;
+                            break;
+                    }
+                }
+                else
+                {
+                    AdvancePhase();
+                    commanded = PhaseAngle(rotation);
+                    WriteInput(input, commanded);
+                }
+
+                if (wrote)
+                {
+                    // The two-frame pipeline the accumulator above depends on: this call's input is
+                    // next call's displacement, so the values are aged only after the write.
+                    EndCall(rotation, commanded);
+                    LogFrame(input, rotation, x, y, dx, dy, commanded);
+                }
+                else if ((_dodgeYielded % LogEveryFrames) == 0)
+                {
+                    // A YIELDED FRAME IS EVIDENCE, AND ITS ABSENCE WOULD NOT BE. The adapter's own
+                    // report counts commands; this line is what says the pilot was running and
+                    // chose to leave the input alone, which is otherwise indistinguishable from a
+                    // pilot that was never patched.
+                    HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
+                        "steer dodge: frame {0} yielded to the player's own input (no command from "
+                        + "the adapter); written {1}, stopped {2}, yielded {3}",
+                        _frame, _dodgeWritten, _dodgeStopped, _dodgeYielded));
+                    HookEntry.FlushLog();
+                }
             }
             catch (Exception ex)
             {
@@ -641,8 +855,78 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
+        /// Whether the nested input write has been proved once, on a live input, this run.
+        /// </summary>
+        private static bool _inputWriteProved;
+
+        /// <summary>
+        /// Prove the actuator's *real* instruction once, on the first live input object, and say
+        /// so in the log -- then write the commanded angle over it in the same frame.
+        ///
+        /// WHY HERE AND NOT IN <see cref="Warm"/>. The instruction is
+        /// `ldflda GameInput.MoveAngle; stfld Angle.Radians`, and its receiver is a `GameInput`.
+        /// `GameInput` is abstract, and the runtime refuses to build one by either route a
+        /// warm-up could use (`Activator.CreateInstance` and `RuntimeHelpers.GetUninitializedObject`
+        /// both throw `MemberAccessException: Cannot create an abstract class`, measured). The one
+        /// object that is a real `GameInput` is the game's own input, and it exists only once the
+        /// world does -- which is the frame this runs on.
+        ///
+        /// The write is invisible to the client: it is overwritten by the commanded angle before
+        /// the original integrator runs, inside the same call. What it buys is the difference
+        /// between the previous run's evidence and a proof -- that run wrote `0.0 rad`, read back
+        /// `4.7124 rad`, and the only reason the frame log could say so at all is that the read
+        /// used the *nested* accessor while the write did not. A first-frame round trip makes the
+        /// two impossible to confuse: it writes and reads through the same pair the actuator uses.
+        ///
+        /// It is a CHECK, not a gate: a mismatch is logged once and the run continues, because the
+        /// per-frame `wrote`/`read-back` lines and check A of the report are the real measurement
+        /// and a spike that refuses to steer on a failed self-check produces no evidence at all.
+        /// </summary>
+        private static void ProveInputWrite(object input)
+        {
+            if (_inputWriteProved)
+            {
+                return;
+            }
+            _inputWriteProved = true;
+            try
+            {
+                _setMoveAngleRadians(input, 0.25f);
+                float readBack = _getMoveAngleRadians(input);
+                HookEntry.AppendLog(readBack == 0.25f ? "INFO" : "ERROR", string.Format(
+                    CultureInfo.InvariantCulture,
+                    "steering input write proved on the first live input: the nested setter wrote "
+                    + "0.25 rad into MoveAngle and the nested getter read back {0:0.####}",
+                    readBack));
+                HookEntry.FlushLog();
+            }
+            catch (Exception ex)
+            {
+                HookEntry.AppendLog("ERROR", "the nested input write threw on its first live input; "
+                                             + "the frame continues and the sweep will show what "
+                                             + "reached the client: " + ex.GetType().Name + ": "
+                                             + ex.Message);
+                HookEntry.FlushLog();
+            }
+        }
+
+        /// <summary>
         /// Write the steering input. This is the whole actuator: three field writes into
         /// the object the client's own integrator reads one line later.
+        ///
+        /// THE `MoveAngle` WRITE IS NESTED, AND IT WAS NOT, WHICH IS WHY THE FIRST SWEEP WALKED
+        /// DUE SOUTH. `MoveAngle` is an `Angle` **struct** inlined in `GameInput`, so setting it
+        /// means `ldflda MoveAngle; stfld Radians` on the input object --
+        /// `FieldAccessor.NestedFloatSetter`. The first version called
+        /// `FieldAccessor.FloatSetter(Angle.Radians)` instead, whose IL casts its receiver to
+        /// `Angle` and writes there: the angle went into the pilot's own box and the input kept
+        /// the client's value, on every frame, while `Moving` and `MoveSpeed` -- the two writes
+        /// whose receiver *is* the input -- landed correctly. The player therefore moved, at the
+        /// client's own speed, in whatever direction the client's own input poll last produced,
+        /// which is exactly what the run's log shows:
+        ///
+        ///     steer frame 31 phase 1 cmd 0.0deg wrote 0.0000rad read-back 4.7124rad ...
+        ///     steering phase 1 (input 0deg): ... observed heading -90.0deg, moved on 240 frame(s)
         ///
         /// **NO MANAGED CALL HERE, AND THE HONEST REASON IS NOT THAT ONE WAS PROVEN
         /// GUILTY.** The first version wrote `MoveAngle` with `FieldInfo.SetValue(input,
@@ -656,11 +940,10 @@ namespace Drelay.Bootstrap
         /// the trigger -- closing the game by hand. See PHASE3-SCOPE.md section 5.1.
         ///
         /// What replaces it is the same emitted `stfld` the sensor and the collision hook have
-        /// used for thousands of frames: `FieldAccessor.FloatSetter` compiles
-        /// `castclass Angle; stfld Radians` once, at resolve, and every later call is one
-        /// `stfld` on an object already in hand. So the change is kept, on its merits rather
-        /// than on a diagnosis -- it removes a boxed argument, a type-token copy and the
-        /// reflection dispatcher from a frame path, and it makes this pilot's access pattern
+        /// used for thousands of frames: the accessor compiles its IL once, at resolve, and every
+        /// later call is one `stfld` on an object already in hand. So the change is kept, on its
+        /// merits rather than on a diagnosis -- it removes a boxed argument, a type-token copy and
+        /// the reflection dispatcher from a frame path, and it makes this pilot's access pattern
         /// the one that already has a hundred thousand frames of evidence behind it. The
         /// reasoning is left visible because a "fix" whose premise was wrong is exactly the
         /// kind of thing that gets re-litigated later.
@@ -669,39 +952,100 @@ namespace Drelay.Bootstrap
         private static void WriteInput(object input, float angle)
         {
             _commandedRadians = angle;
-            _setMoveAngleRadians(_boxedAngle, angle);
+            _setMoveAngleRadians(input, angle);
             _setMoving(input, true);
             _setMoveSpeed(input, 1f);
+            DodgeAdapter.NoteWrittenScale(1.0f);
+        }
+
+        /// <summary>
+        /// The same write at a fraction of the client's own speed, which is what the solver's
+        /// `SpeedScale` asks for.
+        ///
+        /// WHY A MAGNITUDE AND NOT A HEADING ALONE. `World.cs:12710` computes
+        /// `delta = unit(angle) * tilesPerSecond * dt * moveSpeed`, so `GameInput.MoveSpeed` is the
+        /// per-frame step multiplier -- and the solver's candidates are placed at `0.35 b`, `0.7 b`
+        /// and `1.0 b`, where `b` is one full frame's budget. Writing the heading at full speed
+        /// would carry the player three times past a near candidate and land them wherever that
+        /// direction happens to lead, which is a different decision from the one that was made.
+        ///
+        /// THE SCALE IS ALSO REPORTED TO THE ADAPTER, because the adapter measures the player's speed
+        /// from the displacement the client produces and a half-speed write produces a half-speed
+        /// displacement. Without this the dodge would halve its own budget every frame it moved at
+        /// half speed, and collapse to a standstill in a handful of frames.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void WriteInput(object input, float angle, float speedScale)
+        {
+            _commandedRadians = angle;
+            _setMoveAngleRadians(input, angle);
+            _setMoving(input, speedScale > 0.0f);
+            _setMoveSpeed(input, speedScale > 0.0f ? speedScale : 0.0f);
+            DodgeAdapter.NoteWrittenScale(speedScale);
+        }
+
+        /// <summary>
+        /// Section 5.4's `stand`, as a write: the input is cleared and the heading is left alone.
+        ///
+        /// THE HEADING IS DELIBERATELY NOT TOUCHED. The client's `MoveAngle` is re-polled from the
+        /// player's own input every frame, so writing anything into it here would be a value that
+        /// outlives this frame on a frame where the client is not reading movement at all.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static void StopInput(object input)
+        {
+            _setMoving(input, false);
+            _setMoveSpeed(input, 0f);
+            DodgeAdapter.NoteWrittenScale(1.0f);
         }
 
         /// <summary>
         /// The one thing that has to happen before the patch: the `Angle` type initializer, and
         /// a write-read round trip through the emitted accessors with the box as the receiver.
         ///
+        /// **WHAT THIS DOES NOT PROVE, AND THE FIRST LIVE SWEEP IS THE RECEIPT.** This round trip
+        /// exercises the *box-shaped* accessor pair -- `FieldAccessor.FloatSetter` on
+        /// `Angle.Radians` and `FieldAccessor.Float` on the same field, both casting to `Angle`.
+        /// The instruction the actuator actually issues is the **nested** one,
+        /// `ldflda GameInput.MoveAngle; stfld Angle.Radians`, whose receiver is a `GameInput` and
+        /// not a box. For a while this method's log line said the round trip *was* the actuator's
+        /// own instruction, and that sentence is what made a run that wrote 0.0 rad and logged
+        /// `read-back 4.7124` look like a client that ignored the hook. It was not; the hook was
+        /// writing into its own box. **The nested write cannot be proved here** -- its receiver is
+        /// `GameInput`, which is abstract, and the runtime refuses to build one:
+        ///
+        ///     Activator.CreateInstance(GameInput)            -> MemberAccessException
+        ///     RuntimeHelpers.GetUninitializedObject(...)     -> MemberAccessException  (measured)
+        ///
+        /// -- so it is proved where it can be, on a real input object, by
+        /// <see cref="ProveInputWrite"/> at the top of the first frame that has one.
+        ///
         /// IT USED TO BUILD A THROWAWAY `GameInput` TO EXERCISE THOSE ACCESSORS, AND THAT IS WHAT
-        /// KILLED EVERY STEERING RUN. `GameInput` is `public abstract class GameInput : Node`
-        /// (`GameInput.cs:8`), so the receiver could not be constructed, and the warm-up threw
-        /// `MemberAccessException: Cannot create an abstract class` -- which disarmed the pilot
-        /// before it ever steered. The character did not move in the 02:59:48 sweep or the
+        /// SILENCED EVERY EARLY STEERING RUN. `GameInput` is `public abstract class GameInput :
+        /// Node` (`GameInput.cs:8`), so the receiver could not be constructed, and the warm-up
+        /// threw `MemberAccessException: Cannot create an abstract class` -- which disarmed the
+        /// pilot before it ever steered. The character did not move in the 02:59:48 sweep or the
         /// 03:04:04 hold for that reason and no other.
         ///
         /// The lesson is not "find a concrete subclass". It is that **a first-use check must not
         /// need an object the hook cannot legitimately build**, and this version needs exactly one
         /// object: the `Angle` box the pilot already owns.
         ///
-        /// WHAT WAS TRIED AND REMOVED, because it took the game down at startup: an explicit
-        /// `RuntimeHelpers.PrepareMethod` over every emitted accessor's `Method`. It had a
-        /// defensible reason -- a `DynamicMethod`'s body is JIT-compiled on first call, and the
-        /// first call is inside a patched frame -- and no need: `FieldAccessor` already compiles
-        /// each delegate at resolve with `CreateDelegate`, and preparing a `DynamicMethod`'s
-        /// `Method` is not the harmless no-op it looks like. The 03:17-03:19 runs died on that
-        /// line, inside this method, before its own log line:
+        /// WHAT WAS TRIED AND REMOVED, AND WHAT WAS ACTUALLY WRONG. An explicit
+        /// `RuntimeHelpers.PrepareMethod` pass over every emitted accessor's `Method` was removed
+        /// because it was blamed for the startup access violation the 03:17-03:19 runs left
+        /// (`0xC0000005 at System.Private.CoreLib.dll, read of 00007FFF3E800010`). **The removal
+        /// did not stop the crash, and the blame was misplaced.** The round trip below read the
+        /// box back through `_getMoveAngleRadians`, whose IL casts its receiver to `GameInput`, and
+        /// `castclass` on a boxed struct is an access violation rather than a catchable
+        /// `InvalidCastException` -- the process died on that line on *every* run, steering asked
+        /// for or not, which is why the game "never opened". The receipt and the corrected
+        /// accessor are on `_getBoxedAngleRadians`. The `PrepareMethod` pass stays removed: it was
+        /// a pre-compile step nothing needed, but it was not the fault.
         ///
-        ///     exception 0xC0000005 at System.Private.CoreLib.dll, read of 00007FFF3E800010
-        ///
-        /// **A pre-compile step that nothing needs is not free.** The static-method preparation
-        /// in `PreparePilotPath` is a different thing and stays: those are ordinary methods with
-        /// real handles, and they have been prepared on every run since the first build.
+        /// The static-method preparation in `PreparePilotPath` is a different thing and stays:
+        /// those are ordinary methods with real handles, and they have been prepared on every run
+        /// since the first build.
         /// </summary>
         internal static void Warm()
         {
@@ -709,14 +1053,17 @@ namespace Drelay.Bootstrap
             {
                 _boxedAngle = _boxedAngle ?? Activator.CreateInstance(_angleType);
 
-                // The round trip, through the emitted accessors, with the box as the receiver:
-                // this is the actuator's own instruction.
-                _setMoveAngleRadians(_boxedAngle, 0.25f);
-                float readBack = _getMoveAngleRadians(_boxedAngle);
+                // The round trip, through the emitted accessors, with the box as the receiver.
+                // The getter is the BOX-SHAPED one -- `_getBoxedAngleRadians`, whose IL casts to
+                // `Angle` -- and not `_getMoveAngleRadians`, which casts to `GameInput` and faults
+                // the process when it is handed a boxed struct. See `_getBoxedAngleRadians`.
+                _setBoxedAngleRadians(_boxedAngle, 0.25f);
+                float readBack = _getBoxedAngleRadians(_boxedAngle);
 
                 HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
-                    "steering pilot warmed before the patch: the Angle type is initialised and a "
-                    + "write-read round trip through the box gave {0:0.####}", readBack));
+                    "steering pilot warmed before the patch: the Angle type is initialised and the "
+                    + "emitted box accessors round trip {0:0.####}; the NESTED input write is proved "
+                    + "separately, on the first frame with a live input", readBack));
 
                 if (readBack != 0.25f)
                 {
@@ -746,9 +1093,23 @@ namespace Drelay.Bootstrap
         ///
         /// `World.cs:12692` computes `MoveAngle.AddRadians(-WorldRotation + aimOffset)`, so
         /// an input of `worldHeading + WorldRotation` produces a world direction of
-        /// `worldHeading` when the aim offset is zero. `sweep` mode skips the correction on
-        /// purpose -- it is measuring the mapping, and the observed heading is logged
-        /// beside the commanded one so the relation can be read off the table.
+        /// `worldHeading` when the aim offset is zero.
+        ///
+        /// IT APPLIES THE CORRECTION IN **EVERY** MODE, INCLUDING `sweep`, AND THE FIRST VERSION
+        /// DELIBERATELY DID NOT. Sweeping raw input angles (`sweep` wrote `target` and nothing else)
+        /// was meant to *measure* the transform by writing a known input and reading the world
+        /// heading back -- sound reasoning, and it holds only with a still camera. The run of
+        /// `20261014-192048-p15744` rotated the camera through every phase, and the sweep's own
+        /// numbers say what that does: `mean cos(observed - last commanded)` came out 0.829,
+        /// **-0.493, -0.619**, 0.672, 0.694 -- a measurement taken against a moving reference, in
+        /// which the reference's motion is indistinguishable from a wrong transform.
+        ///
+        /// The correction being applied everywhere does not weaken the test; it makes it a NULL
+        /// test, which is a stronger one. The commanded world heading is now `target` in every
+        /// mode, so **the observed heading must equal the target whatever the camera does**, and the
+        /// residual is the transform's error rather than the camera's motion. To keep that legible
+        /// the phase summary now reports the world rotation it mixed in (`_phaseSumRotCos/Sin`), so
+        /// a reader can see the correction was actually exercised rather than assume it.
         /// </summary>
         private static float PhaseAngle(float worldRotation)
         {
@@ -757,7 +1118,7 @@ namespace Drelay.Bootstrap
                 return _commandedRadians;
             }
             float target = _phaseTargets[_phase] * ((float)Math.PI / 180f);
-            return _sweepMode ? target : target + worldRotation;
+            return target + worldRotation;
         }
 
         /// <summary>Move to the next phase when the current one has run its frames.</summary>
@@ -847,15 +1208,35 @@ namespace Drelay.Bootstrap
             _totalMoved++;
             _phaseSumAbs += length;
 
-            // The observed heading and the alignment with what was commanded. In sweep
-            // mode the commanded angle is an *input* angle rather than a world one, so the
-            // cosine is reported per phase and the mapping is read off the observed
-            // headings instead; in hold mode the two frames are the same and this is the
-            // number that answers "did the client obey".
+            // The observed heading and the alignment with what was commanded.
+            //
+            // WHICH FRAME'S ROTATION BELONGS TO WHICH FRAME'S DISPLACEMENT IS THE WHOLE of this
+            // measurement, and getting it wrong is silent. The displacement accumulated here was
+            // produced by the input written at call N-1, which was executed by the original
+            // integrator of call N-1 -- one call ago -- using the camera rotation that was live at
+            // call N-1. So the rotation to record is `_prevRotation`, not the one just read, and the
+            // commanded angle to compare against is `_prevCommandedRadians`, not this call's.
+            // `EndCall` below rotates all three one step forward.
             double observed = Math.Atan2(dy, dx);
+            double worldHeading = _prevCommandedRadians - _prevRotation;
             _phaseSumSin += Math.Sin(observed);
             _phaseSumCos += Math.Cos(observed);
-            _phaseSumCosine += Math.Cos(observed - _commandedRadians);
+            _phaseSumCosine += Math.Cos(observed - worldHeading);
+            _phaseSumRotSin += Math.Sin(_prevRotation);
+            _phaseSumRotCos += Math.Cos(_prevRotation);
+        }
+
+        /// <summary>
+        /// Ages the three per-call values, at the END of the call, so that the accumulator above --
+        /// which runs at the START of the next call -- sees the input and rotation that produced the
+        /// displacement it is about to measure.
+        /// </summary>
+        private static void EndCall(float rotation, float commanded)
+        {
+            _prevRotation = _lastRotation;
+            _lastRotation = rotation;
+            _prevCommandedRadians = _commandedRadians;
+            _commandedRadians = commanded;
         }
 
         private static void ResetPhaseAccumulators()
@@ -865,6 +1246,8 @@ namespace Drelay.Bootstrap
             _phaseSumAbs = 0;
             _phaseSumSin = 0;
             _phaseSumCos = 0;
+            _phaseSumRotSin = 0;
+            _phaseSumRotCos = 0;
         }
 
         private static void EmitPhaseSummary(int phase)
@@ -876,12 +1259,19 @@ namespace Drelay.Bootstrap
             double observed = _phaseMoved > 0 ? Math.Atan2(_phaseSumSin, _phaseSumCos) : double.NaN;
             double meanCosine = _phaseMoved > 0 ? _phaseSumCosine / _phaseMoved : double.NaN;
             double meanAbs = _phaseMoved > 0 ? _phaseSumAbs / _phaseMoved : double.NaN;
+            // The circular mean of the camera rotation this phase mixed in, in degrees. Printed so
+            // that "the correction was exercised" is a number in the log rather than an assumption
+            // about what the operator did with the mouse.
+            double meanRotation = _phaseMoved > 0
+                ? Math.Atan2(_phaseSumRotSin, _phaseSumRotCos) * 180.0 / Math.PI
+                : double.NaN;
             HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
                 "steering phase {0} ({1}): target {2:0.#}deg, moved on {3} frame(s), "
                 + "observed heading {4:0.0}deg, mean |delta| {5:0.0000} world units, "
-                + "mean cos(observed - last commanded) {6:0.000}",
+                + "mean cos(observed - commanded world heading) {6:0.000}, "
+                + "mean WorldRotation {7:0.0}deg",
                 phase + 1, _phaseNames[phase], _phaseTargets[phase], _phaseMoved,
-                observed * 180.0 / Math.PI, meanAbs, meanCosine));
+                observed * 180.0 / Math.PI, meanAbs, meanCosine, meanRotation));
             HookEntry.FlushLog();
         }
 
@@ -1034,8 +1424,8 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
-        /// Prepare the pilot's own static methods before the patch goes live, so the frame path
-        /// is not compiled from inside a patched frame.
+        /// Prepare the pilot's own static methods before the patch goes live, so the frame path is
+        /// not compiled from inside a patched frame.
         ///
         /// THESE ARE ORDINARY METHODS, WHICH IS WHY THIS ONE IS SAFE. The warm-up's removed pass
         /// called `PrepareMethod` on the emitted accessors' `Method` -- a `DynamicMethod`, whose
@@ -1047,31 +1437,57 @@ namespace Drelay.Bootstrap
         /// `PrepareMethod` covers the method named and nothing it calls, so the callees on the
         /// frame path are named explicitly. The accessor delegates are not in the list because
         /// `FieldAccessor` compiles each of them at resolve, where `CreateDelegate` is called.
+        ///
+        /// **IT MATCHES BY NAME ACROSS ALL OVERLOADS, AND THAT IS A FIX RATHER THAN A STYLE.**
+        /// This used to call `GetMethod(name, flags)` once per name. `Type.GetMethod` throws
+        /// `AmbiguousMatchException` when a name has more than one overload, and the moment
+        /// Deliverable 3.3 added `WriteInput(object, float, float)` beside the original
+        /// `WriteInput(object, float)`, this method threw -- on the frame-path warm-up, from inside
+        /// `Publish`, which took the whole `Publish` call with it:
+        ///
+        ///     publishing the movement replacement threw; the movement target will not be patched
+        ///     ... System.Reflection.AmbiguousMatchException: Ambiguous match found for
+        ///     'Drelay.Bootstrap.SteeringPilot Void WriteInput(System.Object, Single)'.
+        ///
+        /// So an overload silently cost the project its actuator -- every steering run, not just the
+        /// dodge's -- and nothing about the build could see it, because it is a runtime lookup. The
+        /// synthetic probe (`tools\Probe-DodgeDryRun.ps1`) is what caught it. Iterating the methods
+        /// and matching the name cannot be ambiguous, so no future overload can repeat it.
         /// </summary>
         private static void PreparePilotPath()
         {
             string[] names =
             {
-                "BeforeOriginal", "WriteInput", "PhaseAngle", "AdvancePhase", "ReleaseInput",
-                "Accumulate", "EmitPhaseSummary", "EmitRunSummary", "LogFrame", "ParsePlan",
-                "BuildStatus", "Missing", "Resolve", "Warm",
+                "BeforeOriginal", "WriteInput", "StopInput", "PhaseAngle", "AdvancePhase",
+                "ReleaseInput", "Accumulate", "EndCall", "EmitPhaseSummary", "EmitRunSummary",
+                "LogFrame", "ParsePlan", "BuildStatus", "Missing", "Resolve", "Warm",
             };
-            for (int i = 0; i < names.Length; i++)
+            MethodInfo[] methods = typeof(SteeringPilot).GetMethods(
+                BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+            for (int i = 0; i < methods.Length; i++)
             {
-                MethodInfo m = typeof(SteeringPilot).GetMethod(
-                    names[i], BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-                if (m != null)
+                bool wanted = false;
+                for (int n = 0; n < names.Length; n++)
                 {
-                    try
+                    if (names[n] == methods[i].Name)
                     {
-                        RuntimeHelpers.PrepareMethod(m.MethodHandle);
+                        wanted = true;
+                        break;
                     }
-                    catch
-                    {
-                        // A callee that is generic or otherwise unprepared is skipped; the
-                        // rest of the path is still warmed, and the failure is not silent
-                        // because the publish log follows.
-                    }
+                }
+                if (!wanted)
+                {
+                    continue;
+                }
+                try
+                {
+                    RuntimeHelpers.PrepareMethod(methods[i].MethodHandle);
+                }
+                catch
+                {
+                    // A callee that is generic or otherwise unprepared is skipped; the rest of
+                    // the path is still warmed, and the failure is not silent because the publish
+                    // log follows.
                 }
             }
         }

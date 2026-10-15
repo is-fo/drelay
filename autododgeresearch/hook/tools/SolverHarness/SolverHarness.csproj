@@ -1,0 +1,51 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SolverHarness: Spike 3.2's offline half.
+
+    WHY IT COMPILES THE SOLVER'S SOURCE RATHER THAN REFERENCING THE HOOK'S DLL.
+
+    The whole point of the exercise, IMPLEMENTATION-PLAN.md's words: that "the decision is
+    a pure function of a plain-data snapshot ... so the solver can be tested without the game".
+    A harness that referenced `Drelay.Bootstrap.dll` would drag the startup hook into the test
+    process: that assembly's type initializers, its P/Invokes and its native shared block are all
+    meaningful only inside the game. It would also make the offline result depend on which build
+    of the hook happened to be on disk.
+
+    A second, independent implementation of the solver in the harness (or in Python) would be
+    worse: it would agree with the shipped solver until it did not, and the divergence would be
+    invisible until a live run steered into a bullet.
+
+    So the *same source files* are compiled into both places. `Compile Include` with a relative
+    path is the only mechanism in MSBuild that guarantees that, and it also guarantees the
+    harness cannot silently fall behind: a change to the solver that breaks the pure-data
+    contract breaks this build immediately, which is exactly when you want to find out.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SolverHarness</AssemblyName>
+    <RootNamespace>Drelay.SolverHarness</RootNamespace>
+    <UseAppHost>true</UseAppHost>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Deterministic>true</Deterministic>
+    <!--
+      WarningLevel is deliberately NOT inherited from managed/Directory.Build.props: this project
+      lives under hook/tools, which that props file does not reach, and that is on purpose. The
+      harness is not shipped into the game and should not be held to the hook's /WX bar for
+      things like an unused local in a report function.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The pure-data contract and the solver. Nothing else from the hook may be added here:
+         these two files are the only ones guaranteed to compile without the game. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSnapshot.cs" Link="Solver\DodgeSnapshot.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSolver.cs" Link="Solver\DodgeSolver.cs" />
+  </ItemGroup>
+
+</Project>

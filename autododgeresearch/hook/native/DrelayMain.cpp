@@ -846,7 +846,7 @@ DWORD WINAPI WatcherThread(LPVOID) {
 
     // 9. Idle.  The hook's work is done; it stays resident only so a later phase
     //    has somewhere to publish and so shutdown can flush.  It must not
-    //    consume CPU: the bridge is Phase 5 and until then there is nothing to
+    //    consume CPU: the bridge is Phase 4 and until then there is nothing to
     //    wait for but shutdown.
     for (;;) {
         if (InterlockedCompareExchange(&g_shutdownRequested, 0, 0) != 0) {

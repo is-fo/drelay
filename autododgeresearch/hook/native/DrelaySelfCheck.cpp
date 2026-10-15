@@ -353,9 +353,9 @@ void DrelayRunLiveChecks(DrelayInstallReport* report) {
         }
     }
 
-    // 8. The bridge.  Phase 5's, and reported as a gap rather than as a pass so
+    // 8. The bridge.  Phase 4's, and reported as a gap rather than as a pass so
     //    that nobody reads this file as evidence of a working bridge.
-    AddCheck(DRELAY_STATUS_GAP, "8  the relay bridge is Phase 5 and is not present");
+    AddCheck(DRELAY_STATUS_GAP, "8  the relay bridge is Phase 4 and is not present");
 
     // The frame tick, which is Spike 1.3's whole subject.
     //

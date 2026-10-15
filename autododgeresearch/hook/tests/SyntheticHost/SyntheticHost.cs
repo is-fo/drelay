@@ -201,6 +201,23 @@ namespace DarzasDominion.Darza.Game.Objects
         /// <summary>The trajectory family.  `GetPosition` is called on this object, not reimplemented.</summary>
         public DarzaCore.Data.ProjDesc Desc;
 
+        /// <summary>
+        /// The client's own two exclusion flags, modelled because a filter nothing can fail is a
+        /// filter nothing tests.
+        ///
+        /// `Projectile.Hit()` is `if (HitsPlayer) return HitCharacter(); return HitEnemy();`
+        /// (`Projectile.cs:1505`), and the client's spawn path sets `HitsPlayer` to
+        /// `this is Enemy` (`Entity.cs:1600`) -- so a projectile fired by the local player can never
+        /// reach the player-collision code. `LocalSeedDerived` (`:115`) is the client's second,
+        /// independent statement of the same thing: true only for projectiles the local player
+        /// fired. The host sets one projectile in three to be a local shot, born on the player and
+        /// aimed away, so a threat set that includes them is visible here as well as live.
+        /// </summary>
+        public bool HitsPlayer = true;
+
+        /// <summary>See <see cref="HitsPlayer"/>.</summary>
+        public bool LocalSeedDerived;
+
         /// <summary>The direction the game stores, which the sampler passes straight through.</summary>
         public float Sin;
         public float Cos;
@@ -497,6 +514,16 @@ namespace SyntheticHostFixture
         private static long _incoming;
         private static long _outgoing;
 
+        /// <summary>
+        /// Projectiles spawned as the local player's own shots: `HitsPlayer` false,
+        /// `LocalSeedDerived` true, born on the player. There is no correct threat set that contains
+        /// one, so a sensor that reports them is wrong by construction.
+        /// </summary>
+        private static long _localShots;
+
+        /// <summary>Local shots the fixture has spawned. See <see cref="_localShots"/>.</summary>
+        public static long LocalShots => _localShots;
+
         /// <summary>Collisions the host decided, which is what the hook's count is checked against.</summary>
         public static long Hits;
 
@@ -600,6 +627,29 @@ namespace SyntheticHostFixture
                 ? (DarzaCore.Data.ProjDesc)new DarzaCore.Data.WavyDesc()
                 : new DarzaCore.Data.StraightDesc();
             projectile.AgeMs = 0;
+
+            // ONE IN THREE IS A LOCAL SHOT: BORN AT THE MUZZLE, AIMED AWAY, AND UNABLE TO HIT ITS
+            // OWNER. This is the case that made a live dodge take the wheel around the player's own
+            // muzzle (SPIKE3.2-OFFLINE-SOLVER.md section 12): `HitsPlayer` false, `LocalSeedDerived`
+            // true, and the spawn point inside the player's collision disc, which is what let it
+            // reach the threat set at all. Without it here, the exclusion `TrajectorySampler` now
+            // applies is a branch no test in this repository can reach.
+            bool localShot = player != null && (_nextGameId % 3 == 1);
+            if (localShot)
+            {
+                projectile.HitsPlayer = false;
+                projectile.LocalSeedDerived = true;
+                spawnX = player.Position.X;
+                spawnY = player.Position.Y;
+                projectile.SpawnOriginX = spawnX;
+                projectile.SpawnOriginY = spawnY;
+                _localShots++;
+            }
+            else
+            {
+                projectile.HitsPlayer = true;
+                projectile.LocalSeedDerived = false;
+            }
 
             Place(projectile);
             // INTO THE LAYER, NOT INTO `World.Objects`, AND THAT IS THE CLIENT'S PATH:
@@ -779,6 +829,16 @@ namespace SyntheticHostFixture
                             continue;
                         }
                         projectile.Target = player.Position;
+
+                        // THE CLIENT'S OWN DISPATCH, BEFORE THE METHOD IT DISPATCHES TO. `Hit()` is
+                        // `if (HitsPlayer) return HitCharacter(); return HitEnemy();`, so a local
+                        // shot is never asked the player question at all -- and a fixture that asked
+                        // anyway would report hits the client never resolves, which is the failure
+                        // mode the flags exist to prevent.
+                        if (!projectile.HitsPlayer)
+                        {
+                            continue;
+                        }
 
                         // THE GAME'S OWN DECISION, through the method the hook patches.
                         if (projectile.HitCharacter())

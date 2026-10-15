@@ -127,6 +127,19 @@ namespace Drelay.Launcher
         //     environment unchanged and let the hook read it.
         public string MoveSteer;
 
+        // SPIKE 3.2'S RECORDING REQUEST.
+        //
+        // IT SETS THREE THINGS, AND EACH ONE IS A DEPENDENCY THE OPERATOR SHOULD NOT HAVE TO KNOW
+        // ABOUT. The trace recorder reads `DRELAY_TRACE`; it is called from the MANAGED frame
+        // replacement and not from the native frame detour, so it needs
+        // `DRELAY_HOOK_FRAME_REPLACEMENT=1`; and its input is the Phase 2 sensor's threat set, so it
+        // needs `DRELAY_FRAME_SENSOR=1`. A run that gets any of them wrong writes a valid header and
+        // zero frames -- an empty file that looks exactly like a session in which no bullet came
+        // near, which is why the offline harness now fails on an empty recording rather than
+        // reporting every invariant vacuously held. The run of `20261014-164314-p12060` is that
+        // file, and it cost a session.
+        public bool Trace;
+
         // PHASE 3'S ESCALATION TEST: call `World.RequestEscape()` once, under hook control.
         //
         // WHY IT IS A SWITCH AND NOT PART OF THE DODGE.  The escape is Phase 3's floor --
@@ -147,6 +160,40 @@ namespace Drelay.Launcher
         // test and did not install the frame replacement would report "the test never armed"
         // and read as a client refusal. TryParse adds the flag and says so.
         public double EscapeTestSeconds = -1.0;
+
+        // DELIVERABLE 3.3: THE DODGE'S OWN TWO SWITCHES, AND THEY ARE TWO ON PURPOSE.
+        //
+        // `--dodge` runs the solver on live frames and LOGS what it would have done. That is the
+        // plan's requirement ("ship it behind its own switch, defaulting to a mode that logs
+        // decisions without acting"), and it is also the only shape in which the decision can be
+        // compared against a session's health trace before anything moves.
+        //
+        // `--dodge-act` additionally lets the decision reach the input -- and even then only
+        // because it also puts the pilot in `dodge` mode, where the pilot writes nothing at all on
+        // any frame the adapter publishes no command. So moving the player takes three separate
+        // decisions: the dodge on, the acting on, and the actuator in dodge mode.
+        //
+        // BOTH IMPLY THE FRAME REPLACEMENT AND THE SENSOR, for the reason `--trace` does: the
+        // adapter runs on the sensor's frame path and its input is the sensor's projectile list, so
+        // `--dodge` without either is a solver that decides about an empty world on every frame and
+        // reports `NoThreat` -- an empty recording's twin, and that one already cost a session.
+        public bool Dodge;
+        public bool DodgeAct;
+
+        // THE RULE 6 DECISION WINDOW, PASSED AT STARTUP RATHER THAN REBUILT.
+        //
+        // `--dodge-disc K` sets the window as a MULTIPLE of the time a projectile takes to cross the
+        // collision disc (`player.radius + projectile.radius`). It replaced a constant 50 ms, which
+        // was a DISTANCE of `0.05 * speed` -- 1.95x the collision disc on a 16 u/s projectile and
+        // 0.53x of it on the 6 u/s ones -- so one number could not be right for both ends of the
+        // game. `--dodge-window S` is an absolute floor in seconds under it and is 0 by default.
+        //
+        // THE TWO PASS -1 FOR "NOT SET" rather than carrying a copy of the solver's default, for the
+        // same reason `EscapeTestSeconds` does: a default duplicated in two assemblies is a default
+        // that will disagree with itself, and this one already exists in `DodgeConfig.Default()`.
+        // Only a value the operator actually typed travels.
+        public double DodgeDisc = -1.0;
+        public double DodgeWindowSeconds = -1.0;
 
         // How long the hook keeps recording after it patches the frame tick, in
         // seconds.  Passed to the hook as `DRELAY_HOOK_LIVE_MS`.
@@ -195,6 +242,34 @@ namespace Drelay.Launcher
                 case "--frame-helper": options.FrameHelper = true; break;
                 case "--frame-replacement": options.FrameReplacement = true; break;
                 case "--move-steer": options.MoveSteer = Next(args, ref i); break;
+                case "--trace": options.Trace = true; break;
+                case "--dodge": options.Dodge = true; break;
+                case "--dodge-act": options.Dodge = true; options.DodgeAct = true; break;
+                case "--dodge-disc":
+                {
+                    string raw = Next(args, ref i);
+                    if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                         out double disc) || disc < 0.0)
+                    {
+                        error = "--dodge-disc needs a non-negative multiple of the projectile's"
+                                + " collision-disc crossing time, got '" + raw + "'";
+                        return false;
+                    }
+                    options.DodgeDisc = disc;
+                    break;
+                }
+                case "--dodge-window":
+                {
+                    string raw = Next(args, ref i);
+                    if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture,
+                                         out double floor) || floor < 0.0)
+                    {
+                        error = "--dodge-window needs a non-negative number of seconds, got '" + raw + "'";
+                        return false;
+                    }
+                    options.DodgeWindowSeconds = floor;
+                    break;
+                }
                 case "--escape-test":
                 {
                     string raw = Next(args, ref i);
@@ -257,6 +332,17 @@ namespace Drelay.Launcher
             if (string.IsNullOrEmpty(options.GamePath))
             {
                 error = "--game is required.";
+                return false;
+            }
+
+            // A CONTRADICTION IS REFUSED RATHER THAN RESOLVED. `--dodge-act` puts the pilot in
+            // `dodge` mode; an explicit `--move-steer` says something else. Quietly preferring one
+            // would be a run that walks where the operator did not ask -- the exact class of
+            // surprise `--move-steer`'s own comment says the mode-value design exists to prevent.
+            if (options.DodgeAct && !string.IsNullOrEmpty(options.MoveSteer))
+            {
+                error = "--dodge-act drives the actuator itself and cannot be combined with "
+                        + "--move-steer '" + options.MoveSteer + "'; pass one or the other.";
                 return false;
             }
             // Resolving relative paths against the *current* directory is a way
@@ -655,6 +741,13 @@ namespace Drelay.Launcher
             {
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_FRAME_REPLACEMENT", "1"));
             }
+            if (options.Trace)
+            {
+                // THE THREE THAT TOGETHER MAKE A TRACE NON-EMPTY. See `Options.Trace`.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_FRAME_REPLACEMENT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_FRAME_SENSOR", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_TRACE", "1"));
+            }
             if (!string.IsNullOrEmpty(options.MoveSteer))
             {
                 // BOTH NAMES, AND THE SECOND ONE IS THE OPERATOR'S OWN.
@@ -672,6 +765,42 @@ namespace Drelay.Launcher
                 // behaviour.
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
                 variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", options.MoveSteer));
+            }
+            if (options.Dodge)
+            {
+                // THE THREE DEPENDENCIES OF A LIVE DECISION, SET TOGETHER. See `Options.Dodge`.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_FRAME_REPLACEMENT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_FRAME_SENSOR", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_DODGE", "1"));
+                // THE DECISION WINDOW, IF THE OPERATOR ASKED FOR ONE. It travels under its own name
+                // for the managed side to read, and it is set even in a plain `--dodge` dry run
+                // because the window changes which candidates are admissible -- so a dry run that
+                // does not carry it is a dry run of a different dodge from the one that will act.
+                if (options.DodgeDisc >= 0.0)
+                {
+                    variables.Add(new KeyValuePair<string, string>(
+                        "DRELAY_DODGE_DECISION_DISC",
+                        options.DodgeDisc.ToString("0.####", CultureInfo.InvariantCulture)));
+                }
+                if (options.DodgeWindowSeconds >= 0.0)
+                {
+                    variables.Add(new KeyValuePair<string, string>(
+                        "DRELAY_DODGE_WINDOW_S",
+                        options.DodgeWindowSeconds.ToString("0.####", CultureInfo.InvariantCulture)));
+                }
+            }
+            if (options.DodgeAct)
+            {
+                // AND THE ACTUATOR'S OWN TWO, WHICH ONLY THIS SWITCH SETS.
+                //
+                // `DRELAY_DODGE_ACT` is the adapter's gate; `DRELAY_HOOK_MOVE_REPLACEMENT` plus
+                // `DRELAY_MOVE_STEER=dodge` is the pilot's. The same name-with-a-value split as
+                // `--move-steer`, for the same reason: the *flag* that decides whether a patched
+                // game's frame enters managed code lives in the namespace the launcher owns and
+                // deletes inherited values from, and the *value* travels under its own name.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_DODGE_ACT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", "dodge"));
             }
             if (options.EscapeTestSeconds >= 0.0)
             {
@@ -865,6 +994,9 @@ namespace Drelay.Launcher
                        managed stack. Replaces the detour: with this on, the native
                        frame read and its ring are not in the path. Off by default;
                        Phase 2's mechanism test.
+  --trace              SPIKE 3.2: record trace.jsonl in the run directory. Sets the frame
+                       replacement, the frame sensor and the recorder together, because any of
+                       the three missing produces a valid, empty file.
   --move-steer VALUE   PHASE 3 SPIKE 3.1: let the hook steer the player, using
                        the hook's own actuator. VALUE selects the experiment and is
                        documented in PHASE3-SCOPE.md; without this switch the
@@ -876,6 +1008,33 @@ namespace Drelay.Launcher
                                                        commanded-vs-observed pairs
                        The player WILL move. Do not use it in a run whose result
                        matters, and never while a nexus cast is in progress.
+  --dodge              DELIVERABLE 3.3, DRY RUN: run the solver on live frames and LOG what
+                       it would have done -- the heading, the magnitude, the reason, the
+                       candidate count, the cost -- without writing the input at all. Sets
+                       the frame replacement and the frame sensor, because the decision runs
+                       on the sensor's frame path and an empty threat set decides `NoThreat`
+                       on every frame. This is the default shape of the dodge and the one to
+                       run first: it is the paired-trial evidence, and it cannot move anybody.
+  --dodge-act          THE LIVE DODGE, AND THE ONLY SWITCH IN THIS PROJECT THAT MOVES THE
+                       PLAYER ON THE SOLVER'S WORD. Implies --dodge and additionally sets
+                       DRELAY_DODGE_ACT=1, patches the movement replacement and runs the pilot
+                       in `dodge` mode. On any frame the adapter publishes no command the
+                       pilot writes nothing, so the player's own input stands. Mutually
+                       exclusive with --move-steer. The player WILL move; the log says where.
+  --dodge-disc K       THE RULE 6 DECISION WINDOW, as a multiple of the time a projectile takes
+                       to cross the collision disc (player radius + projectile radius). The
+                       window is how much of a bullet's path counts as the frame being spent and is refused
+                       outright; past it the candidate is only refused if it gets closer to the
+                       bullet than standing still would. It was a constant 50 ms, which is a
+                       DISTANCE of `0.05 * speed` -- about 1.95x the collision disc on a 16 u/s
+                       projectile and 0.53x of it on a 6 u/s one -- so one number could not be
+                       right for both. K is unitless and now does the same job at every speed.
+                       Default 2 (two disc-crossings). K=0 turns the scaling off and runs the
+                       rule on --dodge-window alone, which with 0.05 is the old behaviour exactly.
+                       Sets DRELAY_DODGE_DECISION_DISC; the run logs it as `disc=Kx`.
+  --dodge-window SEC   An absolute floor in seconds under that window; 0 (the default) means the
+                       speed-scaled value always wins. Sets DRELAY_DODGE_WINDOW_S; logged as
+                       `floor=SECs`.
   --escape-test SEC    PHASE 3'S FLOOR TEST: call World.RequestEscape() once, from
                        inside the game, SEC seconds after the world first exists.
                        This is the client's own nexus entry point, so it runs the

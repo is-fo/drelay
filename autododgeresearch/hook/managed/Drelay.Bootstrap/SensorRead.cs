@@ -110,11 +110,17 @@ namespace Drelay.Bootstrap
         /// the frame the sampler is about to look at it in -- the alternative is a
         /// collection between the read and the sample, which would hand the sampler a
         /// bullet that has already been recycled.
+        ///
+        /// INTERNAL RATHER THAN PRIVATE, AND THE ONE REASON IS THE TRACE. The Spike 3.2
+        /// recorder records "the bullets that could matter" from *this* frame's list, and the
+        /// alternative -- walking the game's drawing layer a second time per frame -- would
+        /// double the cost of a run whose purpose is to be an ordinary run. A copy would be
+        /// worse than either: it would allocate once per frame forever.
         /// </summary>
-        private static readonly List<object> LiveObjects = new List<object>();
+        internal static readonly List<object> LiveObjects = new List<object>();
 
         /// <summary>The identity of each live projectile, in lockstep with LiveObjects, so the sampler can mark a prediction on the right record.</summary>
-        private static readonly List<ThreatKey> LiveKeys = new List<ThreatKey>();
+        internal static readonly List<ThreatKey> LiveKeys = new List<ThreatKey>();
 
         /// <summary>
         /// Which keys have already been taken from a source this frame, so the two sources

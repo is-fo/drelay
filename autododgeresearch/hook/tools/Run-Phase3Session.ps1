@@ -20,6 +20,17 @@
                     alone, before the solver exists to need it, because `escape` was reported
                     MISSING in the live run of 2026-10-13 for the one reason a target can be
                     missing with nothing wrong: nothing had ever called it.
+      * `Dodge`  -- `--dodge-act`.  DELIVERABLE 3.3, AND THE RUN THAT IS NOT A CALIBRATION.
+                    The solver decides at the frame tick and the pilot writes its answer at the
+                    movement integrator's entry; on every frame the adapter publishes no command
+                    the pilot writes nothing and the player's own input stands.  This is the first
+                    session in which the decision and the game share a frame.
+
+    `-Dodge` IS A SEPARATE SWITCH, NOT AN EXPERIMENT.  It adds the DRY RUN (`--dodge`) to whatever
+    else the run is doing -- the solver decides on every frame and logs what it would have done,
+    and nothing moves on its word.  That is the mode to run first, it is the paired-trial evidence
+    IMPLEMENTATION-PLAN.md asks for, and it is the only shape in which the decision can be lined up
+    against a session's health trace before anything acts on it.
 
     It can also run all three end to end (`-Experiment All`), which is the cheapest way for an
     operator to answer the whole spike in one sitting.
@@ -63,6 +74,25 @@
     Skip the launch and analyse a run directory that already exists.  This is how the analysis is
     verified without a game, and how a session that has already been played is re-read.
 
+.PARAMETER Trace
+    SPIKE 3.2: record `trace.jsonl` in the run directory -- one line per frame with the player, the
+    collision grid and every threat's sampled path.  It is OFF BY DEFAULT because it is expensive:
+    about a kilobyte per bullet per frame, so a busy thirty-second session is tens of megabytes.
+    The recorder turns the Phase 2 sensor on for itself, because the trace's input is that sensor's
+    output.
+
+    The file is what `tools\SolverHarness` reads.  Without a recorded trace, T7 -- "predicted and
+    actual collision agree" -- cannot be evaluated at all: it is the one invariant that needs a
+    session somebody actually played.
+
+.EXAMPLE
+    .\Run-Phase3Session.ps1 -Experiment Sweep -Seconds 240
+
+.EXAMPLE
+    # A recording session, then the offline solver over it.  The character will walk.
+    .\Run-Phase3Session.ps1 -Experiment Hold -Seconds 300 -Trace
+    tools\SolverHarness\bin\Release\SolverHarness.exe --trace <run>\trace.jsonl --collisions <run>\bootstrap.log
+
 .EXAMPLE
     .\Run-Phase3Session.ps1 -Experiment Sweep -Seconds 240
 
@@ -71,12 +101,21 @@
     .\Run-Phase3Session.ps1 -Experiment All -Seconds 240 -RelayLog .\logs\relay-....log
 
 .EXAMPLE
+    # THE DRY RUN.  The solver decides on every frame and logs every move it would have made;
+    # nothing is written to the input.  Beat on by some bullets and read the DODGE NUMBERS line.
+    .\Run-Phase3Session.ps1 -Experiment Hold -Seconds 180 -Dodge
+
+.EXAMPLE
+    # THE LIVE DODGE.  The solver steers.  Somewhere it does not matter.
+    .\Run-Phase3Session.ps1 -Experiment Dodge -Seconds 180 -RelayLog .\logs\relay-....log
+
+.EXAMPLE
     # Re-read a run that has already been played.
     .\Run-Phase3Session.ps1 -AnalyseOnly "$env:LOCALAPPDATA\drelay\hook\20261014-023248-p5392"
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Sweep', 'Hold', 'Escape', 'All')]
+    [ValidateSet('Sweep', 'Hold', 'Escape', 'Dodge', 'All')]
     [string] $Experiment = 'Sweep',
     [string] $GamePath = "E:\SteamLibrary\steamapps\common\Darza's Dominion",
     [string] $RunRoot = (Join-Path $env:LOCALAPPDATA 'drelay\hook'),
@@ -87,7 +126,13 @@ param(
     [string] $RelayLog,
     [string] $CaseDir,
     [string] $AnalyseOnly,
-    [string] $DrelayRoot
+    [string] $DrelayRoot,
+    [switch] $Trace,
+    # DELIVERABLE 3.3'S DRY RUN, ON ANY EXPERIMENT. `-Dodge` adds `--dodge` to the launch
+    # whatever else the run is doing, so a `Hold` run can carry the decision stream beside the
+    # steering evidence -- which is exactly the shape SPIKE3.2-OFFLINE-SOLVER.md's section 6
+    # keeps asking for and the only way the dry run gets a real session.
+    [switch] $Dodge
 )
 
 # ---------------------------------------------------------------------------
@@ -147,6 +192,10 @@ function Get-SteerArgument([string] $which) {
         'Sweep'  { return @('--move-steer', "sweep:240") }
         'Hold'   { return @('--move-steer', "hold:${HoldDegrees}:${HoldFrames}") }
         'Escape' { return @('--escape-test', "$EscapeAfterSeconds") }
+        # THE ONE EXPERIMENT THAT IS NOT A CALIBRATION. `--dodge-act` puts the pilot in dodge mode
+        # and lets the solver write the heading; every frame it publishes nothing, the player's own
+        # input stands. It carries its own actuator flags, so no `--move-steer` is added beside it.
+        'Dodge'  { return @('--dodge-act') }
         default  { throw "no steer argument for '$which'" }
     }
 }
@@ -156,6 +205,7 @@ function Get-ExperimentNote([string] $which) {
         'Sweep'  { return "the character will WALK, turning a quarter-turn every 240 frames (~4 s). Let it." }
         'Hold'   { return "the character will WALK at $HoldDegrees deg for about $([math]::Round($HoldFrames / 60.0, 1)) s, then stop." }
         'Escape' { return "nothing moves; the hook will press the nexus ONCE, about $EscapeAfterSeconds s after the world loads." }
+        'Dodge'  { return "THE SOLVER STEERS. The character moves only where the decision sends it, and stands still where the player's own input is left alone. Run it somewhere it does not matter." }
         default  { return "" }
     }
 }
@@ -205,6 +255,25 @@ if ($AnalyseOnly) {
         # its own directory under %LOCALAPPDATA%, and the launcher already has the switch.
         $argv = @('--game', $GamePath, '--live-seconds', "$Seconds", '--runroot', $RunRoot)
         $argv += Get-SteerArgument $which
+        # SPIKE 3.2's RECORDING, AND IT RIDES ON THE RUN RATHER THAN REPLACING IT.
+        #
+        # ONE FLAG, BECAUSE THE THREE DEPENDENCIES BELONG TO THE LAUNCHER. A trace needs the
+        # recorder, the recorder is called from the MANAGED frame replacement, and its input is the
+        # Phase 2 sensor's threat set. Miss any one of the three and the run writes a valid, empty
+        # trace -- indistinguishable from a session in which no bullet came near. That is what the
+        # run of `20261014-164314-p12060` produced, so `--trace` now sets all three, and this runner
+        # passes the switch rather than setting an environment variable and hoping.
+        if ($Trace) {
+            $argv += '--trace'
+            Write-Host "  trace       : the run will write trace.jsonl into its run directory" -ForegroundColor Yellow
+        }
+        # THE DRY RUN RIDES ON WHATEVER EXPERIMENT WAS ASKED FOR. `-Experiment Dodge` already asked
+        # for the acting form, so it is not doubled here.
+        if ($Dodge -and $which -ne 'Dodge') {
+            $argv += '--dodge'
+            Write-Host "  dodge       : the solver will DECIDE on every frame and log what it would" -ForegroundColor Yellow
+            Write-Host "                have done. It will not write the input." -ForegroundColor Yellow
+        }
         Write-Host "  command     : Drelay.Launcher.exe $($argv -join ' ')" -ForegroundColor DarkGray
         Write-Host "  The launcher stays attached and streams the hook's log. Close the game when" -ForegroundColor DarkGray
         Write-Host "  the character has finished walking." -ForegroundColor DarkGray
@@ -277,6 +346,32 @@ $escapeWire = $joined -match "PASS F'' the escape reached the wire"
 $escapeAsked = ($launchedRuns.Count -gt 0) -and
                ($joined -notmatch 'PASS F the escape floor \(not requested this run\)')
 
+# ---------------------------------------------------------------------------
+# DELIVERABLE 3.3'S OWN CHECK, AND IT IS ASSERTION F ALL OVER AGAIN.
+#
+# The adapter's report line is read from `bootstrap.log` directly rather than through the Python
+# report, because the report is the ACTUATOR's instrument and this is the solver's. And it is read
+# for the same reason `SolverHarness` grew assertion F after defect 3.8: a dodge that never ran, a
+# dodge whose sensor never resolved and a dodge that ran and found nothing are three different
+# findings, and only the frame count separates them. `frames 0` is a failure even though every
+# other number on the line is a perfectly valid zero.
+# ---------------------------------------------------------------------------
+$dodgeAsked = $Dodge -or ($Experiment -eq 'Dodge')
+$dodgeFrames = -1
+$dodgeMode = 'none'
+$dodgeLine = $null
+foreach ($dir in $launchedRuns) {
+    $boot = Join-Path $dir 'bootstrap.log'
+    if (-not (Test-Path -LiteralPath $boot)) { continue }
+    $hit = Select-String -LiteralPath $boot -Pattern 'PHASE 3 DODGE NUMBERS \| mode ([A-Z ]+) \| frames (\d+)' |
+           Select-Object -Last 1
+    if ($hit) {
+        $dodgeMode = $hit.Matches[0].Groups[1].Value.Trim()
+        $dodgeFrames = [int]$hit.Matches[0].Groups[2].Value
+        $dodgeLine = $hit.Line
+    }
+}
+
 if ($launchedRuns.Count -eq 0) {
     Add-Check 'at least one run was produced and analysed' 'FAIL' `
         'nothing was launched or nothing was found to analyse -- the checks below cannot be read'
@@ -286,14 +381,35 @@ if ($launchedRuns.Count -eq 0) {
 Add-Check 'the movement replacement was patched' $(if ($patched) { 'PASS' } else { 'FAIL' }) `
     'the hook wrote GameScene.GameInput from the game''s own call'
 
-Add-Check 'the input write landed' $(if ($steered) { 'PASS' } else { 'FAIL' }) `
-    'the value read back from MoveAngle equals the value written'
+# THE PHASE-BASED CHECKS BELONG TO A PLANNED WALK, AND A DODGE RUN HAS NO PLAN. `-Experiment Dodge`
+# runs no phases -- the heading comes from the solver frame by frame -- so `PASS A` has nothing to
+# read its `steer frame` lines from unless the solver happened to move, and `PASS B`/`C` need phase
+# summaries that will never exist. Asking for them would fail a successful run for being the wrong
+# experiment, which is the "negative test against an empty set" this script's own comment warns
+# about. `-Dodge` BESIDE another experiment keeps them, because that run really is a planned walk.
+if ($Experiment -ne 'Dodge') {
+    Add-Check 'the input write landed' $(if ($steered) { 'PASS' } else { 'FAIL' }) `
+        'the value read back from MoveAngle equals the value written'
 
-Add-Check 'the client acted on it' $(if ($moved) { 'PASS' } else { 'FAIL' }) `
-    'the player moved on a majority of the phase''s frames'
+    Add-Check 'the client acted on it' $(if ($moved) { 'PASS' } else { 'FAIL' }) `
+        'the player moved on a majority of the phase''s frames'
 
-Add-Check 'it moved in the commanded direction' $(if ($direction) { 'PASS' } else { 'FAIL' }) `
-    'the per-phase observed headings follow the commanded ones'
+    Add-Check 'it moved in the commanded direction' $(if ($direction) { 'PASS' } else { 'FAIL' }) `
+        'the per-phase observed headings follow the commanded ones'
+} else {
+    Add-Check 'the movement replacement was exercised in dodge mode' `
+        $(if ($dodgeAsked -and $dodgeFrames -ge 0) { 'PASS' } else { 'FAIL' }) `
+        'the pilot writes only what DodgeAdapter publishes'
+}
+
+if ($dodgeAsked) {
+    Add-Check 'the dodge decided on live frames' $(if ($dodgeFrames -gt 0) { 'PASS' } else { 'FAIL' }) `
+        $(if ($dodgeLine) {
+            "the adapter's own line says mode '$dodgeMode' over $dodgeFrames frame(s)"
+        } else {
+            'no PHASE 3 DODGE NUMBERS line in bootstrap.log -- the adapter never ran (see hook.log for why)'
+        })
+}
 
 Add-Check 'the server did not object' $(if ($noKick) { 'PASS' } else { 'FAIL' }) `
     $(if ($RelayLog) { 'no GmKicked in the relay log' } else { 'no relay log given -- cannot be witnessed in-process' })
