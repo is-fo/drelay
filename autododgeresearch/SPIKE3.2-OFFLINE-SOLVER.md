@@ -2960,10 +2960,62 @@ on one evaluating frame in a hundred. **§15.11 is the task that leaves — and 
 withdraws the caveat, because the tail is the harness's own collector and the solver's mean decision on
 this trace is 55.5 µs.** Read §15.11 before acting on this paragraph.
 
+### 15.9.3c The acting run, and a caveat that narrows §15.2
+
+`20261015-212859-p34740` is the first **acting** session on the axial build: `mode=LIVE`,
+`dryRun=False`, the same settings line as §15.9.3b, **9639 frames, 1132 moves, 14 resolved collisions**,
+948 grid windows of 128×128 with 44 solid cells, and `corner cuts through a wall: 0 over 9492 path(s)`.
+**F, T5, T6, T10 and PATH all pass on it**, T7 fails on its collisions as every session does, and the
+live log's own cost line reads `p50 <= 50 µs, p99 <= 300 µs`.
+
+**And on it the axial term does much less than the replay said it would.**
+
+| trace | OUTRUN axial 0 → 1 | SIDESTEP axial 0 → 1 | TOWARD axial 0 → 1 |
+|---|---|---|---|
+| the dry run, §15.9.3b | 48.2 % → 40.8 % (**−7.4**) | 41.9 % → 50.8 % (+8.9) | 9.9 % → 8.4 % |
+| **the acting run** | 44.4 % → 43.2 % (**−1.2**) | 43.1 % → **43.8 %** (+0.7) | 12.5 % → 13.0 % |
+| all five recordings, §15.9.1 | −2.3 to −9.7 points | +0.2 to +6.1 points | mixed |
+
+Both acting numbers are classified by ONE implementation (the same nearest-muzzle rule, re-derived in
+one script for both traces rather than read from two runs of `dodge_direction_report.py`), and the two
+traces carry the same decision count under both weights — so this is the term's effect and not a
+sampling difference.
+
+**THE DIFFERENCE IS THE FEEDBACK LOOP, AND IT IS THE HANDOFF'S OWN SECTION 7 TRAP IN A NEW PLACE.**
+Every replay in §15.2 and §15.9.1 feeds the solver a world the *old* solver produced: the positions in
+the trace are the recorded ones, and the course the goal is built from is the recorded displacement. In
+an acting run the dodge's own last command IS the displacement, so changing the axial weight changes the
+world the next frame is decided in. The dry run sits between the two -- its trace was played by the
+operator, but the recorded positions are still the operator's -- and the acting run is the only one
+where the solver closes its own loop.
+
+**So the honest reading of the five-recording table is narrower than §15.9.1 claims.** SIDESTEP
+exceeding OUTRUN on all five is a real property of the *replay*, and it is the property the objective
+names; **on a live acting session the axial term is a small improvement rather than a large one**
+(43.2/43.8 against 44.4/43.1). What the acting run does NOT show is a regression: the term is on the
+right side of every metric on it, and `overrides intent` rises from 8.3 % to 11.5 % — the same trade,
+measured a third time.
+
+**What would settle it is an A/B by feel on the acting build**, and it is two runs:
+
+```powershell
+$env:DRELAY_DODGE_AXIAL = '1'; .\hook\tools\Run-Phase3Session.ps1 -Experiment Dodge -Seconds 300 -Trace
+$env:DRELAY_DODGE_AXIAL = '0'; .\hook\tools\Run-Phase3Session.ps1 -Experiment Dodge -Seconds 300 -Trace
+```
+
+The two traces then give the direction split on the same terms as the table above, and the operator's
+own reading is the one that decides whether +0.7 of SIDESTEP and +3.2 of `overrides intent` is worth
+having.
+
 ### 15.9.4 What §15.9 does not establish
 
-- **Nothing about the axial term live.** The operator's session predates it. The next command is the
-  same dry run with `DRELAY_DODGE_AXIAL=0` and `=1` on two sessions and the direction report over both.
+- **Nothing about the axial term live.** The acting run of §15.9.3c measures it at +0.7 of SIDESTEP
+  and −1.2 of OUTRUN, against +8.9 and −7.4 on the dry run; **the replay exaggerates it, and §15.9.3c
+  says why.** The A/B by feel is two runs, and the commands are there.
+- **The five-recording table is a property of the replay** (§15.9.3c). SIDESTEP exceeding OUTRUN on all
+  five is what the objective asks for and it is real; it is not what a live acting session shows, and
+  the difference is the feedback loop between the dodge's command and the goal it is next decided
+  against.
 - **Nothing about the extra hits.** The operator reports "slightly more hits"; this trace has 59
   collisions and 49 collisions the model did not predict (its `false negatives` line), and the replay
   cannot attribute either to the dodge, because the positions in the trace were produced by the build
