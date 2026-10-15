@@ -3002,18 +3002,29 @@ away, and with the header repaired (one continuation line merged back into the r
 11725 frames, 2079 moves, 32 resolved collisions, 284 solid cells, all invariants green and 0 corner
 cuts over 11551 paths) the axial comparison is:
 
-| live session | OUTRUN 0 → 1 | SIDESTEP 0 → 1 | TOWARD 0 → 1 | gave up clearance |
-|---|---|---|---|---|
-| `p34740`, acting | 44.4 % → 43.2 % (−1.2) | 43.1 % → **43.8 %** (+0.7) | 12.5 % → 13.0 % | 13.7 % → 13.8 % |
-| `p6412`, acting | 45.9 % → 42.8 % (−3.1) | 37.7 % → **42.5 %** (+4.8) | 16.4 % → 14.7 % | 12.7 % → 13.8 % |
-| `p440`, dry run | 48.2 % → 40.8 % (−7.4) | 41.9 % → 50.8 % (+8.9) | 9.9 % → 8.4 % | 19.4 % → 22.0 % |
-| the five recordings | −2.3 to −9.7 | +0.2 to +6.1 | mixed | mixed |
+**THREE ACTING SESSIONS AND A DRY RUN, AND THE TERM IS ON THE RIGHT SIDE OF EVERY METRIC IN ALL FOUR.**
+Each row is the same trace replayed with `--config axial=1` and `axial=0`, classified by one
+implementation, with the same decision count under both weights:
 
-**Both acting sessions move in the same direction on every metric and neither inverts the ratio**: one
-lands at 42.8/42.5 and the other at 43.8/43.2, where `axial=0` gives 45.9/37.7 and 44.4/43.1. So the
-term helps live, less than the replay says, and on one of the two acting sessions it closes a 8.2-point
-gap to 0.3. The cost is `overrides intent` in both (8.3 → 11.5 % and 7.7 → 9.9 %) and 1.1 points of
-extra clearance regret in the second.
+| live session | OUTRUN 0 → 1 | SIDESTEP 0 → 1 | TOWARD 0 → 1 | gave up clearance | overrides intent |
+|---|---|---|---|---|---|
+| `p34740`, acting | 44.4 % → 43.2 % (−1.2) | 43.1 % → **43.8 %** (+0.7) | 12.5 % → 13.0 % | 13.7 % → 13.8 % | 8.3 % → 11.5 % |
+| `p6412`, acting | 45.9 % → **42.8 %** (−3.1) | 37.7 % → **42.5 %** (+4.8) | 16.4 % → 14.7 % | 12.7 % → 13.8 % | 7.7 % → 9.9 % |
+| `p32752`, acting | 45.2 % → **42.9 %** (−2.3) | 45.8 % → **48.0 %** (+2.2) | 9.0 % → 9.1 % | 13.0 % → **12.1 %** | 14.3 % → 17.8 % |
+| `p440`, dry run | 48.2 % → 40.8 % (−7.4) | 41.9 % → 50.8 % (+8.9) | 9.9 % → 8.4 % | 19.4 % → 22.0 % | 9.4 % → 11.6 % |
+
+`p32752` is 13884 frames, 1087 moves, 5 resolved collisions, 74 solid cells, 0 corner cuts over 13527
+paths, and F/T5/T6/T10/PATH green — the third acting session, and on it the axial term **reduces**
+clearance regret (13.0 % → 12.1 %) as well as moving the direction split the right way.
+
+**The ratio and the trade, stated together.** OUTRUN falls on all four; SIDESTEP rises on all four;
+SIDESTEP exceeds OUTRUN with the term on in two of the three acting sessions (`p6412` 42.5 vs 42.8 is a
+tie within a frame, and `p32752` 48.0 vs 42.9 is a clear margin), against none of the three with it off.
+The cost is `overrides intent`, which rises by 2.2–3.5 points in every acting session and by 2.2 in the
+dry run — the dodge intervenes against the held direction more often, which is the trade §15.3 measured
+and the thing to judge by feel rather than by a ratio. **The magnitude on a live session is roughly a
+third of what the five-recording replay says** (−1.2 to −3.1 against −2.3 to −9.7), which is the
+feedback loop: a replay feeds the solver a world the old solver produced.
 
 **What would settle it is an A/B by feel on the acting build**, and it is two runs:
 
