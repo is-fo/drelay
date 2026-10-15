@@ -1,44 +1,40 @@
-# Handoff — pathfinding, and the outrun it replaces
+# Handoff — the dodge stops a walking player, and gets stuck near a slow projectile
 
-**Written 2026-10-15, for a session with no context.** This is the second version of this document.
-Its first version was the directed-dodge task; **that task is done**, its results are in
-[SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) §13 and §14, and §2 of this file is the
-one-paragraph summary of it that a new session needs. The work this document now asks for is the
-operator's **problem 2**:
+**Written 2026-10-16, for a session with no context.** This is the third version of this document.
+**The first two tasks are done** — the directed dodge (§13/§14 of
+[SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md)) and the outrun it replaced (§15, closed by the
+operator on 2026-10-16) — and §0 below is the one-paragraph summary of each that a new session needs.
+The work this document now asks for is the operator's verdict on §15, which named the next defect in
+the same breath as it closed the last one:
 
-> *"Some projectiles are dodged by outrunning, this makes the character pushed away from the boss,
-> instead of simply taking a step to the side or running around the projectile (A\*/Dijkstra)."*
->
-> *"Implementing true pathfinding to solve 2 would also make future features like autofarm or
-> autopathfind to bossroom easier."*
+> *"They seem pretty similar, keep the code as is right now. I think the real problem is that the
+> player's intent is ignored when it's trying to dodge something; this sometimes results in the player
+> being stuck next to a slow-moving projectile, not being able to move in any direction. What should
+> happen is either 1) pathfind around the projectile or 2) let the player walk away from it. The latest
+> run was pretty good though — I did a quite challenging boss no-hit, so the dodger works well."*
 
-Read §3 before §4. **§3 is the measurement of the defect and it changes what the task is**: the dodge
-does not merely *sometimes* outrun — it outruns on **40–50 %** of its own moves, and the fix is not
-"prefer sidesteps", it is "have an opinion about where the character is trying to be two seconds from
-now", which is what pathfinding is.
+**Read §3 before anything else: the defect is already measured, and part of it is measured wrongly.**
+The dodge halts a player who is holding a direction on **18–31 % of their walking frames**, and **the
+replay harness cannot see it** — replaying the same trace with `standStops` on and off produces
+byte-identical numbers, because a replay feeds the solver recorded positions and `stand`'s cost is
+displacement. That trap is the first thing to understand in this document.
 
 ---
 
-## 0. What changed since the first version of this document
+## 0. What is already done
 
-> **STATUS 2026-10-16: the objective is MET on all five recordings, and a live session has judged it.**
-> Read [SPIKE3.2-OFFLINE-SOLVER.md](SPIKE3.2-OFFLINE-SOLVER.md) **§15.9** first. Two changes, and the
-> second is the one that did it. **§15's path** (bounded A* over the client's own grid, one per frame,
-> a waypoint that scores candidates and never admits them) fixed `p26156` and was a wash elsewhere —
-> §15.2 is that table, and §15.5's term breakdown is why: the retreat is paid for by `resolve` and
-> `clearance`, and **both are right**. **§15.9's axial penalty** (`Axialness`, `WeightAxial` 1.00 —
-> the squared cosine between the candidate and the line to the nearest threat, subtracted, symmetric in
-> the two axial directions) is what closes it: OUTRUN and TOWARD are the same direction to
-> `Lateralness`, which scores both zero, so the dodge was left oscillating between two mistakes that
-> are one mistake. With it, **SIDESTEP exceeds OUTRUN on all five recordings** (`p20152` 44.0/48.1,
-> `p5824` 34.9/53.0, `p26684` 43.8/47.0, `p5424` 36.7/54.5, `p26156` 24.8/49.9 as OUTRUN/SIDESTEP), all
-> six scenarios are green with move counts identical to the baseline, T5/T6/T10/F hold on all five, and
-> `decide()` p99 is **147 µs** on `p26156` and **211 µs on the operator's live trace** — the 128×128
-> grid with real walls — against a 300 µs budget. **And the operator's own live session of
-> `20261015-211538-p29780` says *"the feel of the dodger is way better, it feels like it fights you
-> less"*** — with the caveat §15.9.3 records: that build carried the path and **not** the axial term, so
-> the axial term's own live verdict is still owed, and "slightly more hits" is a paired-trial question
-> rather than a settled one.
+> **The outrun objective: CLOSED BY THE OPERATOR on 2026-10-16.** The path (§15.1–§15.4) plus the axial
+> penalty (§15.9) put **SIDESTEP above OUTRUN on all five recordings** — `p20152` 44.0/48.1, `p5824`
+> 34.9/53.0, `p26684` 43.8/47.0, `p5424` 36.7/54.5, `p26156` 24.8/49.9 as OUTRUN/SIDESTEP — with six
+> scenarios green, every asserted invariant holding, and `decide()` p99 147 µs against a 300 µs budget.
+> **The operator's verdict: *"the latest run was pretty good, I did a quite challenging boss no-hit, so
+> the dodger works well."*** `tools/Test-DodgeObjective.ps1` re-checks all of it in one command and
+> reports `OBJECTIVE: 18 of 18 check(s) hold`. **The code stands as it is** — `WeightAxial` 1.00, the
+> path on, `StandStops` true — because that is the operator's decision and §15.9.3c is the evidence it
+> was made on. Four live sessions measure the axial term: it lowers OUTRUN and raises SIDESTEP in all
+> four, exceeds OUTRUN in two of three acting sessions against none with it off, and costs 2.2–3.5
+> points of `overrides intent` every time. The live magnitude is a third of the replay's, which is
+> §15.9.3c's feedback loop.
 
 | | |
 |---|---|
@@ -53,33 +49,47 @@ now", which is what pathfinding is.
 
 ## 1. The objective, and what "done" means
 
-**The dodge must stop dodging by retreating.** Concretely: when a projectile threatens the player, the
-solver's answer should be a move that keeps the player on the way to where they are going — a step
-across the projectile's line, or a path *around* it — and only retreat along the projectile's line
-when nothing else is admissible.
+**The dodge must stop taking the wheel away from a player who is walking.** Two separable failures, both
+named by the operator and both measured in §3:
+
+1. **The halt.** `stand` is a verdict that CLEARS `GameInput.Moving` (`StandStops` is true in the shipped
+   config), so on every frame it wins, a player who is holding a direction is stopped dead. It wins on
+   **18–31 %** of their walking frames in the three acting sessions. The requested behaviour is either
+   of the operator's two: **pathfind around the projectile, or let the player walk away from it.** What
+   must not happen is that the character stands still while the player is asking to move and the
+   projectile closes.
+2. **The stuck frame.** `NoAdmissible` — all 77 candidates refused — has the solver emit *nothing*,
+   which is not the same thing and is not the halt. With no command the player's own input stands, so
+   these frames are the operator's *"not being able to move in any direction"* only if the player is
+   also refused by the world. Measured at 6 frames of 11725 in `p6412` and 0 in the other two acting
+   sessions, all with `admissible=0` and `durability 0 ms` — the player is inside a disc. **Establish
+   first whether this is the operator's symptom at all**, because the halt is two orders of magnitude
+   more common.
 
 Done means all of:
 
-1. **On a replay of the five recordings, the share of the dodge's own moves that are OUTRUN drops well
-   below the share that are SIDESTEP.** §3 is the baseline and it is currently 40–50 % outrun against
-   42–54 % sidestep; the inversion is the measurement, and `tools/dodge_direction_report.py` prints it.
-2. **The path is a path, and it is visible.** The decision log carries the path — the waypoints and
-   the reason for each — so "it ran around the volley" is a thing read off a file rather than inferred
-   from a mean. This is §6.10's lesson applied to a new object: *an instrument that cannot see the
-   change cannot validate it*.
-3. **Every invariant holds on all five recordings and all six synthetic scenarios**, and **the
-   decision stays inside the frame budget** — `decide()` p99 is **119 µs** on `p26156` today with a
-   300 µs budget shared with the sampler and the sensor, so the path cost is the headroom.
-4. **The grid is the client's own.** No second collision model, no re-derived walls: `World`'s
-   `byte[,]` is already resolved and already rule 2's source (see §5.1).
-5. **A live session, judged by feel.** The operator walks, shoots and dodges; the dodge should feel
-   like it is *going somewhere*. This is the only acceptance test that counts and it is the
-   operator's.
+1. **`stand` no longer halts a walking player on the frames where moving is safe.** The measurable
+   version: the share of `StandSafe` frames on which the player was holding a direction goes from
+   18–31 % to near zero **without** any admitted move being less durable than the stand it replaced.
+   Condition on `AdmissibleCount > 0`, because when nothing is admissible there is nothing to emit.
+2. **A walking player is never stopped while an admissible move exists that keeps them moving**, and
+   when the only admissible move is a bad one the solver says so in a counter rather than by stopping
+   them — the same doctrine every other degradation in this solver follows.
+3. **Every invariant holds on all five recordings and all six synthetic scenarios**, and **the decision
+   stays inside the frame budget** (measured at 55.5 µs/frame mean, 775 µs worst; 300 µs shared).
+   **T6 is the one this task can break**, because "never stop the player" invites emitting a move
+   admission refused — which is exactly the defect §4's "nothing is admissible" branch records.
+4. **The halt rate is an instrument, not an anecdote.** A column that says, per frame, whether the
+   decision stopped a walking player and what it stopped them *for*. The operator's symptom is a
+   displacement and §8's first trap is that displacement is the one thing a replay does not model.
+5. **A live session, judged by feel.** The operator plays, ideally against something with slow
+   projectiles; the dodge should feel like it *lets them move*. This is the only acceptance test that
+   counts and it is the operator's.
 
-**And it must not break what shipped.** §13's goal change, §13.2's hysteresis fix and §14's decision
-window are all in the same `Decide`, and the pathfinder has to sit beside them rather than replace
-them: the admission rules remain the safety boundary (§5.3's doctrine, and §13.1's "it is safe by
-construction" argument depends on it), and nothing in this task may relax rule 4, 5 or 6.
+**And it must not break what shipped.** §13's goal change, §13.2's hysteresis fix, §14's decision
+window, §15's path and §15.9's axial penalty all live in the same `Decide`, and **the operator's
+instruction is that they stay as they are**: "keep the code as is right now". The admission rules remain
+the safety boundary (§5.3's doctrine), and nothing in this task may relax rule 4, 5 or 6.
 
 ---
 
@@ -116,10 +126,44 @@ construction" argument depends on it), and nothing in this task may relax rule 4
 
 ## 3. The defect, measured
 
-**The dodge outruns on 40–50 % of its own moves.** `tools/dodge_direction_report.py` (new, this
-session) joins each frame of the `--decisions` dump to the trace, takes the nearest projectile whose
-path comes within 4 units, and classifies the **dodge's own chosen heading** against the line from
-that projectile's muzzle to the player:
+### 3.1 The current defect: `stand` halts a walking player
+
+**The dodge stops the player while they are holding a direction on 18–31 % of their walking frames.**
+`stand` is the solver's "the best dodge is no dodge" verdict, and with `StandStops` true it implements
+that by **clearing `GameInput.Moving`** — so a frame it wins is a frame the player's hands are ignored
+and the character is held still. Read from the `--decisions` dumps of the three acting sessions (the
+`moving` column is the player's own live input, §2):
+
+| session | frames the player was walking | `StandSafe` frames (halts) | share |
+|---|---|---|---|
+| `20261015-212859-p34740` | 6231 | 1123 | **18.0 %** |
+| `20261015-214418-p6412` | 8435 | 1982 | **23.5 %** |
+| `20261015-214927-p32752` | 5374 | 1689 | **31.4 %** |
+
+**And the replay harness cannot see the consequence, which is the first thing to understand here.**
+Replaying any of these traces with `--config standstops=1` and `standstops=0` produces **byte-identical
+direction splits** — 1132 moves and 11.5 % overrides either way on `p34740`, 2079/9.9 % on `p6412`,
+1087/17.8 % on `p32752`. Not because the policy has no effect, but because **a replay feeds the solver
+recorded positions**: a command that clears the player's input changes nothing about where the trace
+says they were. **`stand`'s cost is displacement, and displacement is the one thing a replay does not
+model** (trap 1 in §8). Any measurement of a fix has to come from a live session, or from a harness that
+steps the world forward from its own decisions — which does not exist, and building it is the honest
+prerequisite if a fix is to be judged offline at all.
+
+**The stuck frame is a different, rarer failure.** `NoAdmissible` — every one of 77 candidates refused —
+makes the solver emit *nothing*: **6 frames of 11725** in `p6412`, **0** in `p34740` and `p32752`. All six
+have `admissible=0`, `evaluated=77` and `durability 0 ms`: the player is inside a disc and every move is
+refused. Emitting nothing is **not** the halt — with no command the player's own input stands — so those
+frames are "cannot move" only if the world also refuses them. **Establish which symptom the operator
+means before building anything for the second**: the halt is two orders of magnitude more common and is
+measured; the stuck frame is six frames and is not yet shown to be felt.
+
+### 3.2 The previous defect, for context: the dodge outran
+
+**This is the table §15 of the spike closes, and it is kept because the next task must not reopen it.**
+`tools/dodge_direction_report.py` joins each frame of the `--decisions` dump to the trace, takes the
+nearest projectile whose path comes within 4 units, and classifies the **dodge's own chosen heading**
+against the line from that projectile's muzzle to the player:
 
 - **OUTRUN** — along the line away from the muzzle (`cos > 0.5`);
 - **SIDESTEP** — across it (`|cos| ≤ 0.5`);
@@ -131,41 +175,18 @@ that projectile's muzzle to the player:
 | `p5824` | 1466 | **702 (47.9 %)** | 654 (44.6 %) | 110 (7.5 %) |
 | `p26684` | 2917 | **1449 (49.7 %)** | 1226 (42.0 %) | 242 (8.3 %) |
 | `p5424` | 864 | 351 (40.6 %) | 469 (54.3 %) | 44 (5.1 %) |
-| **`p26156`** | 1658 | **506 (30.5 %)** | 809 (48.8 %) | **343 (20.7 %)** |
+| **`p26156`** | 1658 | **506 (30.5 %)** | **809 (48.8 %)** | **343 (20.7 %)** |
 
-**Outrunning is not a rare fallback — on three of the five recordings it is the single most common
-thing the dodge does**, and it is *more* outrun-heavy on the moves the dodge holds than on the ones it
-chooses fresh (`p26684`: 1088 of 1449 outruns are held moves). A hold is hysteresis keeping a decision
-the solver already made, so the bias is in the *choice*, not in the smoothing.
+**After §15: OUTRUN 44.0/34.9/43.8/36.7/24.8 against SIDESTEP 48.1/53.0/47.0/54.5/49.9 — inverted on all
+five, and closed by the operator.** `tools/Test-DodgeObjective.ps1` is the one-command check
+(`OBJECTIVE: 18 of 18`). **Do not re-tune it.**
 
-**And it is worse than the table looks.** The third column is a real defect too: on `p26156` the dodge
-moves **toward** the nearest projectile on **20.7 %** of its moves. That is the goal term doing what
-§13 told it to — the player was walking that way — on frames where safety's answer was a sidestep, and
-it is the clearest evidence that a *single-step* preference has nothing that can prefer "go around".
-
-**Why the dodge does this, in one sentence.** Every candidate is one step, scored in isolation: the
-lateral term prefers motion across the nearest threat (`Lateralness`), the goal term prefers motion
-along the player's line, and on a frame where the player is walking away from the shooter **those two
-agree and the biggest step wins**. Nothing in the candidate set can express "this step is bad because
-of the step after it" — so there is no way to prefer a sidestep that costs 0.2 units of progress over
-an outrun that costs 1.5, and no way at all to thread a volley whose gaps move.
-
-**The operator's second sentence is the reason to do it properly.** *"Implementing true pathfinding to
-solve 2 would also make future features like autofarm or autopathfind to bossroom easier."* The
-grid and the goal are the two halves of that, and this task is where they first meet.
-
-### 3.1 What the current model can and cannot express
-
-| | now | with a path |
-|---|---|---|
-| "am I moving toward where I am going" | yes — `GoalProgress`, one step | yes, over the path |
-| "is this step safe" | yes — the plan walk, one step | yes, along the path |
-| "is this step safe **given the next**" | **no** | yes |
-| "does this step leave me somewhere I can still move from" | **no** (a pocket is only discovered when the player is in it) | yes |
-| "is going around cheaper than going back" | **no** | yes |
-| "where should I be in two seconds" | **no** (§DODGE-ALGORITHM.md §5.5 names this row as the one not borrowed) | yes |
-
----
+**Why it was what it was, in one sentence, because the diagnosis is what makes the next task's design
+legible.** Every candidate was one step scored in isolation: `Lateralness` prefers motion across the
+nearest threat and the goal prefers motion along the player's line, and on a frame where the player is
+walking away from the shooter **those two agree and the biggest step wins**. `Axialness` removed the
+axial band and the path gave the choice somewhere to be going; neither of them addresses whether the
+player was allowed to move at all, which is §3.1.
 
 ## 4. The design, in the order to try it
 
@@ -447,14 +468,22 @@ direction\| **51.6°**, median **30.6°**; scales `1.0` × 1541, `0.7` × 57, `0
 
 ## 9. Where to write the result
 
-**`SPIKE3.2-OFFLINE-SOLVER.md` §15**, in that document's voice: what changed, the measured before and
-after on the five recordings — **with §3's OUTRUN/SIDESTEP/TOWARD table as the headline** — what the
-operator's live session said, and **what the change does not establish**. §11, §12, §13 and §14 are the
-models to follow: name the defect that motivated the change in one sentence, and put the number that
-proves it next to the number that proves it was fixed.
+**`SPIKE3.2-OFFLINE-SOLVER.md` §15.14**, in that document's voice: what changed, the measured before and
+after — **with §3.1's halt table as the headline**, since the halt rate is the number this task moves —
+what the operator's live session said, and **what the change does not establish**. §11, §12, §13, §14 and
+§15 are the models to follow: name the defect that motivated the change in one sentence, and put the
+number that proves it next to the number that proves it was fixed. §15.13 is the section this task
+answers directly: it is the operator's verdict, and its own last line says the two things to build.
+
+**AND THE FIRST PARAGRAPH MUST STATE WHAT WAS MEASURED AND HOW.** This task's defect is a
+**displacement** and the replay harness cannot see it (§3.1): the two configurations produce identical
+numbers offline. A section that reports only replay numbers for this change would be reporting the one
+quantity that is provably blind to it.
 
 If the change is reverted, write it up anyway. §10.4 is the precedent and it is one of the more useful
 sections in that document: *"strengthening the hysteresis was tried and measured and did not help …
-reverted rather than shipped."* §14.4 is the second precedent from this session — the first version of
-the window had no clamp, one recording produced a 30720 ms window from a parked projectile, and the
-clamp is in the shipped code because the measurement found it rather than the design.
+reverted rather than shipped."* §14.4 is the second precedent — the first version of the window had no
+clamp, one recording produced a 30720 ms window from a parked projectile, and the clamp is in the
+shipped code because the measurement found it rather than the design. §15.9.2 is the third: the
+projected-danger term ships at weight 0 because the sweep said the idea, not the implementation, was the
+problem.

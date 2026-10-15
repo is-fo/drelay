@@ -3026,15 +3026,47 @@ and the thing to judge by feel rather than by a ratio. **The magnitude on a live
 third of what the five-recording replay says** (−1.2 to −3.1 against −2.3 to −9.7), which is the
 feedback loop: a replay feeds the solver a world the old solver produced.
 
-**What would settle it is an A/B by feel on the acting build**, and it is two runs:
+## 15.13 The operator's verdict, and the defect it names
 
-```powershell
-$env:DRELAY_DODGE_AXIAL = '1'; .\hook\tools\Run-Phase3Session.ps1 -Experiment Dodge -Seconds 300 -Trace
-$env:DRELAY_DODGE_AXIAL = '0'; .\hook\tools\Run-Phase3Session.ps1 -Experiment Dodge -Seconds 300 -Trace
-```
+**The verdict, in their words:** *"They seem pretty similar, keep the code as is right now. I think the
+real problem is that the player's intent is ignored when it's trying to dodge something; this sometimes
+results in the player being stuck next to a slow-moving projectile, not being able to move in any
+direction. What should happen is either 1) pathfind around the projectile or 2) let the player walk away
+from it. The latest run was pretty good though — I did a quite challenging boss no-hit, so the dodger
+works well."*
 
-The two traces then give the direction split on the same terms as the table above, and the operator's
-own reading is the one that decides whether the trade is worth having.
+**So the outrun objective is closed by the operator and the code stands as it is.** §15.9's axial term
+stays at 1.00; the "keep as is" is the decision, and §15.9.3c's four-session table is the evidence it was
+made on.
+
+**AND THE DEFECT IT NAMES IS MEASURED, AND I HAD BEEN MEASURING THE WRONG QUANTITY.** The dodge's
+`stand` verdict stops the player outright (`StandStops` clears `GameInput.Moving`), and in the three
+acting sessions it does that while the player is *holding a direction* on:
+
+| session | frames the player was walking | `StandSafe` frames | share |
+|---|---|---|---|
+| `p34740` | 6231 | 1123 | **18.0 %** |
+| `p6412` | 8435 | 1982 | **23.5 %** |
+| `p32752` | 5374 | 1689 | **31.4 %** |
+
+**And the replay cannot see it, which is the trap §15.9.3c walked into.** Replaying these traces with
+`--config standstops=1` and `standstops=0` produces **byte-identical direction splits** — 1132 moves and
+11.5 % overrides either way on `p34740`, 2079/9.9 % on `p6412`, 1087/17.8 % on `p32752`. The reason is
+not that the policy has no effect; it is that a replay feeds the solver *recorded positions*, so a
+command that clears the player's input changes nothing about where the trace says they were. **`stand`'s
+cost is displacement, and displacement is the one thing a replay does not model.** §15.9.3c's feedback
+loop is the same lesson from the other side.
+
+**The stuck case is real but rare, and it has a second cause.** `NoAdmissible` — every candidate refused
+— occurs on 6 frames of 11725 in `p6412` and 0 in the other two acting sessions, but those 6 frames have
+`admissible=0` with **77 candidates evaluated and `durability 0 ms`**: the player is inside a disc, every
+move is refused, and the solver emits nothing at all. **Nothing at all is not "stand"** — with no
+command the player's own input stands, so those frames are not the halt defect. They are the second
+half of the operator's sentence: *"not being able to move in any direction"* is the admissible set being
+empty, and it is a different failure from the halt.
+
+**What the next session is for, therefore, is two separable things**, and the handoff this document
+came from now carries them as its goal.
 
 ### 15.9.4 What §15.9 does not establish
 
