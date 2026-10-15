@@ -2996,6 +2996,25 @@ names; **on a live acting session the axial term is a small improvement rather t
 right side of every metric on it, and `overrides intent` rises from 8.3 % to 11.5 % — the same trade,
 measured a third time.
 
+**AND A SECOND ACTING SESSION, `20261015-214418-p6412`, is a clearer positive result.** It is the run
+whose trace §15.12 is about: if the header had been written correctly it would have replayed straight
+away, and with the header repaired (one continuation line merged back into the record it belonged to,
+11725 frames, 2079 moves, 32 resolved collisions, 284 solid cells, all invariants green and 0 corner
+cuts over 11551 paths) the axial comparison is:
+
+| live session | OUTRUN 0 → 1 | SIDESTEP 0 → 1 | TOWARD 0 → 1 | gave up clearance |
+|---|---|---|---|---|
+| `p34740`, acting | 44.4 % → 43.2 % (−1.2) | 43.1 % → **43.8 %** (+0.7) | 12.5 % → 13.0 % | 13.7 % → 13.8 % |
+| `p6412`, acting | 45.9 % → 42.8 % (−3.1) | 37.7 % → **42.5 %** (+4.8) | 16.4 % → 14.7 % | 12.7 % → 13.8 % |
+| `p440`, dry run | 48.2 % → 40.8 % (−7.4) | 41.9 % → 50.8 % (+8.9) | 9.9 % → 8.4 % | 19.4 % → 22.0 % |
+| the five recordings | −2.3 to −9.7 | +0.2 to +6.1 | mixed | mixed |
+
+**Both acting sessions move in the same direction on every metric and neither inverts the ratio**: one
+lands at 42.8/42.5 and the other at 43.8/43.2, where `axial=0` gives 45.9/37.7 and 44.4/43.1. So the
+term helps live, less than the replay says, and on one of the two acting sessions it closes a 8.2-point
+gap to 0.3. The cost is `overrides intent` in both (8.3 → 11.5 % and 7.7 → 9.9 %) and 1.1 points of
+extra clearance regret in the second.
+
 **What would settle it is an A/B by feel on the acting build**, and it is two runs:
 
 ```powershell
@@ -3004,8 +3023,7 @@ $env:DRELAY_DODGE_AXIAL = '0'; .\hook\tools\Run-Phase3Session.ps1 -Experiment Do
 ```
 
 The two traces then give the direction split on the same terms as the table above, and the operator's
-own reading is the one that decides whether +0.7 of SIDESTEP and +3.2 of `overrides intent` is worth
-having.
+own reading is the one that decides whether the trade is worth having.
 
 ### 15.9.4 What §15.9 does not establish
 
@@ -3071,7 +3089,6 @@ claimed anywhere and would need a live comparison.
 
 
 ## 15.11 The decision's tail, attributed — and the 300 µs caveat withdrawn
-
 **The question §15.9.3b left open:** the field report's dry run reads `decide()` p99 **719 µs on
 evaluating frames against a 300 µs budget** with a p50 of 87 µs, the pathfinder exonerated both by its
 own self-clock (31 µs) and by `axial=0` (692 µs), and nothing in the project able to say which of the
@@ -3125,6 +3142,54 @@ caching only ever used to *skip* a test and never to bound the work. A burst of 
 candidate set is full and the threat set is large is where that lands. It is a real tail and it is not
 close to the budget; the next session should decide whether a 775 µs worst frame is worth a cache,
 rather than inheriting a caveat that was never true.
+
+
+## 15.12 The trace's JSON writer did not escape newlines, and a healthy recording read as corrupt
+
+**The defect, in one sentence:** `TraceRecorder.EscapeJson` escaped the backslash and the quote and
+nothing else, `DodgeConfig.Describe` grew a three-line form, and an **unescaped newline went into a JSON
+string** — which does not produce a bad value, it produces a broken file.
+
+**How it presented.** `20261015-214418-p6412`, an acting session on the axial build — 11725 frames,
+trace at 17 MB, the recorder reporting its size every 600 frames — and every line-by-line reader refused
+it:
+
+```
+{"t":"H","v":1,"dodge":"preset=balanced ... lookahead=0.8s x3
+path enable=True target=1.5s cap=1200 danger=1.6 pad=0.25 wp=2.5/0.75 dwell=0.15s",...}
+```
+
+The harness's own honest answer was `expected a number at offset 0 (a second malformed line: the
+recording is corrupt, not truncated)`. **The recording was healthy and the writer was wrong**, and the
+cost was that the operator's second acting session could not be measured — the same cost the empty
+`trace.jsonl` of `20261015-212859-p34740` nearly imposed, from the same class of cause.
+
+**Two fixes, because there were two mistakes.** `EscapeJson` now escapes `\r`, `\n` and `\t` — a JSON
+writer that does not escape control characters is one string away from this, and the string arrived.
+And `DodgeConfig.DescribeOneLine()` exists for the trace, where the settings live inside one JSON field;
+`Describe()` now **joins its three parts explicitly** rather than relying on each one ending in a
+newline, which is exactly how the unjoined `...x3path enable=True...` line got into `hook.log` in the
+first place.
+
+**And the refusal a live run needs.** The recorder holds the trace open for the whole session, and both
+ways to read it are wrong: opened strictly it fails with `being used by another process`, and opened
+shared it reads HALF A SESSION and reports the line it is halfway through as corrupt — a worse lie than
+the first, because it accuses a healthy recording. The harness now refuses with *"this trace is STILL
+BEING WRITTEN — close the game first"*.
+
+**The salvage is here so the next operator does not lose a session to it.** One continuation line,
+merged back into the record it belonged to, makes the file readable:
+
+```powershell
+# merge the unescaped-newline continuation back into the `H` record, then replay the copy
+python tools\repair-trace.py <run>\trace.jsonl work\repair\trace-fixed.jsonl
+```
+
+**`tools/repair-trace.py` is that script, and it is checked both ways**: on the broken `p6412` it merges
+exactly 1 continuation and the repaired file replays as 11725 frames with F/T5/T6/T10/PATH green and
+**0 corner cuts over 11551 paths**; on a healthy trace (`p34740`, 11402923 bytes) it reports 0 merges and
+the output is **byte-identical to the input**. A repair tool that is not a no-op on good input is a
+second way to lose a trace.
 
 
 
