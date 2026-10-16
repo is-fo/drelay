@@ -1648,6 +1648,15 @@ namespace Drelay.Bootstrap
 
                 TrajectorySampler.ReleaseTrajectories();
 
+                // THE ROUTE RECORDER, WHICH IS SECTION 7.1 AND RUNS AFTER THE ADAPTER. It reads the
+                // player's position and, every twenty samples, rewrites `routes/<name>.json` -- and it
+                // runs AFTER `DodgeAdapter.OnFrame` rather than before it so that the grid it snaps
+                // waypoints against is the current frame's window rather than the last one. One
+                // boolean when neither route switch is set.
+                RouteRuntime.OnFrame(DodgeAdapter.CurrentConfig, (int)SensorRead.Frame,
+                                     (float)Clock.Elapsed.TotalMilliseconds,
+                                     DodgeAdapter.CurrentGrid);
+
                 // THE PHASE'S FOUR NUMBERS, PERIODICALLY RATHER THAN AT AN END THIS CODE
                 // CANNOT SEE.  The replacement does not know when the recording window
                 // closes -- the native side owns that -- so the report is emitted every few
@@ -2475,6 +2484,21 @@ namespace Drelay.Bootstrap
                         AppendLog("ERROR", "the world log was asked for and is NOT available: "
                                            + why + " -- no worlds.jsonl will be written");
                     }
+                }
+
+                // AND THE ROUTES, FOR THE SAME REASON AND AT THE SAME PLACE. Section 7's recorder and
+                // follower need the config the adapter just resolved and the routes directory, and
+                // neither exists before this point.
+                if (RouteRuntime.Resolve(game, DodgeAdapter.CurrentConfig,
+                                        Environment.GetEnvironmentVariable("DRELAY_HOOK_RUNDIR")))
+                {
+                    AppendLog("INFO", RouteRuntime.Describe());
+                }
+                else
+                {
+                    AppendLog("ERROR", "the route runtime is NOT available: "
+                                       + RouteRuntime.UnresolvedReason
+                                       + " -- no route will be recorded and none will be followed");
                 }
             }
             catch (Exception ex)

@@ -492,6 +492,23 @@ namespace Drelay.Bootstrap
         public float GoalX;
         public float GoalY;
 
+        /// <summary>
+        /// WHICH MODULE PUBLISHED THE POINT, which the solver needs and cannot infer.
+        ///
+        /// THE TWO PUBLISHERS WANT DIFFERENT ARRIVAL BEHAVIOUR AND EVERYTHING ELSE IS SHARED. A
+        /// farmer walks at a mob and then STOPS, because standing in weapon range and letting the
+        /// client's auto-fire work is the point of the farmer; a route is a WALK, so its follower
+        /// advances to the next waypoint and the character must keep going. Both are "a point goal"
+        /// to the planner and to every score term, and they differ in exactly one place -- the
+        /// arrival policy of `PLAN-AUTOFARM.md` section 4.3 -- so the discriminator is one boolean
+        /// rather than a second snapshot field carrying a second point.
+        ///
+        /// THE FARMER WINS WHEN BOTH COULD PUBLISH, because `RouteRuntime.ApplyGoal` returns without
+        /// touching the snapshot when a point is already there -- see section 5.3's "if target: walk
+        /// at it; else: travel".
+        /// </summary>
+        public bool GoalFromRoute;
+
         public CollisionWindow Grid;
 
         /// <summary>True when the sensor could not produce a usable picture this frame.</summary>
@@ -505,6 +522,7 @@ namespace Drelay.Bootstrap
             GoalHasPoint = false;
             GoalX = 0.0f;
             GoalY = 0.0f;
+            GoalFromRoute = false;
         }
     }
 
@@ -1022,6 +1040,67 @@ namespace Drelay.Bootstrap
         /// </summary>
         public float FarmSwitchMargin;
 
+        // --- The routes (PLAN-AUTOFARM.md section 7) --------------------------------------
+        //
+        // A ROUTE IS A THIRD SOURCE OF THE GOAL, and it is the same kind of thing the farmer is: a
+        // POINT that the solver's existing goal machinery consumes. It is used when the farmer has
+        // NO target, which is section 5.3's `TRAVEL` state -- "no target in radius; follow the route
+        // or the goal". Everything downstream is row 2's code, unchanged.
+        //
+        // EVERY NUMBER HERE IS A STARTING VALUE FOR THE OFFLINE HARNESS. `PLAN-AUTOFARM.md` section
+        // 11 says so for all of them and repeats the project's rule: none may be tuned in a live run.
+
+        /// <summary>Whether a recorded route may publish the frame's goal.</summary>
+        public bool RouteMode;
+
+        /// <summary>
+        /// The route's name -- the file stem, `<run>/routes/<name>.json`.
+        ///
+        /// IT IS THE `DRELAY_DODGE_ROUTE` VALUE AND NOT A SECOND SETTING, so one variable names the
+        /// route and turns the mode on; an empty name is the off position, which is the same shape
+        /// `DRELAY_TRACE` uses.
+        /// </summary>
+        public string RouteName;
+
+        /// <summary>
+        /// The deviation's maximum magnitude, world units -- `PLAN-AUTOFARM.md` section 7.3's
+        /// "bounded". At most a third of `RouteSpacingUnits`, so the deviation can never move the
+        /// goal past the next waypoint and make the follower skip one.
+        /// </summary>
+        public float RouteDeviationUnits;
+
+        /// <summary>
+        /// The minimum spacing the recorder resamples to, world units. Section 7.2: "so the follower
+        /// has a fixed step to count on". The follower's whole loop is "am I at waypoint i; if so
+        /// advance", and a route whose points alternate between a hundredth of a unit apart and four
+        /// units apart is a route whose reached-radius means different things in different places.
+        /// </summary>
+        public float RouteSpacingUnits;
+
+        /// <summary>
+        /// Douglas-Peucker's tolerance at record time, world units. Section 7.2 item 1: "the general
+        /// shape, not the exact path". A hand-drawn curve through an open room becomes three points.
+        /// </summary>
+        public float RouteToleranceUnits;
+
+        /// <summary>
+        /// How close counts as "at the waypoint", world units. Section 7.3's `RadiusReached = 1.0`.
+        /// An exact reach is a waypoint nobody ever arrives at, because the character moves in steps.
+        /// </summary>
+        public float RouteReachUnits;
+
+        /// <summary>
+        /// Whether EITHER point-goal module is on -- the farmer or the routes.
+        ///
+        /// IT IS ONE PROPERTY RATHER THAN TWO CHECKS IN TWO FILES. The solver and the planner both ask
+        /// "may the snapshot's point be the goal", and the answer is the same question: a point goal
+        /// is a point goal whoever published it. Two separate `FarmMode || RouteMode` expressions
+        /// would be two places to forget the second module, and the failure would be a route that
+        /// loads, validates, publishes a goal -- and is then ignored by the planner, with every
+        /// counter agreeing that the route was followed.
+        /// </summary>
+        public bool PointGoal => FarmMode || RouteMode;
+
         /// <summary>
         /// How much of the move carries the character toward the imaginary point in front of them.
         ///
@@ -1241,6 +1320,16 @@ namespace Drelay.Bootstrap
             // This is the one number in this block that is derived from another rather than chosen.
             c.FarmStopRadius = 1.5f;
             c.FarmSwitchMargin = 1.0f;
+            // THE ROUTES, OFF, WITH SECTION 7'S OWN STARTING VALUES. `RouteMode` ships false and
+            // `RouteName` ships empty, which is the same switch: one variable names the route and
+            // turns the mode on. The deviation is a THIRD of the spacing (1.0 against 3.0), which is
+            // section 7.3's own limit and the reason the follower cannot skip a waypoint.
+            c.RouteMode = false;
+            c.RouteName = "";
+            c.RouteDeviationUnits = 1.0f;
+            c.RouteSpacingUnits = 3.0f;
+            c.RouteToleranceUnits = 1.5f;
+            c.RouteReachUnits = 1.0f;
             // THE GOAL TERM KEEPS ITS OWN VALUE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
             // The first version of this cut `WeightGoal` from 0.90 to 0.30 whenever the path was on,
             // on the reasoning that the path's waypoint IS the goal whenever the goal is walkable and
@@ -1439,6 +1528,15 @@ namespace Drelay.Bootstrap
             c.FarmEngageRadius = Float("DRELAY_DODGE_FARM_RANGE", c.FarmEngageRadius);
             c.FarmStopRadius = FloatAllowZero("DRELAY_DODGE_FARM_STOP", c.FarmStopRadius);
             c.FarmSwitchMargin = FloatAllowZero("DRELAY_DODGE_FARM_MARGIN", c.FarmSwitchMargin);
+            // THE ROUTE'S KNOBS. `DRELAY_DODGE_ROUTE=<name>` is both the switch and the name, for the
+            // reason the field records; the four numbers move one at a time from the command line.
+            string routeName = Environment.GetEnvironmentVariable("DRELAY_DODGE_ROUTE");
+            c.RouteName = routeName ?? "";
+            c.RouteMode = !string.IsNullOrEmpty(routeName);
+            c.RouteDeviationUnits = FloatAllowZero("DRELAY_DODGE_ROUTE_DEV", c.RouteDeviationUnits);
+            c.RouteSpacingUnits = Float("DRELAY_DODGE_ROUTE_SPACING", c.RouteSpacingUnits);
+            c.RouteToleranceUnits = FloatAllowZero("DRELAY_DODGE_ROUTE_TOL", c.RouteToleranceUnits);
+            c.RouteReachUnits = Float("DRELAY_DODGE_ROUTE_REACH", c.RouteReachUnits);
             c.PlanLookaheadSeconds = Float("DRELAY_DODGE_PLAN_LOOKAHEAD_S", c.PlanLookaheadSeconds);
             c.GoalLookaheadSeconds = Float("DRELAY_DODGE_GOAL_LOOKAHEAD_S", c.GoalLookaheadSeconds);
             c.GoalFanSteps = Int("DRELAY_DODGE_GOAL_FAN", c.GoalFanSteps);
@@ -1528,7 +1626,8 @@ namespace Drelay.Bootstrap
             string path = DescribePath().Replace("\n", " ").Replace("\r", " ").Trim();
             string enemies = DescribeEnemies().Replace("\n", " ").Replace("\r", " ").Trim();
             string farm = DescribeFarm().Replace("\n", " ").Replace("\r", " ").Trim();
-            return plan + " " + weights + " " + path + " " + enemies + " " + farm;
+            string route = DescribeRoute().Replace("\n", " ").Replace("\r", " ").Trim();
+            return plan + " " + weights + " " + path + " " + enemies + " " + farm + " " + route;
         }
 
         /// <summary>A one-line description for the log, so a run's own settings are readable from it.</summary>
@@ -1549,7 +1648,8 @@ namespace Drelay.Bootstrap
             string path = DescribePath().TrimEnd('\r', '\n');
             string enemies = DescribeEnemies().TrimEnd('\r', '\n');
             string farm = DescribeFarm().TrimEnd('\r', '\n');
-            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n" + farm + "\n";
+            string route = DescribeRoute().TrimEnd('\r', '\n');
+            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n" + farm + "\n" + route + "\n";
         }
 
         /// <summary>
@@ -1640,6 +1740,23 @@ namespace Drelay.Bootstrap
             return string.Format(CultureInfo.InvariantCulture,
                 "farm on={0} engage={1} stop={2} margin={3}",
                 FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin);
+        }
+
+        /// <summary>
+        /// The route's own numbers, on their own line, for the same 256-byte reason as the other
+        /// five (`DrelayLog.cpp` truncates with no mark saying so).
+        ///
+        /// THE LINE MATTERS FOR THE REASON THE FARMER'S DOES: a run with `RouteMode` off and a run
+        /// with it on and the player already at the route's first waypoint produce the same decision
+        /// on a quiet frame, and only the settings line tells a run where no route was loaded from
+        /// one where the route had nothing to say.
+        /// </summary>
+        public string DescribeRoute()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "route on={0} name='{1}' dev={2} spacing={3} tol={4} reach={5}",
+                RouteMode, RouteName, RouteDeviationUnits, RouteSpacingUnits, RouteToleranceUnits,
+                RouteReachUnits);
         }
     }
 

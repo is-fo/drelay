@@ -959,7 +959,7 @@ namespace Drelay.Bootstrap
             float reach = _speedPerSecond * _config.PathTargetSeconds;
             float tx;
             float ty;
-            bool pointTarget = _config.FarmMode && snapshot.GoalHasPoint
+            bool pointTarget = _config.PointGoal && snapshot.GoalHasPoint
                                && _grid.InWindow(snapshot.GoalX, snapshot.GoalY);
             _pointTarget = pointTarget;
             if (pointTarget)

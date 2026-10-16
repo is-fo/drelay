@@ -180,6 +180,25 @@ Invoke-Check 'world log writer fixture' {
     & $verify
 }
 
+# THE ROUTES' ARITHMETIC (`PLAN-AUTOFARM.md` section 7.5's R1-R5), which lives in the solver harness
+# because that is the program that already compiles the pure solver sources. It has no scenario of
+# its own: the five checks are properties of the simplifier, the resampler, the snap, the deviation
+# and the follower, and the harness runs them on EVERY invocation -- including this one.
+#
+# It is run here rather than left to whoever remembers to type the command, for the reason the
+# world log's check is: the harness is not otherwise in this suite, and an offline check that only
+# runs by hand is an offline check that stops running.
+Invoke-Check 'route arithmetic fixture (R1-R5)' {
+    $harness = Join-Path $hookRoot 'tools\SolverHarness\bin\Release\SolverHarness.exe'
+    if (-not (Test-Path -LiteralPath $harness)) {
+        Write-Bad "missing $harness -- run build.ps1 first."
+        exit 2
+    }
+    # A SHORT RUN OF THE CHEAPEST SCENARIO, because what is being checked is the route arithmetic and
+    # the settings-shape invariant -- both of which run before the first frame is decided.
+    & $harness --scenario peaceful --frames 60 --seed 1 --quiet
+}
+
 # The launcher's configuration: HANDOFF-LAUNCH-CONFIG.md section 13's invariants C1-C8, plus the
 # boundary cases section 11 asks for. It compiles the launcher's own settings, config reader,
 # command-line parser, discovery walk and environment builder, so this check is about the shipped

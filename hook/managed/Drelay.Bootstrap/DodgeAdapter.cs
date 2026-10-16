@@ -138,8 +138,7 @@ namespace Drelay.Bootstrap
 
         private static readonly DodgeSnapshot Snapshot = new DodgeSnapshot();
 
-        private static Func<object> _getWorld;
-        private static Func<object, object> _getPlayer;
+        private static Func<object> _getWorld;        private static Func<object, object> _getPlayer;
         private static Func<object, float> _getPlayerX;
         private static Func<object, float> _getPlayerY;
         private static Func<object, float> _getPlayerRadius;
@@ -361,6 +360,27 @@ namespace Drelay.Bootstrap
         /// Whether the adapter is switched on and has everything it needs.
         /// </summary>
         public static bool Enabled => _enabled && _resolved;
+
+        /// <summary>
+        /// The collision window this frame's snapshot carries, for the callers that run BESIDE the
+        /// decision rather than inside it.
+        ///
+        /// IT EXISTS FOR ONE CALLER: `RouteRuntime`, whose recorder has to snap a recorded waypoint to
+        /// a walkable cell and whose whole reason for existing is that the grid is the client's own.
+        /// The alternative was a second resolution of the same `byte[,]` and a second window, which is
+        /// two answers to one question -- the defect `PLAN-ENEMY-THREATS.md` section 8.2 records for
+        /// `World.Shared` and the reason that reader resolves the instance separately.
+        ///
+        /// IT IS READ AFTER `OnFrame`, so on the frame tick it is the current frame's window.
+        /// </summary>
+        public static CollisionWindow CurrentGrid => Snapshot.Grid;
+
+        /// <summary>
+        /// The settings this run is using. See <see cref="CurrentGrid"/>: the route runtime needs the
+        /// same numbers the decision uses, and a second read of the environment would be a second
+        /// answer.
+        /// </summary>
+        public static DodgeConfig CurrentConfig => _config;
 
         /// <summary>
         /// JIT every method on the frame path, before the patch goes live.
@@ -905,6 +925,14 @@ namespace Drelay.Bootstrap
                 // the switch inside the module rather than at the call site is what makes "farm mode
                 // off changes nothing" a property of one file instead of a property of every caller.
                 _farmer.ChooseTarget(s, _config);
+
+                // AND THE ROUTE, WHICH IS THE `TRAVEL` ANSWER OF `PLAN-AUTOFARM.md` SECTION 5.3: a
+                // target beats a route, so the farmer is asked first and the route only fills in when
+                // the snapshot still has no point. It writes the same three fields and touches nothing
+                // else -- the planner, admission, the score and the hysteresis are all row 2's code,
+                // unchanged. It returns without touching the snapshot when no route is loaded, when
+                // one was refused by its map block, or when the farmer already answered.
+                RouteRuntime.ApplyGoal(world, _config, s);
 
                 long t0 = Stopwatch.GetTimestamp();
                 DodgeDecision d = _solver.Decide(s);

@@ -3,11 +3,12 @@
 **Items 2a, 2b, 3c and 3d of the farmer work.** Written 2026-10-17. This is an implementation
 plan, not a record; nothing here is built.
 
-> **§12 IS THE RECORD AND IT SUPERSEDES PARTS OF §4 AND §6.** Rows 2 and 3 of §10's order of work
-> are built on branch `feat/autofarm` — the farmer walks (`a38de9d`) and the `--world-log` collection
-> instrument exists (`68233d7`). §12 names the five places §4's own numbers did not survive contact
-> with the harness, all of them measured rather than argued, and the two bugs the world log's offline
-> verifier found before it shipped. Rows 4–9 are not built; §12.6 says what each is waiting on.
+> **§12 IS THE RECORD AND IT SUPERSEDES PARTS OF §4, §6 AND §7.** Rows 2, 3 and 6 of §10's order of
+> work are built on branch `feat/autofarm` — the farmer walks, the `--world-log` collection
+> instrument exists, and a recorded route can be recorded and replayed. §12 names the seven places
+> the plan's own numbers did not survive contact with the harness, all of them measured rather than
+> argued, and the two bugs the world log's offline verifier found before it shipped. Rows 4, 5, 7, 8
+> and 9 are not built; §12.6 says what each is waiting on.
 
 Read with: [`PLAN-ENEMY-THREATS.md`](PLAN-ENEMY-THREATS.md) (item 1, and a prerequisite for the
 arrival behaviour in §4), [`PLAN-HOOK-CONTROL.md`](../bridge/PLAN-HOOK-CONTROL.md) (items 3a/3b —
@@ -860,17 +861,82 @@ through `EnemyReader` and that is resolved by the adapter.
 **Not run in the game.** What is unverified is the live call: that `World.Shared` is non-null at the
 frame tick, and that `Activatables` holds the portals at the moment the operator is in the lobby.
 
-### 12.6 The rows that are not built, and what each is waiting on
+### 12.6 Row 6 (§7) is in — the routes
+
+`Route.cs`, `RouteFollower.cs` and `RouteRuntime.cs` (new), plus the point-goal generalisation below
+and one call site in `StartupHook`. `DRELAY_ROUTE_RECORD=<name>` records the operator's walk into
+`routes/<name>.json`; `DRELAY_DODGE_ROUTE=<name>` follows it when the farmer has no target — §5.3's
+`TRAVEL`. The simplifier, the resampler, the snap, the deviation, the follower and the file format are
+PURE and compile into the harness, which is what makes R1–R5 checkable offline; `RouteRuntime.cs` is
+the only part that touches the client and it does nothing else.
+
+**The route is a third source of the point goal, and the point goal had to be generalised.** The
+planner and the solver both gated the point on `FarmMode`, so a route would have loaded, validated,
+published a goal — and been ignored by the planner, with every counter agreeing the route was
+followed. The gate is now `DodgeConfig.PointGoal` (`FarmMode || RouteMode`), and one new snapshot
+field, `GoalFromRoute`, tells the two apart where they differ: **a farmer stops when it is inside
+`FarmStopRadius`; a route never stops**, because its follower advances to the next waypoint the
+moment this one is reached. That difference is one flag, and `stand`, `IntentSafe` and the `intent`
+score term are all suppressed by the same one.
+
+THREE THINGS THE ROUTE FIXTURES FOUND, and the first two are in code that predates this item.
+
+**(a) §7.3's own loop is inconsistent with its own numbers, and R3 measured it.** The pseudocode is
+`if reached(waypoint[i], 1.0): i = i + 1`, then `goal = waypoint[i] + deviation`. The character walks
+to the DEVIATED point and is therefore `|deviation|` away from the waypoint it is tested against — so
+with the plan's own starting values (a 1.0-unit deviation and a 1.0-unit reach) the loop is exactly
+marginal. R3's first run completed **zero laps in six thousand frames**, with the planner returning a
+route on every one of them. The test's radius is now `RouteReachUnits + |deviation|`.
+
+**(b) The waypoint hold can name the path's LAST node, which is wrong for a point goal behind an
+obstruction.** The first R3 fixture had the walk go straight through where a wall is, and it stalled
+for six thousand frames with the character against the wall's face at `(23.97, 32.47)`. The
+measurement is `nodes 13, len 6, held 1`: a thirteen-node, six-unit detour whose held waypoint is the
+path's final node — the goal cell itself, on the far side of the wall. `OnPath` accepts it (the goal
+IS a node of the detour) and the hold is re-taken every dwell, so the steering command is "walk east,
+into the wall". **This is the pathfinder's, not the follower's**, and it is recorded rather than fixed
+here: every fixture until now had a goal reachable in a straight line, where steering at the path's
+last node is correct. Row 2's `farmer` fixture does not hit it — its point goal is six units out with
+a nine-unit detour, so the 2.5-unit waypoint is well inside the detour. **It is the next thing the
+pathfinder's owner should look at.**
+
+**(c) The route file is rewritten every twenty samples, because nothing closes it.** `TraceRecorder.Close`
+is never called — the replacement does not know when the recording window closes, the native side owns
+that — so a route written only at close is a route that never exists. Twenty samples at 10 Hz is two
+seconds, and a session that ends abruptly leaves the walk up to that moment.
+
+**R1–R5, as measured.** They run on every harness invocation and are now an offline-suite check (8
+checks).
+
+| # | check | result |
+|---|---|---|
+| R1 | the recorded route is shorter than the walk and within the tolerance | PASS: 900 offered samples, 600 suppressed by the time/distance filter, 300 raw → **115 route points**, one-way Hausdorff distance to the raw walk **1.156** against a 1.5 tolerance |
+| R2 | a route from another map is refused by name, and the file round-trips | PASS: same map accepted, other realm refused, other size refused, asset-only match accepted, 11 points read back, a truncated file refused |
+| R3 | the follower walks the route through a walled room | PASS: 13 waypoints, **0 in a wall**, 13 advances, **1 lap**, 283 planned routes, 0 corner cuts, 0 steps that ended in a wall |
+| R4 | the deviation is bounded and smooth | PASS: over 10 000 samples `\|deviation\| ≤ 1.000` against a 1.0 bound, the largest second difference is **0** against the 0.334 the frequencies imply, lap 0 and lap 1 differ by 0.327, and the shipped deviation is exactly spacing/3 |
+| R5 | a route replays identically, and a different lap seed stays bounded | PASS: 200 of 200 goals identical between two followers on one route; 200 of 200 different between routes `alpha` and `beta`, largest disagreement 0.706 against a bound of 2.0 |
+
+**What R3 does NOT test, said plainly**: its simulation applies rule 2 and the swept-wall test and
+NOT the candidate ring or the score, so it says "a follower plus the planner crosses the room" and not
+"the dodge would have emitted this". The `corridor` scenario's existing PATH invariants are what hold
+the ray-goal case.
+
+**And no live run.** `RouteRuntime` resolves `World.Shared`, `Player.Position` and `MapInfo`; the
+route file's map block is written from whatever those accessors return and a recording with no names
+is refused by `MatchesMap` rather than followed. Whether the operator's walk produces a route that
+replays is a session, not a build.
+
+### 12.7 The rows that are not built, and what each is waiting on
 
 | row (§10) | state | waiting on |
 |---|---|---|
 | 4 — the operator's collection session | **not run** | the operator, and row 3's instrument, which now exists |
 | 5 — §5 2b, the state machine and lobby navigation | **not built** | row 4: which portal to pick, the lobby's walk coordinates, and whether a realm contains portals |
-| 6 — §7 3c, the recorded route | **not built** | nothing but time; it is new-file-only and the plan says so |
+| 6 — §7 3c, the recorded route | **built** — see §12.6 | — |
 | 7 — §8.1, the full-grid mirror | **not built** | row 4's map-identity measurement |
-| 8 — §8.2–8.4, the dungeon whitelist and clear-and-advance | **not built** | rows 5, 6 and 7 |
+| 8 — §8.2–8.4, the dungeon whitelist and clear-and-advance | **not built** | rows 5, 7 and a route to follow, which now exists |
 | 9 — §8.6, boss behaviour | **not built** | research that is not in this plan |
 
-The plan's §10.1 ordering has not been tested across worktrees: this branch did rows 2 and 3 in one
-worktree, sequentially, and touched `StartupHook.cs` only by adding two statements.
+The plan's §10.1 ordering has not been tested across worktrees: this branch built rows 2, 3 and 6 in
+one worktree, sequentially, and touched `StartupHook.cs` only by adding three statements.
 

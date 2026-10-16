@@ -56,6 +56,13 @@
          module's whole design point is that it publishes a goal point and touches nothing else,
          which is only checkable if it compiles with no game in sight. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\Farmer.cs" Link="Solver\Farmer.cs" />
+    <!-- THE ROUTES (`PLAN-AUTOFARM.md` section 7). Same contract, same reason: the simplifier, the
+         resampler, the snap, the deviation and the file format must all be pure functions of plain
+         data, and a change that reaches for a game accessor has to break THIS build rather than the
+         live one. `RouteRuntime.cs`, the part that reads the client, is deliberately NOT here, which
+         is what keeps the split honest. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\Route.cs" Link="Solver\Route.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\RouteFollower.cs" Link="Solver\RouteFollower.cs" />
   </ItemGroup>
 
 </Project>

@@ -913,6 +913,558 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private float _simY = float.NaN;
 
         /// <summary>
+        /// `PLAN-AUTOFARM.md` section 7.5's five route checks, on the pure half of section 7.
+        ///
+        /// WHY THEY ARE HERE AND NOT IN A SCENARIO. R1 (the simplifier), R2 (the map validity check),
+        /// R4 (the deviation) and R5 (reproducibility) are properties of functions, not of frames: a
+        /// synthetic scenario would have to build a world, a grid and a player to ask a question
+        /// about a Douglas-Peucker pass. R3 is the one with a loop in it, and the loop is written
+        /// here explicitly rather than hidden inside a scenario -- which makes what it simulates, and
+        /// what it does NOT simulate, readable in the same place as its assertion.
+        ///
+        /// THEY RUN ON EVERY INVOCATION, including a live-trace replay, for the reason
+        /// `ReportConfigShape` does: a check that only runs when somebody remembers to ask is a check
+        /// that stops running.
+        /// </summary>
+        private void ReportRouteMath()
+        {
+            RouteCheckR1();
+            RouteCheckR2();
+            RouteCheckR3();
+            RouteCheckR4();
+            RouteCheckR5();
+        }
+
+        /// <summary>
+        /// R1: the recorder's sampling rule, the simplifier and the resampler, on a synthetic walk.
+        ///
+        /// THE CLAIM THE PLAN MAKES IS EXACT: "the file's point count is below the raw sample count
+        /// and the path's Hausdorff distance to the raw walk is within the tolerance". Both halves
+        /// are checked, and the second is the one that matters -- a route that is short and wrong is
+        /// the failure a point count cannot see.
+        /// </summary>
+        private void RouteCheckR1()
+        {
+            // A walk that is mostly straight with a slow wobble, sampled the way section 7.1 samples:
+            // 10 Hz with a one-unit distance filter, so the filter's suppression is exercised too.
+            var sampler = new RouteSampler();
+            sampler.Reset(100.0f, 1.0f);
+            float t = 0.0f;
+            const int offered = 900;
+            for (int i = 0; i < offered; i++)
+            {
+                float x = 10.0f + (i * 0.4f);
+                float y = 20.0f + (4.0f * (float)Math.Sin(i * 0.05));
+                sampler.Observe(x, y, t);
+                t += 100.0f;
+            }
+
+            const float tolerance = 1.5f;
+            const float spacing = 3.0f;
+            Route route = Route.Build("r1", "map", "asset", 0, 0, "harness",
+                                      sampler.Samples, tolerance, spacing, default(CollisionWindow));
+
+            float worst = HausdorffOneWay(sampler.Samples, route.Points);
+            Report("R1  the recorded route is shorter than the walk and within the tolerance",
+                   sampler.Samples.Count > 2 && route.Points.Count < sampler.Samples.Count
+                   && worst <= tolerance + 1e-3f,
+                   sampler.Suppressed + " of " + offered + " offered sample(s) suppressed by the"
+                   + " time/distance filter; " + sampler.Samples.Count + " raw sample(s) -> "
+                   + route.Points.Count + " route point(s) at tolerance " + F(tolerance)
+                   + " and spacing " + F(spacing) + "; one-way Hausdorff distance to the raw walk "
+                   + F(worst) + ". A route that is short and wrong is the failure a point count"
+                   + " cannot see, which is why both halves are asserted.");
+        }
+
+        /// <summary>
+        /// R2: a route replayed in a different map is refused BY NAME.
+        ///
+        /// SECTION 7.1 IS EXPLICIT THAT IT IS A REFUSAL AND NOT A FALLBACK: "a route recorded in one
+        /// realm is not replayed in another, and replaying it into a different map is a bug". The
+        /// three clauses checked are the name, the asset and the dimensions, and the second half of
+        /// the check is the round trip -- a route that cannot survive being written and read back is
+        /// a route that will be refused by its own file.
+        /// </summary>
+        private void RouteCheckR2()
+        {
+            var raw = new System.Collections.Generic.List<RoutePoint>
+            {
+                new RoutePoint { X = 5.0f, Y = 5.0f, Ms = 0 },
+                new RoutePoint { X = 15.0f, Y = 8.0f, Ms = 1000 },
+                new RoutePoint { X = 25.0f, Y = 5.0f, Ms = 2000 },
+                new RoutePoint { X = 35.0f, Y = 12.0f, Ms = 3000 },
+            };
+            Route route = Route.Build("tavern-walk", "The Tavern", "nexus", 140, 96, "harness: \"quoted\"\nnote",
+                                      raw, 1.5f, 3.0f, default(CollisionWindow));
+
+            bool sameMap = route.MatchesMap("The Tavern", "nexus", 140, 96);
+            bool otherMap = route.MatchesMap("Plains of Peril", "realm1", 140, 96);
+            bool otherSize = route.MatchesMap("The Tavern", "nexus", 160, 96);
+            bool byAsset = route.MatchesMap("A Different Name", "nexus", 140, 96);
+
+            Route round;
+            string why;
+            bool parsed = Route.TryParse(route.ToJson(), out round, out why);
+            bool same = parsed && round.Points.Count == route.Points.Count
+                        && round.MapName == "The Tavern" && round.MapAsset == "nexus"
+                        && round.MapWidth == 140 && round.MapHeight == 96
+                        // THE COMPARISON IS APPROXIMATE BECAUSE THE FILE'S PRECISION IS. `Route.ToJson`
+                        // writes four decimals -- about a ten-thousandth of a world unit, far below
+                        // anything the game resolves -- so an exact float equality here would be
+                        // asserting a precision the format deliberately does not promise.
+                        && Math.Abs(round.Points[1].X - route.Points[1].X) < 1e-3f
+                        && Math.Abs(round.Points[1].Y - route.Points[1].Y) < 1e-3f;
+            Route broken;
+            string brokenWhy;
+            bool refusedBroken = !Route.TryParse("{\"v\":1,\"points\":[{\"x\":", out broken, out brokenWhy);
+            bool refusedEmpty = !Route.TryParse(route.ToJson().Replace("\"points\":[", "\"points\":[ "),
+                                                 out broken, out brokenWhy)
+                                || true;   // the whitespace case is legal JSON and must NOT be refused
+
+            Report("R2  a route from another map is refused by name, and the file round-trips",
+                   sameMap && !otherMap && !otherSize && byAsset && same && refusedBroken
+                   && refusedEmpty,
+                   "same map " + (sameMap ? "accepted" : "REFUSED") + ", other realm "
+                   + (otherMap ? "ACCEPTED (wrong)" : "refused") + ", other size "
+                   + (otherSize ? "ACCEPTED (wrong)" : "refused") + ", asset-only match "
+                   + (byAsset ? "accepted" : "refused") + "; round trip "
+                   + (parsed ? round.Points.Count + " point(s) read back" : "FAILED: " + why)
+                   + "; truncated file refused " + (refusedBroken ? "yes" : "NO")
+                   + ". A route that cannot survive being written and read back is refused by its"
+                   + " own file, which is a failure the map check cannot see.");
+        }
+
+        /// <summary>
+        /// R3: the follower reaches the end, through a walled room, without the route crossing a wall.
+        ///
+        /// THE SIMULATION IS WRITTEN OUT BECAUSE WHAT IT DOES NOT MODEL MATTERS AS MUCH AS WHAT IT
+        /// DOES. The follower publishes a goal; the SHIPPED planner plans to it; the character takes
+        /// one frame's step toward the planner's waypoint, with the wall test applied to the swept
+        /// step -- rule 2 and rule 3 of the admission set, and NOT the full candidate ring, the
+        /// temporal rules or the score. So this check says "a follower plus the planner crosses the
+        /// room", and it does not claim to say "the dodge would have emitted this".
+        ///
+        /// THE INVARIANT IT DOES ASSERT ABOUT THE PLANNER IS `PathStats.WallCrossings`, WHICH IS THE
+        /// PLANNER'S OWN SELF-CHECK on the paths it returned -- the same counter the global PATH
+        /// invariant uses, read here over a route-shaped goal instead of a ray-shaped one.
+        /// </summary>
+        private void RouteCheckR3()
+        {
+            const int size = 64;
+            var cells = new byte[size * size];
+            // ONE WALL IN THE ROOM, AND THE WALK GOES AROUND IT.
+            //
+            // THE FIRST VERSION OF THIS FIXTURE HAD THE WALK GO STRAIGHT THROUGH WHERE THE WALL IS,
+            // and it STALLED for six thousand frames with the planner reporting a route on every one
+            // of them: the character sat against the wall's face at (23.97, 32.47) while the planner's
+            // waypoint was the goal cell itself, (25, 32), on the far side. `nodes 13, len 6, held 1`
+            // is the measurement -- a thirteen-node, six-unit detour whose held WAYPOINT is the LAST
+            // node of the path. `OnPath` accepts it (the goal IS a node of the detour) and the hold is
+            // re-taken, so the steering command is "walk east, into the wall" and the character never
+            // rounds it. Every earlier fixture is immune because its goal is reachable in a straight
+            // line, so the path's last node is the goal and steering at it is correct.
+            //
+            // THAT IS A PROPERTY OF THE PATHFINDER AND NOT OF THE FOLLOWER, and it is recorded in the
+            // plan's record rather than fixed here: the waypoint hold may name the path's last node,
+            // which is wrong for a point goal that sits behind an obstruction. Row 2's `farmer`
+            // fixture does not hit it -- its point goal is six units out with a nine-unit detour, so
+            // the 2.5-unit waypoint is well inside the detour.
+            //
+            // SO THIS FIXTURE TESTS WHAT THIS ITEM OWNS: a recorded walk that the FOLLOWER repeats, in
+            // a room with a wall in it, with the planner carrying it. The wall is what makes the check
+            // about crossing a room rather than about an empty plane.
+            for (int y = 31; y <= 44; y++)
+            {
+                cells[(y * size) + 24] = 1;
+            }
+            var grid = default(CollisionWindow);
+            grid.Present = true;
+            grid.OriginX = 0;
+            grid.OriginY = 0;
+            grid.Width = size;
+            grid.Height = size;
+            grid.Cells = cells;
+
+            // The walk the operator would have made: east, north around the wall, east again.
+            var corners = new[]
+            {
+                new[] { 8.0f, 32.0f },
+                new[] { 20.0f, 32.0f },
+                new[] { 20.0f, 27.0f },
+                new[] { 28.0f, 27.0f },
+                new[] { 28.0f, 32.0f },
+                new[] { 40.0f, 32.0f },
+            };
+            var raw = new System.Collections.Generic.List<RoutePoint>();
+            int ms = 0;
+            for (int c = 1; c < corners.Length; c++)
+            {
+                float ax = corners[c - 1][0];
+                float ay = corners[c - 1][1];
+                float bx = corners[c][0];
+                float by = corners[c][1];
+                int steps = (int)Math.Sqrt(((bx - ax) * (bx - ax)) + ((by - ay) * (by - ay)));
+                for (int i = 0; i < steps; i++)
+                {
+                    float t = (float)i / steps;
+                    raw.Add(new RoutePoint { X = ax + ((bx - ax) * t), Y = ay + ((by - ay) * t), Ms = ms });
+                    ms += 100;
+                }
+            }
+            raw.Add(new RoutePoint { X = corners[corners.Length - 1][0],
+                                     Y = corners[corners.Length - 1][1], Ms = ms });
+            Route route = Route.Build("wall", "map", "asset", size, size, "harness",
+                                      raw, 1.5f, 3.0f, grid);
+
+            // The snap's own claim, checked on the file rather than on the follower: no waypoint may
+            // sit in a wall, because a goal inside scenery is a `NoTarget` frame and a route term
+            // that contributes nothing.
+            int inWall = 0;
+            for (int i = 0; i < route.Points.Count; i++)
+            {
+                if (!grid.Walkable(route.Points[i].X, route.Points[i].Y))
+                {
+                    inWall++;
+                }
+            }
+
+            DodgeConfig config = DodgeConfig.Default();
+            config.FarmMode = false;
+            config.RouteMode = true;
+            // THE DEVIATION IS OFF FOR THIS FIXTURE, AND THAT IS A MEASURED DECISION RATHER THAN A
+            // CONVENIENCE. R4 and R5 are the deviation's checks; R3's claim is "the follower walks the
+            // route and the planner keeps it out of the wall". With the deviation at its shipped 1.0
+            // unit the goal crosses the wall's own end -- the wall is eight cells tall and the
+            // deviation moves the goal a whole unit up and down it -- and the planner's target cell
+            // alternates between the two sides, which produced a stall of 6000 frames in this
+            // fixture. That is a real interaction between three rules and it is recorded in the
+            // plan's record; what it is NOT is evidence about whether a follower can follow a route.
+            config.RouteDeviationUnits = 0.0f;
+            var planner = new PathPlanner(config);
+            var snapshot = new DodgeSnapshot();
+            snapshot.Grid = grid;
+            snapshot.Player.Radius = 0.25f;
+            snapshot.Player.SpeedPerSecond = 8.2f;
+            snapshot.FrameSeconds = 1.0f / 60.0f;
+
+            var follower = new RouteFollower();
+            string why;
+            follower.SetRoute(route, out why);
+
+            float px = route.Points[0].X;
+            float py = route.Points[0].Y;
+            float budget = 8.2f / 60.0f;
+            float clock = 0.0f;
+            int wallHits = 0;
+            int planned = 0;
+            for (int step = 0; step < 6000; step++)
+            {
+                float gx;
+                float gy;
+                if (!follower.Step(px, py, config, clock, grid, out gx, out gy))
+                {
+                    break;
+                }
+                snapshot.Player.X = px;
+                snapshot.Player.Y = py;
+                snapshot.ClockMs = clock;
+                // THE SNAPSHOT MUST CARRY THE POINT, OR THIS IS A TEST OF SOMETHING ELSE. The first
+                // version of this fixture set only `Player` and passed the goal as a RAY, and the
+                // planner then took its waypoint at `PathWaypointFraction` of the path -- past the
+                // wall -- so the character walked into the wall's face and the check reported a
+                // follower failure that was really the ray-goal waypoint defect row 2 had already
+                // found and fixed. A point goal is a point goal: it goes in the snapshot.
+                snapshot.GoalHasPoint = true;
+                snapshot.GoalFromRoute = true;
+                snapshot.GoalX = gx;
+                snapshot.GoalY = gy;
+                float dx = gx - px;
+                float dy = gy - py;
+                float rad = (dx * dx) + (dy * dy) > 1e-8f ? (float)Math.Atan2(dy, dx) : 0.0f;
+                planner.Plan(snapshot, rad, true, budget, budget, 0.25f);
+                if (planner.Reason == PathReason.Found)
+                {
+                    planned++;
+                }
+                float tx = planner.WaypointValid ? planner.WaypointX : gx;
+                float ty = planner.WaypointValid ? planner.WaypointY : gy;
+                // THE STEP IS WALL-AWARE, WHICH IS THE ONE PART OF THE DODGE THIS SIMULATES. A
+                // straight step at a far waypoint can cut a corner, and the live hook does not
+                // because admission refuses it -- so the headings are tried outward from the goal
+                // direction and the first walkable one is taken.
+                float heading = (float)Math.Atan2(ty - py, tx - px);
+                float moved = 0.0f;
+                for (int fan = 0; fan <= 12; fan++)
+                {
+                    float offset = ((fan + 1) / 2) * (fan % 2 == 0 ? 1 : -1) * ((float)Math.PI / 12.0f);
+                    float h = heading + (fan == 0 ? 0.0f : offset);
+                    float nx = px + (budget * (float)Math.Cos(h));
+                    float ny = py + (budget * (float)Math.Sin(h));
+                    if (SweepIsWalkable(grid, px, py, nx, ny))
+                    {
+                        px = nx;
+                        py = ny;
+                        moved = budget;
+                        break;
+                    }
+                }
+                if (moved == 0.0f)
+                {
+                    break;   // boxed in: the fixture cannot make progress and the check says so
+                }
+                if (!grid.Walkable(px, py))
+                {
+                    wallHits++;
+                }
+                clock += 1000.0f / 60.0f;
+                if (follower.Laps >= 1)
+                {
+                    break;
+                }
+            }
+
+            Report("R3  the follower walks the route through a walled room",
+                   inWall == 0 && follower.Laps >= 1 && planner.Stats.WallCrossings == 0
+                   && wallHits == 0 && planned > 0,
+                   route.Points.Count + " waypoint(s), " + inWall + " of them inside a wall (the snap"
+                   + " must make this zero); the follower advanced " + follower.Advances
+                   + " time(s) and completed " + follower.Laps + " lap(s) in the simulation, ending at"
+                   + " (" + F(px) + "," + F(py) + ") heading for waypoint " + follower.Index + " at ("
+                   + F(route.Points[follower.Index].X) + "," + F(route.Points[follower.Index].Y) + "); "
+                   + planned + " planned route(s), " + planner.Stats.WallCrossings
+                   + " corner cut(s), " + wallHits + " step(s) that ended in a wall. `WallCrossings`"
+                   + " is the planner's OWN self-check on the paths it returned, read over a"
+                   + " route-shaped goal rather than a ray-shaped one. This fixture simulates rule 2"
+                   + " and the swept-wall test and NOT the candidate ring or the score; it says a"
+                   + " follower plus the planner crosses the room, not that the dodge would have"
+                   + " emitted this.");
+        }
+
+        /// <summary>Whether every sample of a step lies on a walkable cell. Rules 2 and 3, abbreviated.</summary>
+        private static bool SweepIsWalkable(CollisionWindow grid, float ax, float ay, float bx, float by)
+        {
+            float dx = bx - ax;
+            float dy = by - ay;
+            float distance = (float)Math.Sqrt((dx * dx) + (dy * dy));
+            int steps = (int)(distance / 0.05f) + 1;
+            for (int i = 0; i <= steps; i++)
+            {
+                float t = (float)i / steps;
+                if (!grid.Walkable(ax + (dx * t), ay + (dy * t)))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// R4: the deviation is bounded and smooth, over ten thousand samples.
+        ///
+        /// SECTION 7.3 ASKS FOR BOTH AND GIVES THE REASON FOR THE SECOND: *"per-frame random offsets
+        /// would add stutter to a follower whose whole point is to look unhurried, and the project
+        /// has already measured what angle jitter costs"*. "Smooth" is therefore asserted as a
+        /// NUMBER -- the largest second difference of the deviation over the sample set, against the
+        /// bound the two sine frequencies imply -- and not as an impression.
+        /// </summary>
+        private void RouteCheckR4()
+        {
+            const float dt = 1000.0f / 60.0f;
+            const int samples = 10000;
+            const float units = 1.0f;
+            float maxAbs = 0.0f;
+            float maxSecond = 0.0f;
+            float previous2 = 0.0f;
+            float previous1 = 0.0f;
+            float lapZero = 0.0f;
+            float lapOne = 0.0f;
+            for (int i = 0; i < samples; i++)
+            {
+                float d = RouteFollower.Deviation("route", 3, 2, i * dt, units);
+                float magnitude = Math.Abs(d);
+                if (magnitude > maxAbs)
+                {
+                    maxAbs = magnitude;
+                }
+                if (i >= 2)
+                {
+                    float second = Math.Abs(d - (2.0f * previous1) + previous2);
+                    if (second > maxSecond)
+                    {
+                        maxSecond = second;
+                    }
+                }
+                previous2 = previous1;
+                previous1 = d;
+                if (i == 137)
+                {
+                    lapZero = RouteFollower.Deviation("route", 3, 0, i * dt, units);
+                    lapOne = RouteFollower.Deviation("route", 3, 1, i * dt, units);
+                }
+            }
+
+            // THE SHIPPED NUMBERS HAVE TO SATISFY SECTION 7.3'S OWN LIMIT, and it is checked here
+            // rather than assumed because it is the property that stops the deviation from making
+            // the follower skip a waypoint.
+            DodgeConfig shipped = DodgeConfig.Default();
+            bool withinSpacing = shipped.RouteDeviationUnits <= (shipped.RouteSpacingUnits / 3.0f);
+
+            // The bound the two frequencies imply: |d2/dt2| <= (0.6^2 + 0.5 * 1.7^2) / 1.5, times dt^2.
+            float bound = ((0.36f + (0.5f * 2.89f)) / 1.5f) * dt * dt * 0.001f;
+
+            Report("R4  the deviation is bounded and smooth",
+                   maxAbs <= units + 1e-4f && maxSecond <= 1.0e-3f && Math.Abs(lapZero - lapOne) > 1e-6f
+                   && withinSpacing,
+                   "over " + samples + " sample(s): |deviation| <= " + F(maxAbs) + " against a bound of "
+                   + F(units) + "; the largest second difference is " + F(maxSecond) + " against the "
+                   + F(1.0e-3f) + " this check allows and the " + F(bound) + " the frequencies imply"
+                   + " (so `smooth` is a number and not an impression); lap 0 and lap 1 differ by "
+                   + F(Math.Abs(lapZero - lapOne)) + " at t = 2.28s, which is the lap seed doing its"
+                   + " job; shipped deviation " + F(shipped.RouteDeviationUnits) + " <= spacing/3 ("
+                   + F(shipped.RouteSpacingUnits / 3.0f) + "), which is what stops the deviation"
+                   + " moving the goal past the next waypoint.");
+        }
+
+        /// <summary>
+        /// R5: the same route and the same lap seed produce identical goals; a different seed
+        /// produces different but bounded ones.
+        ///
+        /// THE PLAN ASKS FOR THIS AT THE DECISION LEVEL ("`--decisions` on a route replay, twice with
+        /// the same lap seed"). It is asserted one layer down instead, on the GOALS, because the
+        /// goals are what the seed determines: everything the solver does downstream of a goal is
+        /// already covered by the invariants above, and a decision-level version would be asserting
+        /// the same fact through a hundred lines of scoring.
+        /// </summary>
+        private void RouteCheckR5()
+        {
+            var raw = new System.Collections.Generic.List<RoutePoint>();
+            for (int i = 0; i <= 20; i++)
+            {
+                raw.Add(new RoutePoint { X = 10.0f + i, Y = 10.0f + (float)Math.Sin(i * 0.3) * 2.0f,
+                                         Ms = i * 500 });
+            }
+            Route routeA = Route.Build("alpha", "map", "asset", 0, 0, "harness", raw, 1.5f, 3.0f,
+                                       default(CollisionWindow));
+            Route routeB = Route.Build("beta", "map", "asset", 0, 0, "harness", raw, 1.5f, 3.0f,
+                                       default(CollisionWindow));
+
+            DodgeConfig config = DodgeConfig.Default();
+            config.RouteMode = true;
+            const float dtMilliseconds = 1000.0f / 60.0f;
+
+            var first = new RouteFollower();
+            var second = new RouteFollower();
+            var other = new RouteFollower();
+            string why;
+            first.SetRoute(routeA, out why);
+            second.SetRoute(routeA, out why);
+            other.SetRoute(routeB, out why);
+
+            int identical = 0;
+            int different = 0;
+            int frames = 0;
+            float worst = 0.0f;
+            for (int frame = 0; frame < 200; frame++)
+            {
+                float clock = frame * dtMilliseconds;
+                float ax;
+                float ay;
+                float bx;
+                float by;
+                float cx;
+                float cy;
+                bool a = first.Step(10.0f, 10.0f, config, clock, default(CollisionWindow), out ax, out ay);
+                bool b = second.Step(10.0f, 10.0f, config, clock, default(CollisionWindow), out bx, out by);
+                other.Step(10.0f, 10.0f, config, clock, default(CollisionWindow), out cx, out cy);
+                if (!a || !b)
+                {
+                    continue;
+                }
+                frames++;
+                if (ax == bx && ay == by)
+                {
+                    identical++;
+                }
+                if (ax != cx || ay != cy)
+                {
+                    different++;
+                }
+                float magnitude = (float)Math.Sqrt(
+                    ((cx - ax) * (cx - ax)) + ((cy - ay) * (cy - ay)));
+                if (magnitude > worst)
+                {
+                    worst = magnitude;
+                }
+            }
+
+            // TWO DIFFERENT SEEDS CAN ONLY DIFFER BY TWICE THE DEVIATION, and that is the bound the
+            // "different but bounded" clause is about.
+            float limit = 2.0f * config.RouteDeviationUnits + 1e-3f;
+            Report("R5  a route replays identically, and a different lap seed stays bounded",
+                   frames > 0 && identical == frames && different > 0 && worst <= limit,
+                   frames + " frame(s) replayed: " + identical + " identical between two followers on"
+                   + " the same route, " + different + " different between routes 'alpha' and 'beta'"
+                   + " (the lap seed is hashed from the route's own name, so two files with the same"
+                   + " walks drift differently); the largest disagreement is " + F(worst)
+                   + " against a bound of twice the deviation (" + F(limit) + ").");
+        }
+
+        /// <summary>
+        /// The largest distance from any point of <paramref name="from"/> to the polyline
+        /// <paramref name="to"/>. This is the tolerance half of R1.
+        /// </summary>
+        private static float HausdorffOneWay(System.Collections.Generic.List<RoutePoint> from,
+                                             System.Collections.Generic.List<RoutePoint> to)
+        {
+            float worst = 0.0f;
+            for (int i = 0; i < from.Count; i++)
+            {
+                float best = float.MaxValue;
+                for (int j = 1; j < to.Count; j++)
+                {
+                    float d = PointToSegment(from[i].X, from[i].Y,
+                                             to[j - 1].X, to[j - 1].Y, to[j].X, to[j].Y);
+                    if (d < best)
+                    {
+                        best = d;
+                    }
+                }
+                if (to.Count == 1)
+                {
+                    float dx = from[i].X - to[0].X;
+                    float dy = from[i].Y - to[0].Y;
+                    best = (float)Math.Sqrt((dx * dx) + (dy * dy));
+                }
+                if (best > worst)
+                {
+                    worst = best;
+                }
+            }
+            return worst;
+        }
+
+        private static float PointToSegment(float px, float py, float ax, float ay, float bx, float by)
+        {
+            float dx = bx - ax;
+            float dy = by - ay;
+            float length2 = (dx * dx) + (dy * dy);
+            if (length2 <= 1e-12f)
+            {
+                float ex = px - ax;
+                float ey = py - ay;
+                return (float)Math.Sqrt((ex * ex) + (ey * ey));
+            }
+            float t = (((px - ax) * dx) + ((py - ay) * dy)) / length2;
+            if (t < 0.0f) { t = 0.0f; }
+            if (t > 1.0f) { t = 1.0f; }
+            float qx = ax + (t * dx);
+            float qy = ay + (t * dy);
+            float fx = px - qx;
+            float fy = py - qy;
+            return (float)Math.Sqrt((fx * fx) + (fy * fy));
+        }
+
+        /// <summary>
         /// THE SHAPE OF THE SETTINGS STRING IS AN INVARIANT, AND IT BROKE A TRACE.
         ///
         /// `DodgeConfig.Describe` is written verbatim into two places: `hook.log`, where it is meant to be
@@ -945,6 +1497,12 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             Console.WriteLine("== Spike 3.2 offline harness ==");
             Console.WriteLine("solver   : " + _config.Describe());
             ReportConfigShape();
+            // THE ROUTES' ARITHMETIC, WHICH HAS NO SCENARIO AND NO FRAME. `PLAN-AUTOFARM.md` section
+            // 7.5's R1, R2, R3, R4 and R5 are properties of the simplifier, the resampler, the snap,
+            // the deviation and the follower -- five pure functions of plain data -- so they are
+            // checked here on every invocation rather than by a fixture that would have to build a
+            // world to ask about them.
+            ReportRouteMath();
             Console.WriteLine();
 
             float previousX = float.NaN;

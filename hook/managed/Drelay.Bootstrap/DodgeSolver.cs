@@ -459,6 +459,14 @@ namespace Drelay.Bootstrap
         private bool _farmClosing;
 
         /// <summary>
+        /// True when this frame's point goal is one the character should WALK AT rather than arrive
+        /// at and stop: the farmer still closing, or a ROUTE. Both suppress the `stand` and
+        /// `IntentSafe` early-outs and the `intent` score term, for the same reason -- the module
+        /// owns the steering, and the operator's idle hands are a stale second opinion.
+        /// </summary>
+        private bool _pointDriven;
+
+        /// <summary>
         /// Frames where `stand` was admitted and durably safe but was NOT taken, because the farmer
         /// was still closing on its target. `PLAN-AUTOFARM.md` section 4.3's own counter.
         ///
@@ -858,6 +866,7 @@ namespace Drelay.Bootstrap
             _farmGoalActive = false;
             _farmGoalDistance = 0.0f;
             _farmClosing = false;
+            _pointDriven = false;
             _standHeldForRangeThisFrame = false;
             // And the same for the decision window, for the same reason.
             _decisionWindowMs = 0.0f;
@@ -971,7 +980,7 @@ namespace Drelay.Bootstrap
             // question.
             _farmGoalActive = false;
             _farmGoalDistance = 0.0f;
-            if (_config.FarmMode && snapshot.GoalHasPoint)
+            if (_config.PointGoal && snapshot.GoalHasPoint)
             {
                 float gx = snapshot.GoalX - player.X;
                 float gy = snapshot.GoalY - player.Y;
@@ -1024,6 +1033,12 @@ namespace Drelay.Bootstrap
             // throws the answer away -- the exact "two answers in one frame" shape the plan's
             // section 2 refuses to build.
             _farmClosing = _farmGoalActive && _farmGoalDistance > _config.FarmStopRadius;
+            // AND THE WIDER FLAG THE ARRIVAL POLICY ACTUALLY READS. A farmer stops once it is in
+            // range; a ROUTE never does, because the follower advances to the next waypoint the moment
+            // this one is reached -- so a route goal is always something to walk at, and suppressing
+            // `stand` for it is the same statement section 4.3 makes for the farmer. One flag for the
+            // three suppression sites, so they cannot disagree about who is driving.
+            _pointDriven = _farmClosing || (_farmGoalActive && snapshot.GoalFromRoute);
 
             // --- THE PATH: ONE SEARCH, ONCE PER FRAME, BEFORE MAYBE-EVALUATING THE FRAME. -----
             //
@@ -1162,11 +1177,19 @@ namespace Drelay.Bootstrap
             // recorded in its OWN counter rather than in `_standDurableSafe`, so a T5 comparison is
             // never made against a frame where `stand` was declined for a reason T5 knows nothing
             // about -- see `StandHeldForRange`.
-            if (standSafe && _farmClosing)
+            if (standSafe && _pointDriven)
             {
                 standSafe = false;
-                _standHeldForRange++;
-                _standHeldForRangeThisFrame = true;
+                // THE COUNTER IS THE FARMER'S AND NOT THE ROUTE'S, WHICH IS WHY IT IS GUARDED. The
+                // plan's requirement is that a regression in the operator's halt fix "is visible as a
+                // nonzero count on a non-farm run -- i.e. never", and a route run is a non-farm run.
+                // The suppression is shared because the argument is; the counter is not, because the
+                // question it answers ("is the farmer closing?") is the farmer's.
+                if (_farmClosing)
+                {
+                    _standHeldForRange++;
+                    _standHeldForRangeThisFrame = true;
+                }
             }
 
             if (standSafe)
@@ -1299,7 +1322,7 @@ namespace Drelay.Bootstrap
                 // point the dodge is not fighting the farmer about anything -- it is standing there
                 // shooting, and whether to respect the operator's hands is the operator's question,
                 // answered by `StandStops` exactly as it was before the farmer existed.
-                && !_farmClosing)
+                && !_pointDriven)
             {
                 decision.Action = DodgeAction.Move;
                 decision.Reason = DodgeReason.IntentSafe;
@@ -3275,7 +3298,7 @@ namespace Drelay.Bootstrap
         /// </summary>
         private float IntentWeight
         {
-            get { return _farmClosing ? 0.0f : _config.WeightIntent; }
+            get { return _pointDriven ? 0.0f : _config.WeightIntent; }
         }
 
         /// <summary>
