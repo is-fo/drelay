@@ -67,8 +67,13 @@ jobs:
       # THE MANAGED HALF TARGETS net8.0 ON PURPOSE: it is loaded by the game's .NET 9 runtime, and
       # building against the older TFM is what keeps an accidental use of a .NET 9-only API from
       # compiling into a DLL that is then injected into a process that cannot load it.
+      #
+      # v6, not v4, because the runtime an action declares is the runtime the runner must have:
+      # v4 asks for Node 20, which the runner has deprecated and now forces onto Node 24 anyway,
+      # so the warning on every run was about an action running on a runtime it did not ask for.
+      # v6 declares `using: node24`.
       - name: Set up .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 

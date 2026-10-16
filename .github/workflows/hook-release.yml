@@ -168,8 +168,10 @@ jobs:
         with:
           ref: ${{ needs.version.outputs.sha }}
 
+      # v6 declares `using: node24`; v4 asked for the deprecated Node 20, which the runner now
+      # forces onto Node 24 anyway -- see hook-build.yml for the full note.
       - name: Set up .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           dotnet-version: '8.0.x'
 
