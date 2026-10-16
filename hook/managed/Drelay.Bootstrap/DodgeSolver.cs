@@ -219,6 +219,24 @@ namespace Drelay.Bootstrap
         /// whose share over a session is the change's own success measure.
         /// </summary>
         PlayerIntent = 3,
+
+        /// <summary>
+        /// The goal is the FARMER's target -- a POINT, from `DodgeSnapshot.GoalHasPoint`.
+        /// `PLAN-AUTOFARM.md` sections 4.1 and 4.2.
+        ///
+        /// IT IS A MEMBER OF ITS OWN SO THE REPORT CAN TELL "THE GOAL IS THE FARMER'S TARGET" FROM
+        /// "THE GOAL IS THE PLAYER'S HANDS", which is the same instrument argument `GoalSource` was
+        /// created for in the first place. Without it, a run where the farmer was enabled and its
+        /// `ChooseTarget` never ran is indistinguishable from one where it ran and lost every target
+        /// -- both read as the player's own heading.
+        ///
+        /// THE VALUE IS 4 AND NOT 3. `PLAN-AUTOFARM.md` section 4.1 item 2 says
+        /// `GoalSource.GameplayTarget = 3`, which was written before `PlayerIntent` existed and is
+        /// simply taken. Renumbering an enum the trace format and every published decision dump
+        /// carry would change the meaning of every recorded line, so the new member takes the next
+        /// free value and the departure is recorded here rather than in the plan.
+        /// </summary>
+        GameplayTarget = 4,
     }
 
     /// <summary>
@@ -421,6 +439,41 @@ namespace Drelay.Bootstrap
         /// <summary>Where <see cref="_goalRadians"/> came from on the last decision. See `GoalSource`.</summary>
         private GoalSource _goalSource;
 
+        // --- The farmer's per-frame goal state (PLAN-AUTOFARM.md section 4) ----------------
+        //
+        // ALL THREE ARE FACTS ABOUT THE FRAME JUST DECIDED and are reset with `_goalSource`, for the
+        // same reason: a reader that asks after an early return must not be handed the previous
+        // frame's answer, which describes a different world.
+
+        /// <summary>True when this frame's goal was the farmer's point. See `GoalSource.GameplayTarget`.</summary>
+        private bool _farmGoalActive;
+
+        /// <summary>Player-to-goal-point distance this frame, world units. Zero when there is no point.</summary>
+        private float _farmGoalDistance;
+
+        /// <summary>
+        /// True when the farmer is still closing on its target, i.e. the point is further away than
+        /// `FarmStopRadius`. Suppresses the `stand` and `IntentSafe` early-outs. See `FarmStopRadius`
+        /// for why the plan's single radius had to become two.
+        /// </summary>
+        private bool _farmClosing;
+
+        /// <summary>
+        /// Frames where `stand` was admitted and durably safe but was NOT taken, because the farmer
+        /// was still closing on its target. `PLAN-AUTOFARM.md` section 4.3's own counter.
+        ///
+        /// IT EXISTS SO THE OPERATOR'S OWN FIX STAYS VISIBLE. `stand` is the preferred answer to a
+        /// frame where nothing is shooting, and the halt defect is what happens when it stops a
+        /// walking player; this is a SECOND, deliberate reason to decline it, in farm mode only. The
+        /// plan's requirement is exact: "a regression in the operator's original fix is visible as a
+        /// nonzero count on a non-farm run -- i.e. never". Nothing can increment this unless
+        /// `FarmMode` is on, and the harness asserts the zero.
+        /// </summary>
+        private long _standHeldForRange;
+
+        /// <summary>True when this frame's `stand` was declined for that reason.</summary>
+        private bool _standHeldForRangeThisFrame;
+
         /// <summary>The widest rule 6 decision window the last decision computed. See `DecisionWindowMs`.</summary>
         private float _decisionWindowMs;
 
@@ -608,6 +661,29 @@ namespace Drelay.Bootstrap
         public GoalSource GoalSource => _goalSource;
 
         /// <summary>
+        /// Frames on which `stand` was admitted and durably safe and was declined anyway, because
+        /// the farmer was still closing on its target. See <see cref="_standHeldForRange"/>.
+        ///
+        /// IT IS A COUNT AND NOT ONLY A FLAG because the plan asks for it as an instrument: the
+        /// interesting question is not "did this happen once" but "on how many frames", and a run
+        /// whose farm mode is on and whose count is zero is a run where the farmer had nothing to
+        /// close on -- which is a finding, not a silent pass.
+        /// </summary>
+        public long StandHeldForRange => _standHeldForRange;
+
+        /// <summary>True when the last decision's `stand` was declined for that reason.</summary>
+        public bool StandHeldForRangeThisFrame => _standHeldForRangeThisFrame;
+
+        /// <summary>True when the last decision's goal was the farmer's point goal.</summary>
+        public bool FarmGoalActive => _farmGoalActive;
+
+        /// <summary>Player-to-goal-point distance on the last decision; zero when there is no point.</summary>
+        public float FarmGoalDistance => _farmGoalDistance;
+
+        /// <summary>True when the last decision's farmer was still closing on its target.</summary>
+        public bool FarmClosing => _farmClosing;
+
+        /// <summary>
         /// The frame's path, for the harness and for the <c>--decisions</c> dump.
         ///
         /// IT IS EXPOSED RATHER THAN COPIED INTO THE DECISION, for the reason `GoalSource` is: the
@@ -646,6 +722,30 @@ namespace Drelay.Bootstrap
             _config = config;
             _planner.Configure(config);
             EnsureCapacity(MaxCandidates(config));
+            // A WORLD CHANGE IS A NEW WORLD, so the heading hold does not survive it. A held heading
+            // was taken against bullets that no longer exist and a map that is no longer loaded, and
+            // section 5.7's hold is a statement about the recent past -- which a portal invalidates
+            // entirely. The farmer's own hold is dropped by `Farmer.ChooseTarget` for the same reason.
+            ResetMotionState();
+        }
+
+        /// <summary>
+        /// Drops the heading hold and the previous-heading memory, as a fresh process would have them.
+        ///
+        /// THE HARNESS NEEDS THIS AND THE HOOK NEEDS IT AT A WORLD CHANGE; neither needs it per frame.
+        /// The harness's warm-up runs eight frames to force JIT compilation (see its `Run`), and on an
+        /// open-loop trace those are frames 0-7 of the recording -- re-decided immediately afterwards,
+        /// so the hold they seed is genuine history. On a CLOSED-LOOP trace they are not: the player
+        /// has not moved yet, so all eight sees the same snapshot and the hold they leave is a
+        /// quantisation artefact of a world that never existed. Measured on `--scenario farmerclose`:
+        /// the warm-up left a hold at 60 degrees, the correct heading was 90, and the character walked
+        /// 30 degrees off its target for the first twenty frames and then missed it.
+        /// </summary>
+        public void ResetMotionState()
+        {
+            _hysteresis.Reset();
+            _hasPreviousHeading = false;
+            _previousHeading = 0.0f;
         }
 
         private static int MaxCandidates(DodgeConfig c)
@@ -752,6 +852,13 @@ namespace Drelay.Bootstrap
             // a reader that asks after an early return must not be handed the previous frame's
             // answer. It is resolved below for every frame that gets that far.
             _goalSource = GoalSource.None;
+            // And the farmer's own four per-frame facts, for exactly the same reason: they describe
+            // the frame just decided, and a reader that asks after an early return must not be handed
+            // the previous frame's answer.
+            _farmGoalActive = false;
+            _farmGoalDistance = 0.0f;
+            _farmClosing = false;
+            _standHeldForRangeThisFrame = false;
             // And the same for the decision window, for the same reason.
             _decisionWindowMs = 0.0f;
             // And the same for the `stand` verdict's own durability: it is a fact about the frame
@@ -838,17 +945,60 @@ namespace Drelay.Bootstrap
             // which is the intent-preserving behaviour `DODGE-ALGORITHM.md` section 5.7 makes a hard
             // requirement.
             bool playerWalking = player.Moving && player.IntentValid;
-            if (playerWalking)
+
+            // --- THE FARMER'S POINT GOAL, AHEAD OF THE WHOLE LADDER. -------------------------
+            //
+            // `PLAN-AUTOFARM.md` section 4.1 item 3: "`DodgeSolver` resolves the point goal ahead of
+            // the existing ladder when `config.FarmMode` is set and the snapshot carries a point.
+            // The *rest of the frame is untouched*".
+            //
+            // WHY AHEAD OF THE LADDER RATHER THAN BESIDE IT. The three cases below are all answers to
+            // "which heading is the player trying to travel along", and the farmer's target is a
+            // better answer to that question than either of them: it is a PLACE, where the other two
+            // are directions that may be stale (`Intent`) or may be the dodge's own last command fed
+            // back (`Course`). The farmer is walking the character, so the place wins when there is
+            // one.
+            //
+            // IT IS STILL ONLY A GOAL. `_goalRadians` ranks candidates and aims the planner; it does
+            // not touch `Admit`, the plan walk, the hysteresis or the escape floor. A farmer told to
+            // walk into a bullet gets the best ADMISSIBLE move toward the target and no move at all
+            // if none is admissible -- which is the plan's section 2 argument expressed in one line.
+            //
+            // THE DISTANCE IS KEPT because the arrival policy (section 4.3) needs it twice: the
+            // `stand` range condition and the suppression of the `IntentSafe` early-out. It is
+            // measured from the player to the POINT and not to the enemy's edge, because the point
+            // IS the enemy's centre and the edge radius belongs to rule 7, which is a different
+            // question.
+            _farmGoalActive = false;
+            _farmGoalDistance = 0.0f;
+            if (_config.FarmMode && snapshot.GoalHasPoint)
+            {
+                float gx = snapshot.GoalX - player.X;
+                float gy = snapshot.GoalY - player.Y;
+                _farmGoalDistance = (float)Math.Sqrt((gx * gx) + (gy * gy));
+                // A POINT ON TOP OF THE PLAYER HAS NO HEADING. `Atan2(0,0)` is 0 -- due east -- and
+                // a plausible constant is the worst kind of wrong (see `PlayerView.IntentValid`), so
+                // a degenerate point falls through to the ordinary ladder instead of inventing a
+                // direction. It is reachable: a mob can walk onto the player.
+                if (_farmGoalDistance > 1e-4f)
+                {
+                    _goalRadians = (float)Math.Atan2(gy, gx);
+                    _goalSource = GoalSource.GameplayTarget;
+                    _farmGoalActive = true;
+                }
+            }
+
+            if (!_farmGoalActive && playerWalking)
             {
                 _goalRadians = player.IntentRadians;
                 _goalSource = GoalSource.PlayerIntent;
             }
-            else if (player.CourseValid)
+            else if (!_farmGoalActive && player.CourseValid)
             {
                 _goalRadians = player.CourseRadians;
                 _goalSource = GoalSource.Course;
             }
-            else
+            else if (!_farmGoalActive)
             {
                 _goalRadians = player.IntentRadians;
                 _goalSource = GoalSource.Intent;
@@ -857,11 +1007,23 @@ namespace Drelay.Bootstrap
             // and no intent the direction is not unknown-but-guessable, it is unknown; `GoalProgress`
             // returns zero for every candidate and the decision falls back to safety and the other
             // preferences. See `PlayerView.IntentValid` for the plausible constant this avoids.
-            _goalValid = playerWalking || player.CourseValid || player.IntentValid;
+            _goalValid = _farmGoalActive || playerWalking || player.CourseValid || player.IntentValid;
             if (!_goalValid)
             {
                 _goalSource = GoalSource.None;
             }
+
+            // WHETHER THE FARMER STILL HAS DISTANCE TO CLOSE, resolved once for the frame.
+            //
+            // IT IS THE ARRIVAL POLICY OF `PLAN-AUTOFARM.md` SECTION 4.3, AND IT IS ONE FLAG RATHER
+            // THAN TWO CONDITIONS BECAUSE TWO CONSUMERS MUST AGREE ABOUT IT: the `stand` early-out
+            // (which must not park a farmer that is still walking to its target) and the `IntentSafe`
+            // early-out (which must not emit the player's stale hands as a Move and walk the
+            // character away from a target the farmer just chose). A frame where one is suppressed
+            // and the other is not is a frame that closes the distance by the goal term and then
+            // throws the answer away -- the exact "two answers in one frame" shape the plan's
+            // section 2 refuses to build.
+            _farmClosing = _farmGoalActive && _farmGoalDistance > _config.FarmStopRadius;
 
             // --- THE PATH: ONE SEARCH, ONCE PER FRAME, BEFORE MAYBE-EVALUATING THE FRAME. -----
             //
@@ -981,6 +1143,32 @@ namespace Drelay.Bootstrap
             bool standInsideDisc = InsideAnyDisc(snapshot, player.X, player.Y, playerRadius);
             bool standDurable = StaticallyDurable(snapshot, player, player.X, player.Y, playerRadius);
             bool standSafe = standAdmissible && !standInsideDisc && standDurable;
+
+            // --- THE FARMER'S ARRIVAL POLICY, AND IT MUST NOT WEAKEN THE EXISTING FIX. --------
+            //
+            // `PLAN-AUTOFARM.md` section 4.3. The farmer's most common state is "no bullets in the
+            // air", which is exactly the frame the dodge answers `stand` on -- and with `StandStops`
+            // true that STOPS THE CHARACTER. A farmer that stands still whenever nothing is shooting
+            // at it farms nothing.
+            //
+            // SO IN FARM MODE `stand` IS DECLINED WHILE THE TARGET IS STILL OUT OF REACH, and only
+            // then: once the character is inside `FarmStopRadius` the ordinary answer stands, which
+            // is the behaviour a farmer wants (stand and let the client's auto-fire do the work).
+            //
+            // WHAT IT DOES NOT DO. It does not touch `standAdmissible`, `standInsideDisc` or
+            // `standDurable`: the durability test keeps its full force and the frame falls through to
+            // the ordinary ladder, where the goal term decides. Nothing is admitted, nothing is
+            // refused, and the emitted move is still drawn from the admissible set. It is also
+            // recorded in its OWN counter rather than in `_standDurableSafe`, so a T5 comparison is
+            // never made against a frame where `stand` was declined for a reason T5 knows nothing
+            // about -- see `StandHeldForRange`.
+            if (standSafe && _farmClosing)
+            {
+                standSafe = false;
+                _standHeldForRange++;
+                _standHeldForRangeThisFrame = true;
+            }
+
             if (standSafe)
             {
                 // THE NUMBER T5 COMPARES AGAINST, RECORDED WHERE IT IS TRUE. `standSafe` is the
@@ -1093,7 +1281,25 @@ namespace Drelay.Bootstrap
                 // the safety boundary is untouched -- and `WeightPath` is what makes it prefer the
                 // route that goes round. See `IntentRunsIntoABody` for why the pad may be spent
                 // here and not at the gate.
-                && !IntentRunsIntoABody(snapshot, player, playerRadius, budget))
+                && !IntentRunsIntoABody(snapshot, player, playerRadius, budget)
+                // AND NOT WHILE THE FARMER IS STILL WALKING TO ITS TARGET.
+                //
+                // `PLAN-AUTOFARM.md` SECTION 4.3 DOES NOT NAME THIS BRANCH AND IT HAS THE SAME
+                // FAILURE MODE AS THE ONE IT DOES. The early-out asks "is the player's own steering
+                // already the answer" and emits `player.IntentRadians` as a full-scale Move. In farm
+                // mode the farmer IS the steering, and `IntentRadians` is whatever the operator's
+                // hands last asked for -- which, with the operator not touching the keyboard, is the
+                // stale direction they were holding when the farmer took over. Without this clause
+                // the character walks off in that direction with a target behind it, which reads in
+                // every aggregate as "the farmer moved".
+                //
+                // IT IS THE SAME FLAG THE `stand` CONDITION USES, so the two cannot disagree about
+                // whether the farmer is closing. It is asked ONLY while there is still distance to
+                // close: once inside `FarmStopRadius` the early-out is left alone, because at that
+                // point the dodge is not fighting the farmer about anything -- it is standing there
+                // shooting, and whether to respect the operator's hands is the operator's question,
+                // answered by `StandStops` exactly as it was before the farmer existed.
+                && !_farmClosing)
             {
                 decision.Action = DodgeAction.Move;
                 decision.Reason = DodgeReason.IntentSafe;
@@ -2983,8 +3189,7 @@ namespace Drelay.Bootstrap
                 // which is the same reasoning `_goalValid` applies to the goal.
                 float intent = player.IntentValid
                     ? IntentAlignment(r.HeadingRadians, player.IntentRadians, r.Distance)
-                    : 0.0f;
-                float goal = GoalProgress(r.HeadingRadians, r.Distance, budget);
+                    : 0.0f;                float goal = GoalProgress(r.HeadingRadians, r.Distance, budget);
                 float path = PathProgress(r.HeadingRadians, r.Distance, budget);
                 float heading = _hasPreviousHeading ? Dot(r.HeadingRadians, _previousHeading) : 0.0f;
                 float lateral = Lateralness(snapshot, player, r);
@@ -3027,7 +3232,7 @@ namespace Drelay.Bootstrap
                     (_config.WeightResolve * resolve)
                     + (_config.WeightClearance * clearance)
                     + (_config.WeightDurability * durability)
-                    + (_config.WeightIntent * intent)
+                    + (IntentWeight * intent)
                     + (_config.WeightGoal * goal)
                     + (_config.WeightPath * path)
                     + (_config.WeightHeading * heading)
@@ -3039,6 +3244,38 @@ namespace Drelay.Bootstrap
                     + (_config.WeightStandBias * stand);
                 _results[i] = r;
             }
+        }
+
+        /// <summary>
+        /// The `intent` term's weight for THIS frame: `WeightIntent`, or zero while the farmer is
+        /// still closing on its target.
+        ///
+        /// `PLAN-AUTOFARM.md` SECTION 4.3 NAMES THE `stand` EARLY-OUT AND THIS IS THE SAME DEFECT ONE
+        /// LAYER DOWN. The plan's sentence is "a farmer that stands still whenever nothing is
+        /// shooting at it farms nothing", and the scoring layer has the mirror image: `WeightIntent`
+        /// (0.4) rewards motion along the direction the operator's HANDS last asked for, and in a
+        /// farm session those hands are idle -- so the term rewards a direction that is up to 90
+        /// degrees from the target the farmer just chose. Measured on `--scenario farmerclose` at
+        /// `FARMINORBIT`'s geometry, before this clause existed: with the goal due north and the
+        /// stale intent due east, the ring heading at **60 degrees** beat the goal's own 90 by 0.68
+        /// of score, the character walked 30 degrees off its target, and it passed the mob on one
+        /// side and kept going until the mob left its acquisition radius. That is the whole defect --
+        /// not a wobble, a miss.
+        ///
+        /// WHY ZERO RATHER THAN A CONSTANT. While the farmer is closing, the goal IS the intent: the
+        /// module that decides where the character should go has already answered, and the hands are
+        /// not a second opinion but a stale one. Once the character is inside `FarmStopRadius` the
+        /// weight returns to its configured value, because there the dodge is standing and shooting
+        /// and whether to honour the operator's hands is the operator's question -- answered by
+        /// `StandStops`, exactly as before the farmer existed.
+        ///
+        /// IT CANNOT TOUCH A NON-FARM FRAME. `_farmClosing` is only ever true when `FarmMode` is on
+        /// and the snapshot carries a point, so `farm=0` is byte-identical -- which the harness's T9
+        /// comparison against the pre-farmer build asserts over every scenario.
+        /// </summary>
+        private float IntentWeight
+        {
+            get { return _farmClosing ? 0.0f : _config.WeightIntent; }
         }
 
         /// <summary>
@@ -3091,7 +3328,7 @@ namespace Drelay.Bootstrap
             into[0] = _config.WeightResolve * r.Resolve;
             into[1] = _config.WeightClearance * clearance;
             into[2] = _config.WeightDurability * Normalize(r.DurabilitySeconds);
-            into[3] = _config.WeightIntent * intent;
+            into[3] = IntentWeight * intent;
             into[4] = _config.WeightGoal * goal;
             into[5] = _config.WeightPath * path;
             into[6] = _config.WeightHeading * heading;

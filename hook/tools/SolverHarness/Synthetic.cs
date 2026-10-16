@@ -105,6 +105,63 @@ namespace Drelay.SolverHarness
         /// frames (27.7 %).
         /// </summary>
         BodyFence,
+
+        /// <summary>
+        /// `PLAN-AUTOFARM.md` SECTION 4.4's W2: player at A, enemy at B, a wall between.
+        ///
+        /// The enemy is placed six units north of the player and a solid wall is laid across the
+        /// straight line between them, with a gap at the eastern end so a route exists. The check is
+        /// the plan's: the path length exceeds the straight line and `WallCrossings == 0` -- a farmer
+        /// that walks into scenery because it was told to walk at a mob is the defect this fixture
+        /// exists for.
+        ///
+        /// THE PLAYER DOES NOT WALK UNDER THEIR OWN INPUT HERE. `PlayerWalking` is false for every
+        /// `farm*` scenario, because the farmer is the thing being tested and a player walking a
+        /// steady circle would move the goal every frame for reasons that have nothing to do with it.
+        /// </summary>
+        Farmer,
+
+        /// <summary>
+        /// W3: the enemy three units out, with `FarmStopRadius` small enough that the character must
+        /// close on it.
+        ///
+        /// THE STOP RADIUS IS THE FIXTURE'S PARAMETER, NOT A CONSTANT, and W3 sweeps it. At the
+        /// shipped `stop=1` the character closes to one unit and stands; at `stop=0` the plan's
+        /// literal arrival rule ("keep closing until rule 7 refuses") is in force, and what that does
+        /// is the `farmerorbit` measurement rather than this one.
+        /// </summary>
+        FarmerClose,
+
+        /// <summary>
+        /// THE PLAN'S ARRIVAL CLAIM, MEASURED. `PLAN-AUTOFARM.md` section 4.1 item 5: "the character
+        /// walks up to the mob and stops at its edge, because the only admissible candidates are
+        /// outside the disc".
+        ///
+        /// This scenario is `FarmerClose`'s geometry with `stop=0` so the claim is exercised rather
+        /// than assumed, and the harness reports the number of distinct headings the character
+        /// commands over the run. A character that stops has few; a character that ORBITS has many.
+        /// See `FarmStopRadius` for why the shipped default is not zero.
+        /// </summary>
+        FarmerOrbit,
+
+        /// <summary>
+        /// W1's stickiness fixture: three enemies in a line, the nearest drifting so that it becomes
+        /// the middle one and then the far one.
+        ///
+        /// THE POINT IS THAT THE FARMER MUST NOT THRASH. Two enemies whose distances cross within
+        /// `FarmSwitchMargin` must produce ONE hold and no switch, and a third that arrives a clear
+        /// margin closer must produce a switch and not a forced release. Those are three different
+        /// counters (`Switches`, `ForcedReleases`, `FramesHeld`) and this is the fixture that tells
+        /// them apart.
+        /// </summary>
+        FarmerPair,
+
+        /// <summary>
+        /// W5: the farmer and a live bullet on the same frame. See `PlanSpawns`'s case for the
+        /// geometry -- it is `Scenario.Dodge`'s bullet with a farm target added, so the dodge has
+        /// real work to do while the farmer is asking to walk north.
+        /// </summary>
+        FarmerDodge,
     }
 
     /// <summary>
@@ -137,6 +194,14 @@ namespace Drelay.SolverHarness
 
         /// <summary>The ring's distance in the fence scenario. See `Scenario.BodyFence`.</summary>
         public float FenceDistance = 0.55f;
+
+        /// <summary>
+        /// A FARM MOB'S OWN RADIUS. 0.25, the game's own default for a character body and the same
+        /// value `CloseBodyRadius` uses -- so a farm mob's collision disc is `0.25 + 0.25 = 0.5`, the
+        /// number rule 7 refuses against and the number the stop radius has to clear.
+        /// </summary>
+        public float FarmBodyRadius = 0.25f;
+
         public float StartX = 100.0f;
         public float StartY = 100.0f;
         public int GridSize = 64;
@@ -219,16 +284,42 @@ namespace Drelay.SolverHarness
                 frame.PlayerY = y;
                 frame.PlayerRadius = PlayerRadius;
                 frame.Health = 100.0f;
-                frame.Moving = true;
+                // THE FARMER'S FIXTURES RUN WITH THE OPERATOR'S HANDS OFF. `Moving` is the client's
+                // own `GameInput.Moving`, and a farm session is one where the farmer is walking the
+                // character rather than the operator -- which is also what makes the arrival policy
+                // (`PLAN-AUTOFARM.md` section 4.3) the thing under test instead of the halt fix.
+                frame.Moving = !IsFarm(Kind);
+                if (IsFarm(Kind))
+                {
+                    // A FIXED SPEED, BECAUSE THE CLOSED LOOP MAKES THE MEASUREMENT A FEEDBACK PATH.
+                    // The harness normally measures the speed from the displacement between frames,
+                    // and on a closed-loop scenario that displacement is the solver's own last
+                    // command -- so the measured speed would be the thing under test rather than an
+                    // input to it. 8.2 u/s is the resolved law at a middling SPD, the same constant
+                    // `ResolveSpeed` falls back to.
+                    frame.SpeedOverride = PlayerSpeed;
+                }
                 frame.Intent = heading;
                 frame.Rotation = 0.0f;
                 frame.Grid = grid;
+
+                // THE FARMER'S TARGETS, WHICH ARE NOT THE BODIES. See `RecordedFrame.FarmTargets`.
+                // A target may move -- `farmerpair` needs one that does, or the stickiness rule's
+                // switch could never fire -- so the list is planned per frame.
+                foreach (FarmTarget target in PlanFarmTargets(f))
+                {
+                    frame.FarmTargets.Add(target);
+                }
 
                 // THE ENEMY BODIES, AT THEIR OWN POSITIONS FOR THIS FRAME. `DangerRadius` is left at
                 // zero here on purpose: it is `radius + playerRadius + pad`, the pad is a CONFIG
                 // value, and the harness's `BuildSnapshot` computes it from the config the run was
                 // given -- which is what makes `enemypad=N` an A/B of the emitter alone.
-                foreach (EntityBody body in bodies)
+                //
+                // THE FARMER'S FIXTURES PLAN THEM PER FRAME rather than once per run, because
+                // `farmerpair`'s second mob walks. See `PlanFarmBodies`.
+                List<EntityBody> frameBodies = IsFarm(Kind) ? PlanFarmBodies(f) : bodies;
+                foreach (EntityBody body in frameBodies)
                 {
                     frame.Bodies.Add(new EntityBody
                     {
@@ -415,9 +506,27 @@ namespace Drelay.SolverHarness
                             .Append(",\"rad\":").Append(Num(body.Radius))
                             .Append('}');
                     }
+                    // THE FARMER'S TARGETS GO IN THE FILE TOO, AND THE REASON IS THE ONE
+                    // `PLAN-ENEMY-THREATS.md` SECTION 8.8.7 RECORDS AS A COST: the recorder never wrote
+                    // a `bodies` key, so the live session that would have settled the emitter's weight
+                    // could not be replayed. This writer is the one the hook's own recorder is modelled
+                    // on, and writing the key here is what makes `TraceRecorder` growing one a
+                    // compatible change rather than a format break. `TraceFile` reads it back.
+                    line.Append("],\"farm\":[");
+                    for (int b = 0; b < f.FarmTargets.Count; b++)
+                    {
+                        if (b > 0)
+                        {
+                            line.Append(',');
+                        }
+                        FarmTarget target = f.FarmTargets[b];
+                        line.Append("{\"id\":").Append(target.GameId)
+                            .Append(",\"x\":").Append(Num(target.X))
+                            .Append(",\"y\":").Append(Num(target.Y))
+                            .Append('}');
+                    }
                     line.Append("],\"skipped\":0}");
-                    writer.WriteLine(line.ToString());
-                }
+                    writer.WriteLine(line.ToString());                }
             }
         }
 
@@ -437,6 +546,21 @@ namespace Drelay.SolverHarness
 
         private void PlanWalls()
         {
+            if (Kind == Scenario.Farmer)
+            {
+                // THE WALL W2 ASKS FOR: a solid line across the straight route to the enemy, with a
+                // gap at its eastern end so a route exists. The enemy is six units north at
+                // (StartX, StartY+6); the wall sits at y = StartY+3 from x = StartX-4 to StartX+2,
+                // and the gap at StartX+3..StartX+4 is where the route goes. Without the gap the
+                // target would be unreachable and the fixture would assert `Unreachable` rather than
+                // a detour -- a different claim wearing the same name.
+                int wallY = (int)StartY + 3;
+                for (int x = (int)StartX - 4; x <= (int)StartX + 2; x++)
+                {
+                    _walls.Add(new[] { x, wallY });
+                }
+                return;
+            }
             if (Kind != Scenario.Corridor)
             {
                 return;
@@ -499,6 +623,109 @@ namespace Drelay.SolverHarness
         private static EntityBody Body(float x, float y, float radius)
         {
             return new EntityBody { X = x, Y = y, Radius = radius, DangerRadius = 0.0f };
+        }
+
+        /// <summary>True for the five fixtures `PLAN-AUTOFARM.md` section 4 adds.</summary>
+        public static bool IsFarm(Scenario kind)
+        {
+            return kind == Scenario.Farmer || kind == Scenario.FarmerClose
+                   || kind == Scenario.FarmerOrbit || kind == Scenario.FarmerPair
+                   || kind == Scenario.FarmerDodge;
+        }
+
+        /// <summary>
+        /// The enemy the farmer walks at, at its own position for this frame.
+        ///
+        /// IT IS ALSO A BODY, AND THAT IS NOT A DUPLICATION. The live reader puts the same enemy in
+        /// both lists (`EnemyReader.Fill`), and for the fixture it is load-bearing twice over: rule 7
+        /// is what stops the character walking THROUGH the mob, and `AnyBodyAcrossTheRoute` is the
+        /// gate that decides the frame is worth evaluating at all -- an enemy that is only a farm
+        /// target would leave the dodge's own body machinery untested on the very fixtures that
+        /// depend on it.
+        /// </summary>
+        private List<EntityBody> PlanFarmBodies(int frame)
+        {
+            var bodies = new List<EntityBody>();
+            switch (Kind)
+            {
+                case Scenario.Farmer:
+                    bodies.Add(Body(StartX, StartY + 6.0f, FarmBodyRadius));
+                    break;
+                case Scenario.FarmerClose:
+                case Scenario.FarmerOrbit:
+                    bodies.Add(Body(StartX, StartY + 3.0f, FarmBodyRadius));
+                    break;
+                case Scenario.FarmerPair:
+                    // THE FARMER'S OWN STOP RADIUS IS WHAT MAKES A SWITCH POSSIBLE, AND SEEING WHY
+                    // IS THE FIXTURE. The character closes on the nearest mob and STOPS within
+                    // `FarmStopRadius` of it; nothing can then overtake a mob that is a unit and a
+                    // half away, so with the shipped 1.5 the nearest would never change and the
+                    // stickiness rule would never be asked a question. So the fixture sets a WIDE
+                    // stop radius (it is on the closed-loop side, so the character halts at once)
+                    // and lets the second mob walk in from the east until it is a clear margin
+                    // closer. That is the crossing the rule exists for.
+                    bodies.Add(Body(StartX, StartY + 5.0f, FarmBodyRadius));
+                    bodies.Add(FarmPairSecond(frame));
+                    break;
+                case Scenario.FarmerDodge:
+                    bodies.Add(Body(StartX, StartY + 6.0f, FarmBodyRadius));
+                    break;
+            }
+            return bodies;
+        }
+
+        /// <summary>
+        /// The farmer's own target list, which carries the `GameId` the body list has no use for.
+        ///
+        /// PER FRAME RATHER THAN PER RUN, because `farmerpair` needs one of its mobs to MOVE: the
+        /// stickiness rule switches on a change in relative distance, and with everything static the
+        /// nearest is the nearest forever and the rule is never asked a question. A moving enemy is
+        /// also simply what the live reader sees -- `World.GetEnemies()` is rebuilt every frame.
+        /// </summary>
+        private List<FarmTarget> PlanFarmTargets(int frame)
+        {
+            var targets = new List<FarmTarget>();
+            switch (Kind)
+            {
+                case Scenario.Farmer:
+                    targets.Add(Target(1, StartX, StartY + 6.0f));
+                    break;
+                case Scenario.FarmerClose:
+                case Scenario.FarmerOrbit:
+                    targets.Add(Target(1, StartX, StartY + 3.0f));
+                    break;
+                case Scenario.FarmerPair:
+                    // MOB 1 IS THE HELD TARGET AT FIVE UNITS DUE NORTH; MOB 2 WALKS IN ALONG THE X
+                    // AXIS EIGHT UNITS EAST AND CROSSES THE MARGIN SOMEWHERE AROUND FRAME 135. See
+                    // `PlanFarmBodies` for why the fixture needs a wide stop radius for this to be a
+                    // question at all.
+                    targets.Add(Target(1, StartX, StartY + 5.0f));
+                    EntityBody second = FarmPairSecond(frame);
+                    targets.Add(new FarmTarget { GameId = 2, X = second.X, Y = second.Y });
+                    break;
+                case Scenario.FarmerDodge:
+                    targets.Add(Target(1, StartX, StartY + 6.0f));
+                    break;
+            }
+            return targets;
+        }
+
+        /// <summary>
+        /// Mob 2 of `farmerpair`, as a function of the frame: it starts eight units due east of the
+        /// player and walks west at 0.03 units per frame, so it crosses inside the switch margin
+        /// somewhere in the first few hundred frames and stays in the acquisition radius throughout.
+        ///
+        /// IT IS A FUNCTION AND NOT A STATUE, BECAUSE THE RULE CANNOT BE EXERCISED BY A STATUE. See
+        /// `PlanFarmTargets`.
+        /// </summary>
+        private EntityBody FarmPairSecond(int frame)
+        {
+            return Body(StartX + 8.0f - (0.03f * frame), StartY, FarmBodyRadius);
+        }
+
+        private static FarmTarget Target(int id, float x, float y)
+        {
+            return new FarmTarget { GameId = id, X = x, Y = y };
         }
 
         private List<Spawn> PlanSpawns()
@@ -572,6 +799,23 @@ namespace Drelay.SolverHarness
                     // miss by 1.5 units, well outside the 0.45 unit hit radius.
                     spawns.Add(Offset(1, 30, StartX - 14.0f, StartY + 1.5f, 1.0f, 0.0f, 0f, 0f));
                     spawns.Add(Offset(2, 150, StartX + 14.0f, StartY - 1.5f, -1.0f, 0.0f, 0f, 0f));
+                    break;
+
+                case Scenario.FarmerDodge:
+                    // W5'S FIXTURE: THE `dodge` BULLET WITH A FARM TARGET ON THE SAME FRAME. The
+                    // geometry is `Scenario.Dodge`'s exactly -- a bullet crossing 0.43 units from the
+                    // start position, which is inside the window where one frame's step clears it --
+                    // so the dodge has real work to do while the farmer is asking to walk north. That
+                    // is the collision the fixture exists for, and T6 is the check that the dodge
+                    // still wins it.
+                    //
+                    // THE BULLET'S PATH IS ANCHORED ON THE PLAYER'S START POSITION, and on a
+                    // closed-loop scenario the player then walks. That is a real limitation and it is
+                    // the right one: the fixture asks whether the two inputs coexist at all, and the
+                    // first thirty frames are where the threat is. A bullet re-aimed at a moving
+                    // player would be a re-simulation of the game, not a fixture.
+                    spawns.Add(Offset(1, 30, StartX - 11.0f, StartY + 0.43f, 1.0f, 0.0f, 0f, 0f));
+                    spawns.Add(Offset(2, 210, StartX - 11.0f, StartY + 0.43f, 1.0f, 0.0f, 0f, 0f));
                     break;
             }
             return spawns;

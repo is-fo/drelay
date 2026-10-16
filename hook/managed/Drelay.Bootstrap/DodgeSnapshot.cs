@@ -264,6 +264,35 @@ namespace Drelay.Bootstrap
     }
 
     /// <summary>
+    /// One enemy the FARMER may walk to, as the sensor saw it. `PLAN-AUTOFARM.md` section 4.2.
+    ///
+    /// IT IS A SECOND, SEPARATE LIST FROM <see cref="DodgeSnapshot.Bodies"/>, AND THE SEPARATION IS
+    /// NOT TIDINESS. The two lists answer different questions and are culled by different radii:
+    /// the body list is rule 7's input and is cut at `EnemyCullRadius` (12 units, about twice the
+    /// longest horizon the planner reasons over), while the farmer's list is cut at
+    /// `FarmEngageRadius` -- how far away an enemy is still worth walking to. Sharing one list
+    /// would make `DRELAY_DODGE_ENEMIES=0` silently disable the farmer and would make the body
+    /// cull a hard limit on the farmer's reach; and because `EnemyBodies` is the switch whose whole
+    /// job is to restore today's decisions byte for byte (the T9 doctrine), nothing the farmer
+    /// needs may be smuggled into it.
+    ///
+    /// IT CARRIES A `GameId` AND THE BODY LIST DOES NOT, because the farmer's first requirement is
+    /// *stickiness*: "keep the current target while it is alive and in range" is a statement about
+    /// an IDENTITY, and a target remembered by position is a target that is lost the moment it
+    /// moves. `World.GetEnemies()` may return the array in any order, so an index is not an
+    /// identity either. `GameId` is the same field the sampler's own `ThreatKey` uses, resolved the
+    /// same way (`FieldLookup.Find`, which walks the hierarchy because it lives on `GameObject`).
+    /// </summary>
+    public struct FarmTarget
+    {
+        /// <summary>`GameObject.GameId` -- the identity the stickiness rule holds on to.</summary>
+        public int GameId;
+
+        public float X;
+        public float Y;
+    }
+
+    /// <summary>
     /// The client's own collision grid, windowed to what a 600 ms horizon can reach.
     ///
     /// THE WINDOW IS AN OPTIMISATION WITH A PRECISE MEANING. A real map's grid is
@@ -436,6 +465,33 @@ namespace Drelay.Bootstrap
         public readonly System.Collections.Generic.List<EntityBody> Bodies =
             new System.Collections.Generic.List<EntityBody>();
 
+        /// <summary>
+        /// The enemies the farmer may walk to. Empty is legal and is the switch's off position.
+        /// See <see cref="FarmTarget"/> for why this is not the body list.
+        /// </summary>
+        public readonly System.Collections.Generic.List<FarmTarget> FarmTargets =
+            new System.Collections.Generic.List<FarmTarget>();
+
+        /// <summary>
+        /// THE FARMER'S GOAL AS A POINT, WHICH IS THE WHOLE OF WHAT THE FARMER ADDS TO THE SOLVER.
+        ///
+        /// THE EXISTING GOAL IS A RAY AND A RAY CANNOT EXPRESS ARRIVAL. `GoalSource` is resolved from
+        /// `PlayerView.IntentRadians`/`CourseRadians` -- a heading, with no notion of "and stop when
+        /// you get there" -- so "walk to that enemy" is not a question the ray form can ask.
+        /// `PLAN-AUTOFARM.md` section 4.1 makes this the smallest change that produces the walk.
+        ///
+        /// IT IS SET BY THE FARMER AND READ BY THE SOLVER AND THE PLANNER. The solver turns it into
+        /// `_goalRadians` (so every existing goal term, fan and path target works unchanged), and
+        /// `PathPlanner.BeginFrame` uses the point's own cell as the search target when the point is
+        /// inside the grid window. `GoalHasPoint` is cleared every frame by <see cref="Clear"/>: a
+        /// point left over from the previous frame is a goal built for a world that no longer exists,
+        /// which is the same reasoning the adapter uses when it clears a pending command each frame.
+        /// </summary>
+        public bool GoalHasPoint;
+
+        public float GoalX;
+        public float GoalY;
+
         public CollisionWindow Grid;
 
         /// <summary>True when the sensor could not produce a usable picture this frame.</summary>
@@ -445,6 +501,10 @@ namespace Drelay.Bootstrap
         {
             Threats.Clear();
             Bodies.Clear();
+            FarmTargets.Clear();
+            GoalHasPoint = false;
+            GoalX = 0.0f;
+            GoalY = 0.0f;
         }
     }
 
@@ -872,6 +932,96 @@ namespace Drelay.Bootstrap
         /// </summary>
         public float WeightEnemyDanger;
 
+        // --- The farmer (PLAN-AUTOFARM.md section 4) -------------------------------------
+        //
+        // THE FARMER IS A NEW SOURCE OF THE GOAL AND NOTHING ELSE. It does not admit, refuse, steer,
+        // aim or fire: it publishes a POINT (`DodgeSnapshot.GoalHasPoint`) and the solver's goal,
+        // fan, path target and score terms all work off it unchanged. That placement is the whole
+        // safety argument of the plan -- the farmer cannot walk into a bullet because the candidate
+        // set it steers through is still the admissible set, and it cannot disable the dodge because
+        // it touches no admission rule. `PLAN-AUTOFARM.md` section 2.
+        //
+        // EVERY NUMBER HERE IS A STARTING VALUE FOR THE OFFLINE HARNESS AND NONE MAY BE TUNED LIVE
+        // -- the project's own rule, applied since Phase 3.
+
+        /// <summary>
+        /// Whether the farmer walks the character at an enemy. Off by default, and off restores
+        /// today's decisions byte for byte -- the T9 doctrine, asserted by the harness with farm
+        /// mode off over every scenario.
+        ///
+        /// IT IS ITS OWN SWITCH AND NOT A RIDER ON `EnemyBodies`. The farmer and rule 7 read two
+        /// different lists (see <see cref="FarmTarget"/>), so either can be A/B'd without the other;
+        /// `DRELAY_DODGE_ENEMIES=0` must keep restoring the vacuous rule 7 without turning the farmer
+        /// into a no-op, and `FarmMode=1` must not resurrect rule 7.
+        /// </summary>
+        public bool FarmMode;
+
+        /// <summary>
+        /// How far away an enemy is still worth walking to, world units -- the farmer's ACQUISITION
+        /// radius. `PLAN-AUTOFARM.md` section 4.2: "distance &lt;= FarmEngageRadius (default: the
+        /// weapon range, from the same client call AutoAim uses)".
+        ///
+        /// `8.0` IS THAT DEFAULT STATED AS A NUMBER, AND THE NUMBER IS DEFENSIBLE RATHER THAN
+        /// INVENTED: `AutoAim.WeaponRange` clamps the client's own `CalculateWeaponRange` into
+        /// `[1.5, 10.0]`, so 8 sits inside the client's own selection band. The live value should
+        /// come from `AimbotSystem.CalculateWeaponRange` for the equipped weapon, exactly as
+        /// `AutoAim` does; doing that here would couple the solver to a game type, which the
+        /// pure-data contract forbids, so the hook resolves it and passes it in when it can.
+        /// </summary>
+        public float FarmEngageRadius;
+
+        /// <summary>
+        /// HOW CLOSE THE FARMER WANTS TO BE, world units -- the radius inside which standing still
+        /// and letting the client's auto-fire shoot the target is the correct behaviour.
+        ///
+        /// THIS IS A SECOND RADIUS AND `PLAN-AUTOFARM.md` DOES NOT HAVE IT. The plan uses one number
+        /// for both jobs -- "an enemy within `FarmEngageRadius` is a target" and "`stand` is admitted
+        /// only if the character is already within weapon range of its target" -- and those two
+        /// sentences cannot both be about one radius: a target is BY CONSTRUCTION inside the
+        /// acquisition radius, so a single number makes `stand` admissible the moment a target is
+        /// chosen and the farmer never closes the distance at all.
+        ///
+        /// AND THE PLAN'S ARRIVAL CLAIM (section 4.1 item 5, "the character walks up to the mob and
+        /// stops at its edge, because the only admissible candidates are outside the disc") IS
+        /// WRONG, measured rather than argued. Rule 7 REFUSES a candidate that sweeps the body; it
+        /// does not stop the character. At the body's edge every forward candidate is refused and the
+        /// tangential ones are admissible, so the goal term keeps re-aiming at a direction that is
+        /// unavailable and the character ORBITS the mob -- `--scenario farmerorbit` is that
+        /// measurement, and it is why a stop radius exists. The farmer must stop BEFORE rule 7's
+        /// boundary, not on it.
+        ///
+        /// ZERO MEANS "KEEP CLOSING UNTIL SOMETHING REFUSES", and the harness's `farmerorbit`
+        /// fixture is the measurement of what that does -- see below.
+        ///
+        /// IT MUST CLEAR THE ENEMY'S EMITTER DISC, AND THE SHIPPED 1.5 IS THAT NUMBER RATHER THAN A
+        /// ROUND ONE. `PLAN-ENEMY-THREATS.md` gives every enemy body a padded danger radius,
+        /// `enemy.Radius + player.Radius + EnemyDangerPadUnits` -- 1.25 at the shipped values -- and
+        /// `WeightEnemyDanger` (0.5) penalises a candidate that ends inside it. A stop radius INSIDE
+        /// that disc makes the farmer fight its own preference: the goal says "come closer", the
+        /// emitter says "get out", and the measured result is a character that circles at the
+        /// disc's edge and never settles. `--scenario farmer` at `farmstop=1` does exactly that --
+        /// 262 moving frames, 338 with no target, the mob lost -- while `farmstop=1.5` closes in 83
+        /// frames and stands for the remaining 517. 1.5 is 1.25 plus a quarter of a unit of slack.
+        ///
+        /// A DEPLOYMENT WITH A LARGER `EnemyDangerPadUnits` HAS TO RAISE THIS WITH IT, and that is a
+        /// real coupling rather than a hidden one: the two numbers are in the same config struct and
+        /// the settings line prints both.
+        /// </summary>
+        public float FarmStopRadius;
+
+        /// <summary>
+        /// How much closer a different enemy must be before the farmer abandons the one it is
+        /// walking at, world units. `PLAN-AUTOFARM.md` section 4.2.
+        ///
+        /// THE STICKINESS RULE IS NOT A NICETY AND THIS IS THE NUMBER THAT MAKES IT ONE. Tab-target
+        /// thrash between two equidistant mobs is the classic farmer defect: the character oscillates
+        /// between two goals and reaches neither. The rule is the same shape as the solver's own
+        /// heading hysteresis -- a hold with a margin, plus a FORCED release when the held target
+        /// dies or leaves the acquisition radius. It is a hold on the GOAL and not on the heading,
+        /// which is what keeps T10 ("hysteresis cannot hold an unsafe heading") untouched.
+        /// </summary>
+        public float FarmSwitchMargin;
+
         /// <summary>
         /// How much of the move carries the character toward the imaginary point in front of them.
         ///
@@ -1081,6 +1231,16 @@ namespace Drelay.Bootstrap
             // harness cannot settle it further yet -- no live recording carries bodies, so there is
             // no real mob geometry to sweep against. `DRELAY_DODGE_W_ENEMY` moves it in one run.
             c.WeightEnemyDanger = 0.50f;
+            // THE FARMER, OFF, WITH ITS STARTING VALUES. `FarmMode` ships false because the farmer is
+            // a new behaviour and every existing number in this project was measured without it.
+            // `--scenario farmer*` in the SolverHarness is where these are exercised.
+            c.FarmMode = false;
+            c.FarmEngageRadius = 8.0f;
+            // 1.5 AND NOT 1.0: see `FarmStopRadius` -- a stop radius inside the enemy's emitter disc
+            // (1.25 at these pad values) makes the farmer fight `WeightEnemyDanger` and never settle.
+            // This is the one number in this block that is derived from another rather than chosen.
+            c.FarmStopRadius = 1.5f;
+            c.FarmSwitchMargin = 1.0f;
             // THE GOAL TERM KEEPS ITS OWN VALUE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
             // The first version of this cut `WeightGoal` from 0.90 to 0.30 whenever the path was on,
             // on the reasoning that the path's waypoint IS the goal whenever the goal is walkable and
@@ -1272,6 +1432,13 @@ namespace Drelay.Bootstrap
             c.EnemyDangerPadUnits = Float("DRELAY_DODGE_ENEMY_PAD", c.EnemyDangerPadUnits);
             c.EnemyCullRadius = Float("DRELAY_DODGE_ENEMY_CULL", c.EnemyCullRadius);
             c.WeightEnemyDanger = FloatAllowZero("DRELAY_DODGE_W_ENEMY", c.WeightEnemyDanger);
+            // THE FARMER'S KNOBS. `DRELAY_DODGE_FARM=1` is the switch and it is OFF by default, for
+            // the reason the default above records. `DRELAY_DODGE_FARM_STOP=0` is legal and is the
+            // plan's literal arrival rule -- see `FarmStopRadius` for what it measures.
+            c.FarmMode = Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM") == "1";
+            c.FarmEngageRadius = Float("DRELAY_DODGE_FARM_RANGE", c.FarmEngageRadius);
+            c.FarmStopRadius = FloatAllowZero("DRELAY_DODGE_FARM_STOP", c.FarmStopRadius);
+            c.FarmSwitchMargin = FloatAllowZero("DRELAY_DODGE_FARM_MARGIN", c.FarmSwitchMargin);
             c.PlanLookaheadSeconds = Float("DRELAY_DODGE_PLAN_LOOKAHEAD_S", c.PlanLookaheadSeconds);
             c.GoalLookaheadSeconds = Float("DRELAY_DODGE_GOAL_LOOKAHEAD_S", c.GoalLookaheadSeconds);
             c.GoalFanSteps = Int("DRELAY_DODGE_GOAL_FAN", c.GoalFanSteps);
@@ -1360,7 +1527,8 @@ namespace Drelay.Bootstrap
             string weights = DescribeWeights().Replace("\n", " ").Replace("\r", " ").Trim();
             string path = DescribePath().Replace("\n", " ").Replace("\r", " ").Trim();
             string enemies = DescribeEnemies().Replace("\n", " ").Replace("\r", " ").Trim();
-            return plan + " " + weights + " " + path + " " + enemies;
+            string farm = DescribeFarm().Replace("\n", " ").Replace("\r", " ").Trim();
+            return plan + " " + weights + " " + path + " " + enemies + " " + farm;
         }
 
         /// <summary>A one-line description for the log, so a run's own settings are readable from it.</summary>
@@ -1380,7 +1548,8 @@ namespace Drelay.Bootstrap
             string weights = DescribeWeights().TrimEnd('\r', '\n');
             string path = DescribePath().TrimEnd('\r', '\n');
             string enemies = DescribeEnemies().TrimEnd('\r', '\n');
-            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n";
+            string farm = DescribeFarm().TrimEnd('\r', '\n');
+            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n" + farm + "\n";
         }
 
         /// <summary>
@@ -1455,6 +1624,22 @@ namespace Drelay.Bootstrap
             return string.Format(CultureInfo.InvariantCulture,
                 "enemies bodies={0} emitter={1} pad={2} cull={3} wEnemy={4}",
                 EnemyBodies, EnemyEmitter, EnemyDangerPadUnits, EnemyCullRadius, WeightEnemyDanger);
+        }
+
+        /// <summary>
+        /// The farmer's own numbers, on their own line, for the same 256-byte reason as the other
+        /// four (`DrelayLog.cpp` truncates with no mark saying so, and a truncated settings line is
+        /// a run whose settings cannot be read back).
+        ///
+        /// IT MATTERS FOR THE SAME REASON `DescribeEnemies` DOES: `FarmMode` off and `FarmMode` on
+        /// with no target in range produce the SAME decision on a quiet frame, and only the settings
+        /// line tells a run where the farmer was never enabled from one where it had nothing to do.
+        /// </summary>
+        public string DescribeFarm()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "farm on={0} engage={1} stop={2} margin={3}",
+                FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin);
         }
     }
 

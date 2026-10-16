@@ -50,6 +50,12 @@
          other two are: it must compile with no game in sight, and a change that reaches for a game
          type has to break this build rather than the live one. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\PathPlanner.cs" Link="Solver\PathPlanner.cs" />
+    <!-- The farmer's target selection (`PLAN-AUTOFARM.md` section 4). It is here for exactly the
+         same reason as the three above: it must be a pure function of the snapshot, and a change
+         that reaches for a game accessor has to break this build rather than the live one. The
+         module's whole design point is that it publishes a goal point and touches nothing else,
+         which is only checkable if it compiles with no game in sight. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\Farmer.cs" Link="Solver\Farmer.cs" />
   </ItemGroup>
 
 </Project>

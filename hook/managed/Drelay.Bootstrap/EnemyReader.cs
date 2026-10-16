@@ -84,6 +84,28 @@ namespace Drelay.Bootstrap
         private static Func<object, float> _getRadius;
 
         /// <summary>
+        /// `GameObject.GameId`, read for the FARMER's target list and not for the body list.
+        ///
+        /// IT IS OPTIONAL FOR THE BODIES AND REQUIRED FOR THE FARMER, and that asymmetry is the same
+        /// `FieldLookup` lesson the header of that file records: `GameId` is declared on
+        /// `GameObject`, four levels up, so a lookup restricted to the element type would not find
+        /// it. Rule 7 has no use for an identity -- it compares geometry every frame -- so a build
+        /// where the field moved must not lose the body list over it. The farmer's stickiness rule
+        /// IS an identity ("keep the current target while it is alive and in range"), and a list of
+        /// targets all carrying id zero would make every enemy the same target, so the farm half is
+        /// switched off by name instead of silently collapsing.
+        /// </summary>
+        private static Func<object, int> _getGameId;
+
+        private static string _gameIdName;
+
+        /// <summary>The element type's own name, for the farm half's failure line.</summary>
+        private static string _enemyTypeName;
+
+        /// <summary>True when the farm half of the reader has everything it needs.</summary>
+        private static bool _farmUsable;
+
+        /// <summary>
         /// True when the game's own radius could not be read, so `DefaultPlayerRadius` is standing in
         /// for it.
         ///
@@ -103,6 +125,9 @@ namespace Drelay.Bootstrap
         private static long _bodiesRadiusFallback;
         private static long _skippedFrames;
 
+        /// <summary>Enemies that reached the FARMER's list, summed over the run.</summary>
+        private static long _farmTargetsAdded;
+
         /// <summary>Where the reader stands, for the run's own log.</summary>
         public static string Status()
         {
@@ -118,7 +143,11 @@ namespace Drelay.Bootstrap
                    + (_radiusFallback
                         ? ", Radius did NOT resolve -- DefaultPlayerRadius stands in and the"
                           + " fallback is COUNTED (a silent zero radius is a body to walk through)"
-                        : "");
+                        : "")
+                   + (_farmUsable
+                        ? ", farm targets use " + (_gameIdName ?? "GameId")
+                        : ", FARM TARGETS UNAVAILABLE: no GameId field on " + (_enemyTypeName ?? "?")
+                          + " or its bases");
         }
 
         /// <summary>Why the reader is not available; null when it is.</summary>
@@ -216,6 +245,14 @@ namespace Drelay.Bootstrap
                 _getDead = FieldAccessor.Bool(deadField);
                 _getNpc = FieldAccessor.Bool(npcField);
                 _getRadius = radiusField != null ? FieldAccessor.Float(radiusField) : null;
+
+                // THE FARMER'S IDENTITY FIELD. Optional for the bodies, required for the farm
+                // half -- see `_getGameId`.
+                FieldInfo gameIdField = FieldLookup.Find(enemyType, out _gameIdName, "GameId", "_gameId", "ObjectId");
+                _getGameId = gameIdField != null ? FieldAccessor.Int(gameIdField) : null;
+                _farmUsable = gameIdField != null;
+                _enemyTypeName = enemyType.Name;
+
                 _getEnemies = getEnemies.MethodHandle.GetFunctionPointer();
 
                 _resolved = true;
@@ -274,7 +311,14 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static void Fill(DodgeSnapshot s, DodgeConfig config, float px, float py, float playerRadius)
         {
-            if (!_resolved || !config.EnemyBodies || _getEnemies == IntPtr.Zero || s == null)
+            // ONE ENTRY LOOP, TWO GATED OUTPUTS. `PLAN-AUTOFARM.md` section 4.2 asks for the
+            // enumeration to be shared rather than duplicated, so this is the same walk of the same
+            // `World.GetEnemies()` array; what differs is which list each enemy lands in and which
+            // radius cut it survived.
+            bool forBodies = config.EnemyBodies;
+            bool forFarm = config.FarmMode && _farmUsable;
+
+            if (!_resolved || _getEnemies == IntPtr.Zero || s == null || (!forBodies && !forFarm))
             {
                 if (_resolved)
                 {
@@ -301,6 +345,13 @@ namespace Drelay.Bootstrap
 
             float cull = config.EnemyCullRadius;
             float cull2 = cull * cull;
+            // THE FARMER'S OWN CUT, AND IT IS A DIFFERENT NUMBER ON PURPOSE. See `FarmTarget` for why
+            // the two lists cannot share a radius: the body cut is a frame-cost bound on what rule 7
+            // and the planner may reason about, and the farm cut is "how far away is an enemy still
+            // worth walking to". A single number would make `DRELAY_DODGE_ENEMY_CULL` silently limit
+            // the farmer's reach, or make a long farm range inflate rule 7's list.
+            float farm = config.FarmEngageRadius;
+            float farm2 = farm * farm;
             _framesFilled++;
 
             for (int i = 0; i < enemies.Length; i++)
@@ -317,7 +368,33 @@ namespace Drelay.Bootstrap
                 float d2 = (dx * dx) + (dy * dy);
                 // Written so a NaN coordinate fails the test instead of passing it -- the same shape
                 // `AutoAim.Choose` uses for the range test, and for the same reason.
-                if (!(d2 <= cull2)) { _bodiesCulled++; continue; }
+                bool inBodyRange = forBodies && d2 <= cull2;
+                bool inFarmRange = forFarm && d2 <= farm2;
+                if (!inBodyRange && !inFarmRange)
+                {
+                    _bodiesCulled++;
+                    continue;
+                }
+
+                if (inFarmRange)
+                {
+                    // THE IDENTITY IS READ FOR THE FARMER AND NOT FOR THE BODY, and it is read here
+                    // rather than in the farmer so the enumeration stays in one place. The farmer's
+                    // filter is this reader's own (`Dead`, `Npc`) plus the range cut; what it adds is
+                    // the stickiness rule, which is a fact about the farmer's own state.
+                    s.FarmTargets.Add(new FarmTarget
+                    {
+                        GameId = _getGameId(enemy),
+                        X = ex,
+                        Y = ey,
+                    });
+                    _farmTargetsAdded++;
+                }
+
+                if (!inBodyRange)
+                {
+                    continue;
+                }
 
                 float radius;
                 if (_getRadius != null)
@@ -388,6 +465,7 @@ namespace Drelay.Bootstrap
             _bodiesDropped = 0;
             _bodiesRadiusFallback = 0;
             _skippedFrames = 0;
+            _farmTargetsAdded = 0;
         }
 
         /// <summary>
@@ -410,8 +488,15 @@ namespace Drelay.Bootstrap
                 return "enemies=unresolved culled=0 fallbackRadius=0";
             }
             return string.Format(CultureInfo.InvariantCulture,
-                "enemies=live frames={0} culled={1} dropped={2} fallbackRadius={3} skipped={4}",
-                _framesFilled, _bodiesCulled, _bodiesDropped, _bodiesRadiusFallback, _skippedFrames);
+                "enemies=live frames={0} culled={1} dropped={2} fallbackRadius={3} skipped={4} "
+                + "farmTargets={5}{6}",
+                _framesFilled, _bodiesCulled, _bodiesDropped, _bodiesRadiusFallback, _skippedFrames,
+                _farmTargetsAdded,
+                // THE FARM HALF'S OWN NAMED FAILURE, and it is separate from the body half's because
+                // the two can succeed independently: a build where `GameId` moved still has a
+                // working rule 7, and a run with `DRELAY_DODGE_ENEMIES=0` still has working farm
+                // targets. `culled` counts enemies neither list wanted.
+                _farmUsable ? "" : " farm=unavailable(no GameId)");
         }
     }
 }
