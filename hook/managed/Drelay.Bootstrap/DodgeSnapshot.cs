@@ -1060,15 +1060,27 @@ namespace Drelay.Bootstrap
             c.PathWaypointFraction = 0.75f;
             c.PathHysteresisDwellSeconds = 0.15f;
             // THE ENEMY BODIES. Rule 7 has existed and been vacuous since the solver was written --
-            // `DodgeSnapshot.Bodies` was never filled -- so these ship ON with the emitter weight at
-            // zero: the body refuses (which is the defect the plan exists for), the pad costs nothing
-            // until the harness settles it, and `DRELAY_DODGE_ENEMIES=0` restores the vacuous rule 7
-            // exactly. See `PLAN-ENEMY-THREATS.md` sections 3.1 and 3.2.
+            // `DodgeSnapshot.Bodies` was never filled -- so these ship ON. `DRELAY_DODGE_ENEMIES=0`
+            // restores the vacuous rule 7 exactly. See `PLAN-ENEMY-THREATS.md` sections 3.1 and 3.2.
             c.EnemyBodies = true;
             c.EnemyEmitter = true;
             c.EnemyDangerPadUnits = 0.75f;
             c.EnemyCullRadius = 12.0f;
-            c.WeightEnemyDanger = 0.00f;
+            // NON-ZERO, AND THAT IS A CHANGE FROM WHAT WAS DELIVERED FIRST. The weight shipped at
+            // zero, on the `WeightProjectedDanger` precedent: implement, measure, do not guess. The
+            // measurement then said the guess was not the problem -- the TERM never ran. It read the
+            // candidate's arrival point, one frame's step away, where a mob six units down that
+            // heading contributes nothing, so `wenemy=0` and `wenemy=5` produced byte-identical
+            // scores and the same heading straight into the mob. With the term fixed to span the
+            // planner's horizon, the smallest weight that moves `--scenario body` off the straight
+            // line is 0.04; 0.5 is chosen as a mid-range preference, against `WeightPath` 1.0 and
+            // `WeightGoal` 0.9, and it costs nothing when the frame has no emitter field.
+            //
+            // IT IS A PREFERENCE AND NOT A RULE, which is why a non-zero default is defensible at
+            // all: it re-ranks the admissible set and cannot admit, refuse or pin a candidate. The
+            // harness cannot settle it further yet -- no live recording carries bodies, so there is
+            // no real mob geometry to sweep against. `DRELAY_DODGE_W_ENEMY` moves it in one run.
+            c.WeightEnemyDanger = 0.50f;
             // THE GOAL TERM KEEPS ITS OWN VALUE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
             // The first version of this cut `WeightGoal` from 0.90 to 0.30 whenever the path was on,
             // on the reasoning that the path's waypoint IS the goal whenever the goal is walkable and

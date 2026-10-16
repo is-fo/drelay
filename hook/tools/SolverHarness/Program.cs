@@ -691,6 +691,14 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private int _bodyPathsFound;
         private long _bodyZoneNodes;
 
+        /// <summary>
+        /// E10's denominator and numerator: frames where a body's collision disc lay across the
+        /// route the planner aims along, and of those, the frames that decided `NoThreat`.
+        /// </summary>
+        private int _bodyOnRouteFrames;
+        private int _bodyOnRouteNoThreat;
+        private List<string> _bodyOnRouteExamples = new List<string>();
+
         // T7
         private sealed class Prediction
         {
@@ -1854,6 +1862,44 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 }
             }
 
+            // --- E10: A BODY ON THE ROUTE MUST OPEN THE FRAME. -------------------------------
+            //
+            // THE MISSING JOIN, AND THE ONE NO OTHER CHECK IN THIS FILE MAKES. The `PATH`/`BODY`
+            // invariant above asserts on the ROUTE the planner returned; E2 asserts on the
+            // CANDIDATES `Admit` refused. Neither asserts on the DECISION, so a frame can plan a
+            // route that goes round a body, refuse nothing because the body is far away, and then
+            // decide `NoThreat` before a candidate set exists -- a built feature that emits
+            // nothing. `--scenario body` did exactly that on all 600 frames, at 12.828 units of
+            // planned detour, while both of the checks above printed PASS.
+            //
+            // IT IS ASKED OF EVERY FRAME WITH A BODY, and against the route the SOLVER says it is
+            // aiming along, so it cannot be satisfied by a scenario that only places bodies
+            // favourably. The geometry is re-derived here rather than read out of the solver, for
+            // the same reason `CheckT5` asks the solver's own durability predicate instead of
+            // copying it: the claim is "a body on the route is evaluated", and a test that reads
+            // the solver's own answer to that question tests nothing at all.
+            for (int b = 0; b < snapshot.Bodies.Count; b++)
+            {
+                if (!BodyBlocksTheRoute(snapshot, snapshot.Bodies[b], playerRadius))
+                {
+                    continue;
+                }
+                _bodyOnRouteFrames++;
+                if (decision.Reason == DodgeReason.NoThreat)
+                {
+                    _bodyOnRouteNoThreat++;
+                    if (_bodyOnRouteExamples.Count < 5)
+                    {
+                        EntityBody blocking = snapshot.Bodies[b];
+                        _bodyOnRouteExamples.Add("frame " + frame.Frame + ": body " + b + " at ("
+                            + F(blocking.X) + "," + F(blocking.Y) + ") r=" + F(blocking.Radius)
+                            + " blocks the route to the goal, and the frame decided "
+                            + decision.Reason);
+                    }
+                }
+                break;
+            }
+
             if (decision.Action != DodgeAction.Move
                 || decision.CandidateIndex < 0 || decision.CandidateIndex >= candidates.Count)
             {
@@ -1909,6 +1955,56 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// E10's geometry: does this body's COLLISION disc lie across the straight route from the
+        /// player to the point the planner aims at?
+        ///
+        /// THE COLLISION DISC AND NOT THE EMITTER DISC, AND THAT IS THE DESIGN RATHER THAN A
+        /// SIMPLIFICATION. The pad is a tuning number, and a gate that moved when the pad moved
+        /// would make `enemypad` decide WHICH FRAMES ARE EVALUATED -- which is what
+        /// `PLAN-ENEMY-THREATS.md` section 3.1 forbids and what E4 exists to catch. This reaches as
+        /// far as the pad-free body does, so `--config enemypad=N` cannot change which frames are
+        /// evaluated, only what an evaluated frame prefers.
+        ///
+        /// IT IS THE STRAIGHT RAY AND NOT THE PLANNED ROUTE, because a gate that first had to run
+        /// the search would be paying for the search on every frame to decide whether to run the
+        /// search. The ray is the conservative stand-in for "where the player is going": a body off
+        /// to the side of the goal is not one the route was going through.
+        /// </summary>
+        private bool BodyBlocksTheRoute(DodgeSnapshot snapshot, EntityBody body, float playerRadius)
+        {
+            if (!_solver.GoalValid)
+            {
+                return false;   // no route, so nothing can block it
+            }
+            float reach = snapshot.Player.SpeedPerSecond * _config.PathTargetSeconds;
+            if (!(reach > 0.0f))
+            {
+                return false;
+            }
+
+            float px = snapshot.Player.X;
+            float py = snapshot.Player.Y;
+            float vx = reach * (float)Math.Cos(_solver.GoalRadians);
+            float vy = reach * (float)Math.Sin(_solver.GoalRadians);
+            float length2 = (vx * vx) + (vy * vy);
+
+            // The body's projection onto the segment, clamped to it: a body BEHIND the player is
+            // not on the route, and the clamp is what says so rather than a separate test.
+            float t = length2 > 0.0f
+                ? ((((body.X - px) * vx) + ((body.Y - py) * vy)) / length2)
+                : 0.0f;
+            if (t < 0.0f) { t = 0.0f; }
+            if (t > 1.0f) { t = 1.0f; }
+
+            float cx = px + (vx * t);
+            float cy = py + (vy * t);
+            float dx = body.X - cx;
+            float dy = body.Y - cy;
+            float r = body.Radius + playerRadius;
+            return (dx * dx) + (dy * dy) <= r * r;
         }
 
         /// <summary>
@@ -2539,6 +2635,9 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                               + " candidate(s) refused by AdmissionRule.EnemyBody over "
                               + _bodyRule7Frames + " frame(s); " + _bodySweepViolations
                               + " emitted move(s) swept a body");
+            Console.WriteLine("  route blocked       : " + _bodyOnRouteFrames + " frame(s) had a body"
+                              + " across the route the planner aims along; " + _bodyOnRouteNoThreat
+                              + " of them decided NoThreat (E10 asserts this is 0)");
             for (int i = 0; i < _bodySweepExamples.Count; i++)
             {
                 Console.WriteLine("    " + _bodySweepExamples[i]);
@@ -2918,6 +3017,29 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // about which scenario was run. It is vacuously true wherever there are no bodies or the
             // emitter is off, which is the honest reading of "no planned route enters a body's
             // emitter disc" when there are no emitter discs.
+            // --- E10: THE DECISION-LEVEL CLAIM, WHICH IS THE ONE THAT WAS MISSING. ------------
+            //
+            // Every other body check in this file reads the planner's route or the refusals. This
+            // one reads the DECISION, and it is the only one that can fail when a body is in the
+            // snapshot, the route bends around it, and the frame nonetheless emits nothing -- which
+            // is what the first delivery of PLAN-ENEMY-THREATS.md did on all 600 frames of
+            // `--scenario body`, at 12.828 units of planned detour, with every other check PASSing.
+            Report("E10 a body on the route to the goal opens the frame",
+                   _bodyOnRouteNoThreat == 0,
+                   _bodyOnRouteFrames == 0
+                       ? "no frame in this run had a body across the route the planner aims along,"
+                         + " so the claim is vacuously true. `body` is the fixture that exercises it."
+                       : _bodyOnRouteNoThreat + " of " + _bodyOnRouteFrames + " frame(s) decided"
+                         + " NoThreat while an enemy body's collision disc lay on the route to the"
+                         + " goal. `NoThreat` returns before a candidate set exists, so on those"
+                         + " frames rule 7 is never asked, `stand` is never tested, and the route the"
+                         + " planner just computed -- the one that goes round the body -- is thrown"
+                         + " away. The emitter pad cannot admit or refuse, but neither can it act on"
+                         + " a frame that was never evaluated.");
+            for (int i = 0; i < _bodyOnRouteExamples.Count; i++)
+            {
+                Console.WriteLine("         " + _bodyOnRouteExamples[i]);
+            }
             bool bodiesCoverPlayer = BodiesCoverThePlayer();
             Report("BODY no planned route enters an enemy emitter disc",
                    _bodyZoneNodes == 0 || bodiesCoverPlayer,

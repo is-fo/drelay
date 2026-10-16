@@ -931,8 +931,26 @@ namespace Drelay.Bootstrap
             // gates are properties of the player rather than of one frame's input object: dead,
             // safe area, and a zero speed law. `Moving` stays in the trace, where it is evidence
             // rather than a decision.
+            // THE GATE HAS TWO HALVES AND IT USED TO TEST THE WRONG ONE FOR BODIES.
+            //
+            // `AnyThreatNearPlayer` asks the bullets in the warning radius, plus -- since
+            // PLAN-ENEMY-THREATS.md -- whether a body is close enough that THIS FRAME'S ring could
+            // reach it. That reach is rule 7's own boundary, and it was chosen so the gate would
+            // open on exactly the frames ADMISSION has something to say. It is the correct reach
+            // for that question and the wrong one for the frame: bodies have a SECOND consumer,
+            // the planner's emitter field, and that one reaches to `PathTargetSeconds` of travel
+            // -- nineteen times further. Tying the gate to rule 7's reach made the emitter field
+            // unreachable on every frame whose only hazard was a body, which is every frame
+            // section 2.2 is about: the planner would build the detour, at full cost, and the
+            // gate would then return `NoThreat` before a candidate set existed, discarding it.
+            //
+            // IT IS THE SAME GATE AND NOT A SECOND ONE. Both halves answer one question -- "is
+            // there anything in this frame the evaluation could act on" -- and the frame is
+            // evaluated if either says yes. Nothing here can admit, refuse or move anything; the
+            // only hard word a body has is still rule 7's refusal, against its own unpadded radius.
             if (!AnyThreatNearPlayer(snapshot, player.X, player.Y, playerRadius,
-                                     _config.WarningRadiusPad, budget))
+                                     _config.WarningRadiusPad, budget)
+                && !AnyBodyAcrossTheRoute(snapshot, player.X, player.Y, playerRadius, budget))
             {
                 decision.Reason = DodgeReason.NoThreat;
                 return AttachStageClocks(decision);
@@ -1060,7 +1078,22 @@ namespace Drelay.Bootstrap
                 && !InsideAnyDisc(snapshot, intentX, intentY, playerRadius)
                 && Admit(snapshot, player, playerRadius, budget, intentX, intentY,
                          out float intentDurability, out float intentClearance,
-                         out float _) == (int)AdmissionRule.Admitted)
+                         out float _) == (int)AdmissionRule.Admitted
+                // AND NOT WHEN THE PLAYER'S OWN HEADING WALKS INTO A MOB'S MUZZLE. The three
+                // conditions above are all questions about BULLETS, so on a frame with a mob in it
+                // and nothing in flight this branch fired every time -- the dodge took the wheel,
+                // re-emitted the player's own heading, and the route it had just planned round the
+                // body was never consulted. `PLAN-ENEMY-THREATS.md` section 2.2 is exactly this
+                // frame: "pathing over an enemy might look safe until it spawns projectiles".
+                //
+                // IT DOES NOT WEAKEN THE EARLY-OUT'S PURPOSE. The early-out exists so the dodge
+                // does not fight the player over damage channels it does not model; it is not a
+                // promise to obey a heading that leads at a mob. When this clause suppresses it the
+                // frame falls through to the ladder, which picks the best ADMISSIBLE candidate --
+                // the safety boundary is untouched -- and `WeightPath` is what makes it prefer the
+                // route that goes round. See `IntentRunsIntoABody` for why the pad may be spent
+                // here and not at the gate.
+                && !IntentRunsIntoABody(snapshot, player, playerRadius, budget))
             {
                 decision.Action = DodgeAction.Move;
                 decision.Reason = DodgeReason.IntentSafe;
@@ -1324,6 +1357,176 @@ namespace Drelay.Bootstrap
                 float dx = body.X - px;
                 float dy = body.Y - py;
                 if ((dx * dx) + (dy * dy) <= reach * reach)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True when an enemy body's COLLISION disc lies across the route the planner is aiming
+        /// along. The second half of the gate that decides whether a frame is evaluated at all.
+        ///
+        /// WHY THE GATE NEEDED A SECOND BODY RULE. `AnyThreatNearPlayer` above tests a body against
+        /// rule 7's reach -- `body.Radius + playerRadius + budget`, one frame's step past contact --
+        /// and that is the right reach for the question "could ADMISSION refuse something this
+        /// frame". It is the wrong reach for the question the gate is actually asking, because a
+        /// body has a SECOND consumer: the planner's emitter field, which reaches
+        /// `PathTargetSeconds` of travel (12.3 units at the measured speed against that 0.637) and
+        /// is the mechanism `PLAN-ENEMY-THREATS.md` section 2.2 specifies for a mob standing in the
+        /// open. Nineteen times the reach, and the gate was deciding a nineteen-times-smaller
+        /// question. The measured consequence: `--scenario body` planned a 12.828-unit route round
+        /// a body on a 12.0-unit straight line, on all 600 frames, and returned `NoThreat` on all
+        /// 600 -- so the route was discarded before anything could follow it.
+        ///
+        /// IT IS THE STRAIGHT RAY FROM THE PLAYER AND NOT THE PLANNED ROUTE, AND THAT IS NOT A
+        /// SHORTCUT. The planner has already run by the time this is asked (the path is resolved
+        /// before the gate on purpose -- see `DecideCore`), but a gate that asked the route
+        /// directly would be reading the answer as its own premise: the route bends around the
+        /// body, so "did the route touch the body" is false on exactly the frames that matter.
+        /// The goal ray is the stand-in for "where the player is going", which is the same
+        /// quantity the planner's target is built from, so the two cannot disagree about the
+        /// direction of travel.
+        ///
+        /// THE REACH IS `PathTargetSeconds` OF THE PLAYER'S OWN SPEED, the planner's own target
+        /// distance, taken from the same config number. Beyond it the emitter field cannot affect
+        /// any decision this frame, and inside it a body that is merely off to the side is
+        /// excluded by the segment test rather than by a second radius.
+        ///
+        /// THE PAD IS DELIBERATELY NOT IN IT, AND THIS IS THE LOAD-BEARING PART. The reach is the
+        /// body's COLLISION radius, never `DangerRadius`, so `EnemyDangerPadUnits` cannot change
+        /// which frames are evaluated -- only what an evaluated frame prefers. A pad-driven gate
+        /// would make `enemypad` an input to admission by the back door (it would decide whether
+        /// the admission code runs at all) and would destroy E4, whose whole claim is that the pad
+        /// has no effect on admission. Section 3.1 of the plan forbids the pad from refusing
+        /// anything; this refuses nothing either, and it does not let the pad decide who is asked.
+        ///
+        /// IT CANNOT OPEN A FRAME THE OLD GATE WOULD HAVE CLOSED WHEN THE MODULE IS OFF: with
+        /// `EnemyBodies=0` the body list is empty and the loop body never runs. That is E9.
+        /// </summary>
+        private bool AnyBodyAcrossTheRoute(DodgeSnapshot snapshot, float px, float py,
+                                           float playerRadius, float budget)
+        {
+            if (!_goalValid)
+            {
+                // No measured direction of travel, so there is no route to be blocked and the
+                // honest answer is "nothing to evaluate for" -- the frame keeps whatever the bullet
+                // half of the gate decided.
+                return false;
+            }
+            float reach = RouteReach(snapshot.Player.SpeedPerSecond, snapshot.FrameSeconds, budget);
+            return reach > 0.0f
+                   && AnyBodyOnRay(snapshot, px, py, _goalRadians, reach, playerRadius, false);
+        }
+
+        /// <summary>
+        /// True when the player's own heading, followed for the planner's horizon, runs into an
+        /// enemy's EMITTER disc.
+        ///
+        /// THIS IS WHAT MAKES THE EMITTER FIELD REACHABLE AT ALL, and without it the field is
+        /// decorative. A body's two consumers reach different distances and are consulted at
+        /// different points: rule 7 refuses inside one frame's step, and the planner's emitter
+        /// field bends the ROUTE out to `PathTargetSeconds` of travel. The route is followed by
+        /// `WeightPath`, which only ranks candidates -- and the intent early-out in `DecideCore`
+        /// returns before the ranking is used, so on every frame where the player's own steering is
+        /// clear of bullets the dodge obeyed it and the emitter field was never asked. Measured on
+        /// `--scenario body`: the planner built a 12.828-unit route round a body on a 12.0-unit
+        /// straight line, the waypoint sat at 15 degrees, and the emitted heading was 0 degrees --
+        /// straight at the mob -- on all 600 frames.
+        ///
+        /// IT IS A PREFERENCE AND NOT AN ADMISSION RULE, which is the whole of
+        /// PLAN-ENEMY-THREATS.md section 3.1. Nothing here refuses a candidate. It suppresses ONE
+        /// early-out so that the ordinary ladder -- which scores with `WeightPath` -- gets to
+        /// answer, and the emitted move is still drawn from the admissible set. If nothing
+        /// admissible exists the dodge emits nothing and the player's own hands carry on, which is
+        /// what `StandWalkOn` already means.
+        ///
+        /// WHY THE EMITTER RADIUS HERE AND THE COLLISION RADIUS IN THE GATE. The gate decides
+        /// whether the frame is EVALUATED, so it must not move when the pad moves, or `enemypad`
+        /// would reach admission through the back door and E4 would be unmeasurable. This decides
+        /// only which of several admissible answers is preferred, and the pad is exactly the number
+        /// that expresses "do not walk into the muzzle": section 3.2's argument is that the pad
+        /// buys the fraction of a second before the bullet exists. A pad that could not spend
+        /// itself on a preference would have nothing to spend itself on.
+        ///
+        /// A ZERO RADIUS IS "NO EMITTER" AND IS SKIPPED, so `EnemyEmitter=0` restores the old
+        /// early-out exactly, and `EnemyBodies=0` leaves the list empty and does the same. That is
+        /// E9: with the module off, nothing here can change a decision.
+        /// </summary>
+        private bool IntentRunsIntoABody(DodgeSnapshot snapshot, PlayerView player,
+                                         float playerRadius, float budget)
+        {
+            float reach = RouteReach(player.SpeedPerSecond, _frameSeconds, budget);
+            return reach > 0.0f
+                   && AnyBodyOnRay(snapshot, player.X, player.Y, player.IntentRadians, reach,
+                                   playerRadius, true);
+        }
+
+        /// <summary>
+        /// How far ahead the planner is aiming, in world units: `PathTargetSeconds` of travel at
+        /// the player's own speed.
+        ///
+        /// IT IS THE PLANNER'S OWN TARGET DISTANCE, from the same config number and the same speed
+        /// fallback `PathPlanner.BeginFrame` uses, because a reach that disagreed with the target
+        /// would let the two drift apart on a frame where the measured speed is missing.
+        /// </summary>
+        private float RouteReach(float speedPerSecond, float frameSeconds, float budget)
+        {
+            float speed = speedPerSecond;
+            if (speed <= 0.0f)
+            {
+                speed = budget > 0.0f && frameSeconds > 0.0f
+                    ? budget / frameSeconds
+                    : 0.0f;
+            }
+            return speed * _config.PathTargetSeconds;
+        }
+
+        /// <summary>
+        /// Does any body's disc intersect the segment from the player, `reach` units along
+        /// <paramref name="radians"/>?
+        ///
+        /// ONE GEOMETRY, TWO RADII, AND THE CALLER NAMES WHICH. `emitterRadius` selects
+        /// `EntityBody.DangerRadius` (which already contains the player's radius and the pad,
+        /// because `EnemyReader.Fill` computes it that way) over the collision radius
+        /// `body.Radius + playerRadius`. The gate must use the collision radius and the intent
+        /// preference must use the emitter radius; keeping one function means the two cannot
+        /// disagree about the geometry while differing on the radius, which is the only difference
+        /// they are allowed to have.
+        /// </summary>
+        private bool AnyBodyOnRay(DodgeSnapshot snapshot, float px, float py, float radians,
+                                  float reach, float playerRadius, bool emitterRadius)
+        {
+            if (snapshot.Bodies.Count == 0)
+            {
+                return false;
+            }
+
+            float vx = reach * (float)Math.Cos(radians);
+            float vy = reach * (float)Math.Sin(radians);
+            float length2 = (vx * vx) + (vy * vy);
+
+            for (int b = 0; b < snapshot.Bodies.Count; b++)
+            {
+                EntityBody body = snapshot.Bodies[b];
+                float r = emitterRadius ? body.DangerRadius : body.Radius + playerRadius;
+                if (!(r > 0.0f))
+                {
+                    continue;   // no emitter for this body: `EnemyEmitter=0`, so it is rule 7 alone
+                }
+
+                // The body's projection onto the segment, CLAMPED to it: a body behind the player
+                // is not in front of them, and the clamp is what says so rather than a second test.
+                float t = length2 > 0.0f
+                    ? ((((body.X - px) * vx) + ((body.Y - py) * vy)) / length2)
+                    : 0.0f;
+                if (t < 0.0f) { t = 0.0f; }
+                if (t > 1.0f) { t = 1.0f; }
+
+                float dx = body.X - (px + (vx * t));
+                float dy = body.Y - (py + (vy * t));
+                if ((dx * dx) + (dy * dy) <= r * r)
                 {
                     return true;
                 }
@@ -3012,29 +3215,35 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
-        /// How close a candidate leaves the character to an enemy's EMITTER disc. In `[0,1]`, and 0
-        /// whenever the frame has no enemy bodies or the emitter is off.
+        /// How much of THIS candidate's own direction leads into an enemy's EMITTER disc, over the
+        /// horizon the planner aims along. In `[0,1]`, and 0 whenever the frame has no emitter
+        /// field.
         ///
-        /// IT IS THE SAME FIELD `ProjectedDanger` READS, OVER THE OTHER HALF OF THE ENVELOPE. See
-        /// `PathPlanner.DangerOverBodies`: bodies are folded into the planner's one envelope as
-        /// one-sample stationary entries, so this is a second question asked of one measurement --
-        /// "does this candidate end up on a mob's doorstep" -- rather than a second model of where
-        /// the mobs are.
+        /// IT IS THE SAME FIELD THE PATH'S EDGE COST READS. `PathPlanner.DangerOverBodies` is the
+        /// cell field `BuildBodyField` sprays and `DangerAt` costs, so this is a second question
+        /// asked of one measurement -- "does this heading walk into a mob" -- rather than a second
+        /// model of where the mobs are. One definition of "inside a disc" for the search, the
+        /// counter and this term.
         ///
-        /// IT READS THE CANDIDATE'S ARRIVAL POINT, NOT ITS PROJECTED PATH, AND THAT IS THE DIVISION OF
-        /// LABOUR RATHER THAN AN OMISSION. The PATH is what answers "will the route go through the
-        /// enemy's pad" -- the edge cost in `PathPlanner.Search` -- and it answers it for the whole
-        /// horizon at once. This term exists for the frames the path declined (no grid, no goal,
-        /// unreachable) and for the ranking among admissible candidates: it can only re-rank what
-        /// already passed admission, exactly like `WeightPath`, and it can never admit, refuse or
-        /// move a candidate.
+        /// THE HORIZON IS THE POINT, AND THE FIRST VERSION DID NOT HAVE ONE. See the body of the
+        /// method for the measurement: reading the candidate's ARRIVAL POINT -- one frame's step,
+        /// about 0.14 units -- made this term contribute exactly zero for every body further than
+        /// the pad from the player, which is every body the plan is about. A mob six units down the
+        /// player's own heading is the case; a mob six units down the player's heading does not
+        /// touch a point 0.14 units ahead.
+        ///
+        /// IT CAN ONLY RE-RANK THE ADMISSIBLE SET, exactly like `WeightPath` and `ProjectedDanger`:
+        /// it is a `ScoreAll` term, so it can never admit, refuse or move a candidate. That is the
+        /// division of labour with admission and it is what makes a non-zero default defensible.
         ///
         /// ZERO WHEN `stand` IS THE CANDIDATE, for the same reason `ProjectedDanger` returns zero
-        /// there: standing has no direction and no projected position, which is what standing is.
+        /// there: standing has no direction, which is what standing is.
         ///
-        /// THE DEFAULT WEIGHT IS ZERO. This ships implemented and switched off, the
-        /// `WeightProjectedDanger` precedent: the harness sweeps it, a live run reads it, and nobody
-        /// has to guess whether the term is absent or merely silent.
+        /// THE DEFAULT WEIGHT IS A TUNING NUMBER AND THE HARNESS IS WHERE IT IS SETTLED. It ships
+        /// non-zero because a preference that is never expressed is not a preference: with the
+        /// weight at zero the dodge walked straight at a mob on 600 of 600 `body` frames while the
+        /// path it had planned went round one. `DRELAY_DODGE_W_ENEMY` and `--config wenemy` move it,
+        /// and `enemies=0`/`emitter=0` remove the field entirely.
         /// </summary>
         private float EnemyDanger(PlayerView player, CandidateResult r, float budget)
         {
@@ -3044,18 +3253,52 @@ namespace Drelay.Bootstrap
             }
             if (r.Distance <= 1e-6f || budget <= 0.0f)
             {
-                return 0.0f;   // `stand` has no arrival point that is any different from the player's
+                return 0.0f;   // `stand` has no heading, so there is no direction to judge
             }
-            if (!_planner.FieldReady)
+            if (!_planner.BodyFieldReady)
             {
-                return 0.0f;   // no grid or no violence this frame: no field, and so no opinion
+                // NO EMITTER FIELD THIS FRAME: no grid, no bodies, the emitter off, or discs that
+                // cover no cell centre. It asks `BodyFieldReady` and NOT `FieldReady`, because the
+                // two are different questions -- see that property: `FieldReady` is about the
+                // BULLET envelope, and asking it here made this term return zero on every frame
+                // with a mob in it and nothing in flight, which is the frame the term exists for.
+                return 0.0f;
             }
 
-            // THE POINT, NOT THE REGION, AND THAT IS THE DESIGN RATHER THAN A SHORTCUT. The body field
-            // is a set of CELLS whose centres are inside an emitter disc, so "is this arrival point in
-            // a mob's doorstep" is a single cell lookup -- the same lookup the search's edge cost made
-            // for the same cell. A 3x3 probe here would ask about cells the candidate is not in.
-            return _planner.DangerOverBodies(r.X, r.Y);
+            // THE CANDIDATE IS A DIRECTION AND NOT A POINT, WHICH IS THE CORRECTION THIS METHOD
+            // NEEDED. The first version returned `DangerOverBodies(r.X, r.Y)` -- one cell, at the
+            // end of a single frame's step. Measured on `--scenario body` (one body six units out,
+            // pad 0.75, goal straight at it): the score was byte-identical at 4.84 and the chosen
+            // heading was 0 degrees -- straight into the mob -- at `wenemy=0`, at `wenemy=5`, and
+            // at `enemypad=2,wenemy=5`. Multiplying zero by five is still zero, so the weight could
+            // not be told from an absent term; the term never ran.
+            float dx = r.X - player.X;
+            float dy = r.Y - player.Y;
+            float length = (float)Math.Sqrt((dx * dx) + (dy * dy));
+            if (length <= 1e-6f)
+            {
+                return 0.0f;
+            }
+            dx /= length;
+            dy /= length;
+
+            float reach = RouteReach(player.SpeedPerSecond, _frameSeconds, budget);
+            float worst = 0.0f;
+            // HALF A CELL IS THE STEP, because the field is a per-cell lookup: a coarser step can
+            // straddle a disc that is one cell wide and read clear along the whole of it.
+            for (float s = 0.5f; s <= reach; s += 0.5f)
+            {
+                float v = _planner.DangerOverBodies(player.X + (dx * s), player.Y + (dy * s));
+                if (v > worst)
+                {
+                    worst = v;
+                    if (worst >= 1.0f)
+                    {
+                        break;   // dead on a disc: nothing further along can make it worse
+                    }
+                }
+            }
+            return worst;
         }
 
         /// <summary>
