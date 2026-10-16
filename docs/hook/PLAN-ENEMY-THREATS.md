@@ -5,6 +5,16 @@ what was actually delivered and where it departed from this plan. Step 5 (the li
 the only part that still needs an operator.** The body of the document below is left as written — it
 is the specification the implementation was measured against, and §8 is the diff.
 
+> **§8.8 IS A CORRECTION AND IT SUPERSEDES THE HEADLINE OF §8.** The first delivery — commit
+> `d4e8f46` — resolved the reader, filled `DodgeSnapshot.Bodies`, passed every test §5 asks for, and
+> **changed no decision on any frame whose only hazard was an enemy body.** The operator greenlit it
+> on a live session and then reported that enemies were still not treated as dangerous, which is
+> correct: the commit's own `body` fixture plans a route around the mob and then decides `NoThreat`
+> on all 600 of its frames, so the route was never followed and no move was ever emitted. Four
+> separate defects produced that, and §8.8 is what they were, how each one was measured, and what
+> the fix is. Read §8.8 before §8.1–§8.7; the earlier sections are the record of the first delivery
+> and several of their conclusions are wrong.
+
 Read with: [`DODGE-ALGORITHM.md`](DODGE-ALGORITHM.md) §5.3 rule 7 (the enemy-body rule),
 [`HANDOFF-DIRECTED-DODGE.md`](HANDOFF-DIRECTED-DODGE.md) §4 (the path over the client's grid),
 [`PLAN-AUTOFARM.md`](PLAN-AUTOFARM.md) (the rest of the farmer).
@@ -339,6 +349,13 @@ have hidden the very defect E4 exists to catch. It was found exactly that way: t
 reported `admissible=0` at pad 0 and 46 200 at every positive pad, because the gate had been written
 against `DangerRadius`.
 
+> **CORRECTED — see §8.8.1.** The reasoning above is sound about the pad and wrong about the reach.
+> "A frame with a mob in it and nothing in flight therefore returned `NoThreat` before … the planner
+> was consulted" is exactly right, and the reach chosen to fix it — rule 7's boundary — is *admission's*
+> reach and not the frame's. The planner's emitter field reaches `PathTargetSeconds` of travel, about
+> nineteen times as far, and a body beyond one frame's step therefore still returned `NoThreat`. The
+> gate needed a second half, not a wider first one.
+
 ### 8.2 Departure 2: `EnemyReader` resolves `World.Shared` separately from the enemy list
 
 §4.1's sketch has `Fill(DodgeSnapshot, DodgeConfig, px, py, radius)` and no world parameter, so the
@@ -434,13 +451,17 @@ being written; the Release build is what every figure here is quoted from.
 |---|---|---|---|
 | E1 | `bodies=0` becomes `bodies=N` | `bootstrap.log`'s `PHASE 3 DODGE DETAIL` line, then `EnemyReader.Describe()` on the same line | **needs the game.** The report carries `bodies <mean> on <n> of <frames> frame(s)` and then `enemies=live frames= culled= dropped= fallbackRadius= skipped=`; `enemies=unresolved` / `enemies=off` name the other two ways it can read zero |
 | E2 | rule 7 refuses a candidate that walks into a body | `--scenario bodyclose` (one body at 0.55 units, east) | **PASS**: 12 000 refusals by `AdmissionRule.EnemyBody` over 600 frames, and 0 emitted moves swept a body |
-| E3 | the path routes around a body rather than through it | `--scenario body` (one body 6 units out, on the goal ray) | **PASS**: `BodyZoneNodes` 0 over 600 paths found, path length 12.83 against the straight line 12.0 |
+| E3 | the path routes around a body rather than through it | `--scenario body` (one body 6 units out, on the goal ray) | **PASS AS A CLAIM ABOUT THE PLANNER, AND IT WAS NOT EVIDENCE ABOUT THE DODGE**: `BodyZoneNodes` 0 over 600 paths found, path length 12.83 against the straight line 12.0 — and on the same 600 frames the decision was `NoThreat`/`None`, so no move was emitted and the route was never followed. See §8.8.2 |
 | E4 | the emitter pad never refuses anything | `--scenario bodyclose` and `bodyfence`, `--config enemypad=0 / 0.75 / 1.5 / 3` | **PASS**: the admissible total is *identical* at every pad, in both scenarios (34 200 and 15 000) |
 | E5 | the pad cannot fence the player in | `--scenario bodyfence` (eight bodies at 0.55 units) | **PASS**: every one of the 600 frames with a candidate set had an admissible MOVING candidate |
 | E6 | `stand` still wins when it is durably safe | T5, all nine scenarios | **PASS**, unchanged |
 | E7 | the safety boundary holds | T6 and T10, all nine scenarios | **PASS**, unchanged |
 | E8 | the cost is bounded | `decide()` p50/p99 on the Release harness with `--repeat 50` (the estimator the project tunes against), body-heavy scenarios against `peaceful` as the no-body baseline | **PASS, with a named cost**: `peaceful` 17/23 µs, `bodyclose` 22/56 µs, `bodyfence` 20/58 µs — so eight enemy bodies in view add ~35 µs to p99. The first implementation of §4.3 added ~200 µs (134/231 single-shot); §8.4 records why. All inside the 300 µs budget, which is shared with the sampler and the sensor |
 | E9 | with the module off nothing changes | `--config enemies=0,emitter=0,wenemy=0` against the **pre-change source compiled from `HEAD`**, all nine scenarios | **PASS for the six scenarios that existed before**: byte-identical on every decision field (frame, action, reason, held, heading, scale, goal, goalsrc, hintent, intent, course, moving, evaluated, admissible, durability, clearance, resolve, score, runnerup, window). The three body fixtures cannot be replayed against the old build — it does not know them |
+| E10 | a body on the route to the goal opens the frame | added by §8.8.3: every frame with a body whose collision disc lies across the segment from the player to the planner's own target, asserted against `DodgeReason.NoThreat` | **the invariant the first delivery was missing.** It FAILS on the pre-fix build (`600 of 600` frames of `--scenario body`) and passes after §8.8.1/§8.8.3. It is asserted on the DECISION, where E2 asserts on the refusals and E3 on the route |
+
+§8.8.6 re-runs this table against the fixed build with the new defaults; the numbers in the rows
+above are the first delivery's.
 
 #### E9's comparison, and why it is not "identical files"
 
@@ -480,4 +501,189 @@ around it** and whether **the character still closes on it**. Everything else is
 `bodyfence` scenarios are the fixtures a sweep should be run against, and the answer will not be one
 number: §3.2's argument is that the pad buys the fraction of a second before the bullet exists, so
 the term that needs the harness is about the step after, not about standing further away.
+
+> **THIS SECTION WAS WRONG ON BOTH COUNTS, AND §8.8 IS WHY.** A live run *had* been made by the time
+> this was read — `20261016-144404-p36200`, 8 106 frames, `bodies 5.28 on 6697 of 8106` — so E1 was
+> satisfied and the operator's report was the confirmation that the feature did nothing. And
+> `WeightEnemyDanger` was at zero for a reason that turned out not to matter: the term contributed
+> zero at *every* weight, because it read a point one frame away instead of a direction (§8.8.2). It
+> now ships at **0.5** (§8.8.4).
+
+---
+
+## 8.8 The correction: the first delivery changed no decision
+
+This section supersedes the headline of §8 and the conclusions of §8.1, §8.4 and §8.6. It is written
+in the same form as the rest of the record — the measurement first, because every one of these
+findings was invisible to the checks that were run.
+
+### 8.8.1 The gate's body reach was admission's reach, and the two answers differ by 19×
+
+§8.1 is right that the no-threat gate had to learn about bodies, and right that the pad must not enter
+it. It is wrong about how far the gate must see. The reach it chose is rule 7's:
+
+```
+reach = body.Radius + playerRadius + budget        // 0.637 units at the harness's numbers
+```
+
+and that is the reach of the *admission* question ("could a candidate of this frame be refused").
+Bodies have a second consumer — the planner's emitter field — whose reach is the planner's own target:
+
+```
+reach = speed * PathTargetSeconds                  // 12.3 units at 9.23 u/s — and cull is 12
+```
+
+Nineteen times further. The plan's §2.2 defect, "an enemy standing in the open is free space as far
+as the search is concerned", lives entirely in that gap: a mob six units down the player's own heading
+was beyond rule 7's reach, so the gate returned `NoThreat` before a candidate set existed, and the
+route the planner had *just built around it* — `Plan` runs before the gate, deliberately — was
+discarded unread.
+
+The live run shows the shape of it without needing the body positions: `bodies 5.28 on 6697 of 8106
+frame(s)` with `NoThreat=4109` of 6990 decisions. Bodies were in the snapshot on 83 % of frames and
+the solver declined to think about them on 59 % of its decisions — every frame where the only hazard
+was a body, which is the frame the plan exists for.
+
+### 8.8.2 `WeightEnemyDanger` could not be told from an absent term
+
+The score term read the candidate's arrival point:
+
+```csharp
+return _planner.DangerOverBodies(r.X, r.Y);      // one cell, ~0.14 units away
+```
+
+A candidate is a *direction*. A mob six units down that direction does not touch a point 0.14 units
+ahead, so the term returned zero for every body further than the pad from the player. Measured on
+`--scenario body` (one body six units out, pad 0.75, goal straight at it):
+
+| run | chosen heading | score | path waypoint |
+|---|---|---|---|
+| `wenemy=0` | 0° — straight into the mob | 4.84 | 15° |
+| `wenemy=5` | 0° | 4.84 | 15° |
+| `enemypad=2,wenemy=5` | 0° | 4.84 | 15° |
+
+Byte-identical scores at weight 0 and weight 5. Multiplying zero by five is still zero; the weight was
+not an off-switch, it was a term that never ran.
+
+The same class of error put a second zero in the term's guard: `if (!_planner.FieldReady)` — and
+`FieldReady` is `_threatCount > 0`, a statement about the **bullet** envelope (`ProbeRadius` is built
+from the first threat's tight radius). A frame with a mob in it and nothing in flight has no bullets
+and therefore "no field", so the term was switched off on precisely the frames the pad exists for.
+`PathPlanner.BodyFieldReady` is now the body half's own question, fed by a cell count
+`BuildBodyField` maintains as it sprays.
+
+### 8.8.3 The invariant that was missing, and why every existing check passed
+
+E2 asserts on `Admit`'s refusal counters. The `PATH`/`BODY` invariant asserts on the route the planner
+returned. **Neither reads a decision.** So on `--scenario body` the harness printed, in one run:
+
+```
+[PASS] BODY no planned route enters an enemy emitter disc
+       0 planned node(s) inside a body's DangerRadius over 600 path(s) found
+[PASS] E2  no emitted move sweeps an enemy body
+       0 move(s) swept a body's collision disc
+-- decisions --
+  action  : None=600
+  reason  : NoThreat=600
+  frames that moved : 0 of 600 (0.0%)
+```
+
+The route avoids the disc; nothing was ever emitted; both checks pass. This is §5's own trap 11 ("an
+instrument that cannot see the change cannot validate it") applied to the plan itself: the fixture was
+named "the path must go round it" and it measured the path.
+
+**E10 is the join**, and it is asserted on the decision:
+
+> On every frame that carries a body whose **collision** disc lies across the segment from the player
+> to the point the planner is aiming at, the decision must not be `NoThreat`.
+
+The geometry is re-derived in the harness from `GoalValid`, the player's speed and `PathTargetSeconds`
+rather than read out of the solver, for the same reason `CheckT5` asks the solver's own durability
+predicate instead of copying it. On the pre-fix build it fails with `600 of 600` and names the frames;
+on the fixed build it passes. `--scenario body` is the fixture that exercises it, and a run with no
+bodies reports it as vacuously true rather than as a pass over nothing.
+
+### 8.8.4 The other two defects, and the fix
+
+Once the frame is evaluated, two more things had to be true before a mob changes anything, and neither
+was:
+
+1. **`IntentSafe` obeyed a heading that walked into a muzzle.** The intent early-out is composed of
+   three questions about *bullets* (`StaticallyDurable`, `InsideAnyDisc`, `Admit`), so on a frame with
+   a mob and nothing in flight it fired every time: the dodge took the wheel, re-emitted the player's
+   own heading, and `WeightPath` — the only term that ever saw the distant body — was never consulted.
+   It now also requires that the player's own heading does not run into an emitter disc within the
+   planner's horizon. **This is a preference and not an admission rule**: nothing is refused, the
+   frame falls through to the ordinary ladder, and the emitted move is still drawn from the admissible
+   set. It uses the EMITTER radius (pad included), because a pad that could not be spent on a
+   preference would have nothing to spend itself on; the gate uses the collision radius so `enemypad`
+   still cannot decide which frames are evaluated.
+
+2. **The weight shipped at zero.** With the term fixed to sample the body field along the candidate's
+   own direction over the planner's horizon, the smallest weight that moves `--scenario body` off the
+   straight line is **0.04**; it now ships at **0.5**, against `WeightPath` 1.0 and `WeightGoal` 0.9.
+   `DRELAY_DODGE_W_ENEMY` moves it in one run.
+
+The gate itself gained a second half, `AnyBodyAcrossTheRoute`, rather than a wider first one: a frame
+is evaluated if the bullets are near **or** a body's collision disc is on the route to the goal. The
+route test is the straight goal ray and not the planned path, because the planned path has already
+bent around the body — asking it "did you touch the body" is reading the answer as its own premise.
+
+### 8.8.5 What the harness says now
+
+`--scenario body`, 600 frames, seed 1, the new defaults:
+
+| | before | after |
+|---|---|---|
+| action / reason | `None` / `NoThreat` | `Move` / `Hysteresis` |
+| frames that moved | 0 of 600 | 600 of 600 |
+| chosen heading | 0° — into the mob | 15° — around it, the planner's own waypoint |
+| rule 7 refusals | 0 | 0 (the body is six units out; rule 7 is not the mechanism here) |
+| `BodyZoneNodes` | 0 | 0 — the route still never enters the disc |
+| E10 | **FAIL**, 600 of 600 | PASS |
+| `decide()` p99 (`--repeat 50`) | 33 µs | 87 µs |
+
+The heading now agrees with the waypoint the planner produced: `wp=15`, `heading=15`, `bodyzone=0`.
+
+### 8.8.6 The re-run of §8.6, on the fixed build
+
+Every scenario is run at `--frames 600 --seed 1`; cost at `--repeat 50`; E9 against the pre-change
+source compiled in a worktree at `ce254be`.
+
+| # | result after the fix |
+|---|---|
+| E2 | **PASS**, unchanged: 12 000 `AdmissionRule.EnemyBody` refusals on `bodyclose`, 0 moves swept a body |
+| E3 | **PASS, and now about a decision**: `body` emits 600 moves at 15°, `bodyzone` 0 over 600 paths found |
+| E4 | **PASS**: mean admissible is identical at pad 0 / 0.75 / 1.5 / 3 in `body` (77), `bodyclose` (57) and `bodyfence` (25) — the pad still cannot refuse, and now cannot decide which frames are evaluated either |
+| E5 | **PASS** at every pad: `bodyfence` keeps an admissible MOVING candidate on all 600 frames |
+| E6/E7 | **PASS**, unchanged: T5, T6, T10 and the corner-cut invariant hold on all eight scenarios |
+| E8 | **PASS with a named cost**: `peaceful` 17/23 µs, `bodyclose` 23/59, `bodyfence` 21/60, `body` 30/87 — the last is the scenario that now actually scores 77 candidates against a body field. Inside the 300 µs budget shared with the sampler and the sensor |
+| E9 | **PASS**: with `enemies=0,emitter=0,wenemy=0` the build is byte-identical to `ce254be` on every decision column — 3 000 frames over the five pre-existing scenarios (`costUs`, the stage clocks and the new `bodyzone`/`nbody` columns excluded, exactly as §8.6 describes) |
+| E10 | **PASS**, and it is the check that FAILED before the fix |
+
+### 8.8.7 What is still not built
+
+**No live run has been made against this correction**, and the reason is now a hard one: the live
+recorder never writes the `bodies` key, so `trace.jsonl` from `20261016-144404-p36200` replays with
+`enemy bodies: 0 of 7164 frame(s) carried one` and no live frame can be re-run against the new term.
+The harness's reader has accepted a `bodies` array since `d4e8f46`; `TraceRecorder.WriteFrame` does not
+write one. Until it does, the weight cannot be tuned against real mob geometry and E1 remains a claim
+about a `bootstrap.log` line rather than something replayable.
+
+That replay is otherwise a useful negative control: with no bodies it produces the **identical**
+decision summary before and after this correction (`None=5112 Move=2052`, and the same eight reason
+counts), which is what "the module is inert without a body list" looks like measured rather than
+argued. The one invariant it fails is **T7** — `7 collision(s) the model never predicted` — which is
+the pre-existing projectile-prediction gap the same run's own log reports as `false negatives: 7 (hit,
+not predicted)`. It is not a body finding and this correction neither caused nor touched it.
+
+Two further things are true and worth naming:
+
+- **`fallbackRadius=11985`** on the live run. `EnemyReader.Status()` printed no "Radius did NOT
+  resolve" clause, so the field resolved and roughly 28 % of the bodies that reached the radius read
+  returned `Radius == 0` and were substituted with `DefaultPlayerRadius` (0.25). Whether that is the
+  game's answer for those enemy types or the wrong field is unverified.
+- **The `body` fixture is a statue.** A moving mob is just a different list per frame, and nothing here
+  exercises a mob that walks onto the player — rule 7's "already inside" exception is unexercised on
+  the fixed path.
 

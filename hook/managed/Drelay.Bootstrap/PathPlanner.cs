@@ -278,6 +278,16 @@ namespace Drelay.Bootstrap
         /// </summary>
         private float[] _bodyCost = new float[0];
 
+        /// <summary>
+        /// Cells the current frame's emitter discs cover -- the body half's own "is there anything
+        /// in the field" count, maintained by <see cref="BuildBodyField"/> as it sprays.
+        ///
+        /// IT EXISTS BECAUSE `FieldReady` IS ABOUT BULLETS. See <see cref="BodyFieldReady"/>: a
+        /// frame with a mob in it and nothing in flight has an emitter field and no trajectory
+        /// envelope, and a consumer that asked `FieldReady` was told there was no field at all.
+        /// </summary>
+        private int _bodyCells;
+
         // --- The search buffers, sized once -----------------------------------------------------
         private float[] _gScore = new float[0];
         private float[] _costScore = new float[0];
@@ -343,6 +353,25 @@ namespace Drelay.Bootstrap
         /// true when the frame had a grid and at least one threat to put in the envelope.
         /// </summary>
         public bool FieldReady => _fieldReady;
+
+        /// <summary>
+        /// True when the last <see cref="Plan"/> left an EMITTER field that a reader may use.
+        ///
+        /// IT IS THE PARALLEL QUESTION TO <see cref="FieldReady"/> AND NOT A WIDENING OF IT, and
+        /// the two must stay apart. `FieldReady` means "there is a trajectory envelope", which is
+        /// what `ProjectedDanger` and `ProbeRadius` are about, and they are built out of BULLETS --
+        /// `ProbeRadius` takes the first threat's tight radius. A frame with a mob in it and
+        /// nothing in flight has no bullets and therefore no envelope, but it does have an emitter
+        /// field, and the enemy-danger term was asking `FieldReady` and being told there was no
+        /// field at all. So the pad was inert on exactly the frames the pad exists for: the
+        /// fraction of a second before the bullet exists.
+        ///
+        /// IT IS FALSE WHEN THE FIELD IS EMPTY AS WELL AS WHEN IT WAS NOT BUILT: no grid, no
+        /// bodies, the emitter off, or discs that cover no cell centre. "No field" and "an empty
+        /// field" are the same answer to the caller, which is the convention `CollisionWindow.At`
+        /// and `DangerOverBodies` already use.
+        /// </summary>
+        public bool BodyFieldReady => _bodyCells > 0;
 
         /// <summary>
         /// The half-width of the patch a projected-danger probe reads around a future position.
@@ -508,22 +537,13 @@ namespace Drelay.Bootstrap
         /// "eight bodies" says nothing about whether the danger field is doing anything, while "1 200
         /// cells are inside an emitter disc" says exactly how much of the search's world the emitter
         /// owns.
+        ///
+        /// IT IS THE COUNT `BuildBodyField` MAINTAINS AS IT SPRAYS, not a second scan of the array,
+        /// and it is the same number <see cref="BodyFieldReady"/> tests -- so the column an operator
+        /// reads and the gate the solver acts on cannot disagree about whether the frame had a body
+        /// field.
         /// </summary>
-        public int DebugBodyCount
-        {
-            get
-            {
-                int covered = 0;
-                for (int i = 0; i < _cells; i++)
-                {
-                    if (_bodyCost[i] > 0.0f)
-                    {
-                        covered++;
-                    }
-                }
-                return covered;
-            }
-        }
+        public int DebugBodyCount => _bodyCells;
 
         /// <summary>The last search's own <see cref="PathStats.BodyZoneNodes"/>, for the frame dump.</summary>
         public int DebugBodyZoneNodes => _bodyZoneNodes;
@@ -823,6 +843,12 @@ namespace Drelay.Bootstrap
         {
 
 
+            // THE BODY FIELD BELONGS TO THIS FRAME OR TO NO FRAME. It is cleared here, ahead of the
+            // grid checks, so a frame that fails them leaves an EMPTY body field rather than the
+            // previous frame's: `BodyFieldReady` reads this count, and a disc left over from
+            // another window is a hazard nobody put there.
+            _bodyCells = 0;
+
             CollisionWindow grid = snapshot.Grid;
             if (!grid.Present || grid.Cells == null || grid.Width <= 0 || grid.Height <= 0)
             {
@@ -958,6 +984,11 @@ namespace Drelay.Bootstrap
             {
                 _bodyCost[i] = 0.0f;
             }
+            // COUNTED AS IT SPRAYS, AND COUNTED ONCE PER CELL. Two overlapping discs set the same
+            // cell, so the counter is guarded rather than incremented at every set -- otherwise
+            // "cells covered" would read as a count of (disc, cell) pairs and stop meaning what
+            // `DebugBodyCount` and `BodyFieldReady` need it to mean.
+            _bodyCells = 0;
 
             if (!_config.EnemyBodies || !_config.EnemyEmitter)
             {
@@ -996,7 +1027,12 @@ namespace Drelay.Bootstrap
                         float dy = cellY - body.Y;
                         if ((dx * dx) + (dy * dy) < e2)
                         {
-                            _bodyCost[(cy * _gridW) + cx] = 1.0f;
+                            int index = (cy * _gridW) + cx;
+                            if (_bodyCost[index] == 0.0f)
+                            {
+                                _bodyCost[index] = 1.0f;
+                                _bodyCells++;
+                            }
                         }
                     }
                 }
