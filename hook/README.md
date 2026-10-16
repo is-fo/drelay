@@ -31,10 +31,13 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 .\\hook\tools\Test-HookAbi.ps1    # offline ABI check, no game needed
 .\\hook\tools\Test-PeReader.ps1   # PE/MVID reader, incl. a tampered image
 .\\hook\tools\Test-Injection.ps1  # end-to-end, against a synthetic host (127 checks)
-.\\hook\tools\Test-HookOffline.ps1  # everything that needs NO game, incl. the launcher's
-                                    # configuration invariants (C1-C8): the four sources,
-                                    # their per-field precedence, the discovery walk and
-                                    # the environment the child is given
+.\\hook\tools\Test-HookOffline.ps1  # everything that needs NO game: the ABI self-test, the two generated tables,
+                                    # both report fixtures, and the launcher's configuration
+                                    # invariants (C1-C8: the four sources, their per-field
+                                    # precedence, the discovery walk and the environment the child
+                                    # is given). The metadata reader's self-test joins them only
+                                    # when the game is installed -- it reads the game's own PE --
+                                    # and is named as not run when it is not.
 ```
 
 If a native build fails with `LNK1104: cannot open file ...Drelay.Hook.dll`, a leftover game

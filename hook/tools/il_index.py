@@ -1553,6 +1553,15 @@ def main(argv=None) -> int:
             fail("known-build.json has no recordedFrom; pass --assembly")
         assembly = os.path.join(recorded_from, record["assembly"]["file"])
     if not os.path.isfile(assembly):
+        # THE SELF-TEST NEEDS THE ASSEMBLY TOO, AND SAYS SO.  Its docstring is about what the
+        # *function* reads (no record, no IL dump), and that was read as "it runs anywhere": the
+        # offline suite listed it among the checks a machine without the game could run, and the
+        # first hook run in CI failed on exactly that.  It builds a PE over this file and checks the
+        # reader against the counts the documents state for this build, so no install means no
+        # check -- and the message now gives the reason rather than the symptom.
+        if args.self_test:
+            fail("the reader self-test reads the game's own PE, so it needs the assembly; "
+                 "not found: %s (pass --assembly, or install the game)" % assembly)
         fail("assembly not found: %s (pass --assembly)" % assembly)
 
     if args.self_test:

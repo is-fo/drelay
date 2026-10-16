@@ -10,12 +10,13 @@ name: hook build
 # This is a Windows-only, native + managed build whose whole design is pinned to one installed build
 # of one game, and the runner has no copy of that game. So CI verifies that the hook *builds*, and
 # runs the checks that depend only on the sources in this directory (tools/Test-HookOffline.ps1 -- the
-# ABI self-test, the metadata reader's self-test, the two generated files against their record, the
-# two report fixtures, and the launcher's configuration invariants C1-C8, which need no game, no
-# Steam and no registry because their discovery walk runs against a fake tree). It cannot run
-# Fingerprint.ps1, il_index.py --check/--mutation-test,
-# Test-FingerprintGate.ps1, Test-PeReader.ps1 or Test-Injection.ps1, all of which need the game. Those
-# stay a local, documented, pre-install step: docs/hook/HOOK-BUILD-MATRIX.md.
+# ABI self-test, the two generated files against their record, the two report fixtures, and the
+# launcher's configuration invariants C1-C8, which need no game, no Steam and no registry because
+# their discovery walk runs against a fake tree). It cannot run Fingerprint.ps1,
+# il_index.py --check/--mutation-test, il_index.py --self-test, Test-FingerprintGate.ps1,
+# Test-PeReader.ps1 or Test-Injection.ps1, all of which need the game -- the self-test among them
+# because it checks the reader against *this build's* own PE, which is how the first hook run in CI
+# failed. Those stay a local, documented, pre-install step: docs/hook/HOOK-BUILD-MATRIX.md.
 #
 # That gap is a property of the component rather than of this pipeline, and Test-HookOffline.ps1
 # prints the list of what it did not run on every invocation, so a green build here is never mistaken
