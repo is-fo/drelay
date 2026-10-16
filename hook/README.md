@@ -401,7 +401,9 @@ And the two things that would normally be the hard part are avoidable:
 
 ## The documents
 
-Read in this order for the argument; the last five are the plan.
+Read in this order for the argument; the entries whose *what it is* column starts with **plan** are
+the forward-looking ones — two of them (the auto-farmer and the hook control channel) are written but
+not built, and the third (enemy threats) is built.
 
 | document | what it is | read it when |
 |---|---|---|
@@ -420,6 +422,9 @@ Read in this order for the argument; the last five are the plan.
 | **[HANDOFF-DIRECTED-DODGE.md](../docs/hook/HANDOFF-DIRECTED-DODGE.md)** | **the open task, written for a session with no context**: the dodge takes over movement when it dodges, and the operator wants it to pathfind toward the direction they are walking instead. The defect measured (on 85.5 % of the frames it steered the player was holding a direction, and on 97.8 % of those the goal was the body's own course — mean deflection 47.4°, three-quarters of the moves held at a third of a step), the one field whose meaning has to be verified first, the design in the order to try it, ten traps, the baseline table for all five recordings and the exact commands | you are implementing the next change to the dodge, or you are wondering why the dodge feels like it takes the wheel |
 | **[VERIFICATION.md](../docs/hook/VERIFICATION.md)** | the playbook: five layers from the static gate to the on-the-wire checks, what each can and cannot establish, and the falsification test that must pass before the model may be trusted | you are about to run something live |
 | **[RISKS.md](../docs/hook/RISKS.md)** | the risk register, the verified dodge-vs-escape interaction bug, and an explicit list of what this cannot do | you are deciding whether to start |
+| **[PLAN-ENEMY-THREATS.md](../docs/hook/PLAN-ENEMY-THREATS.md)** | **built** (§8 is the record of what was delivered): enemies enter the dodge's danger field as stationary threats, so the path stops routing across a mob. `EnemyReader` fills `DodgeSnapshot.Bodies` from `World.GetEnemies()` (rule 7 stopped being vacuous), the body radius is the only radius that may refuse a candidate, and the emitter pad is a cost with its score weight shipping at 0. `SolverHarness` grew `body` / `bodyclose` / `bodyfence` | you are doing the smallest useful dodge change, or you are starting the farmer (the enemy-body rule is what gives the farmer its arrival behaviour) |
+| **[PLAN-AUTOFARM.md](../docs/hook/PLAN-AUTOFARM.md)** | **plan, not built**: the auto-farmer — walking to the closest enemy (a point goal for the existing path planner), the lobby state machine and portal entry (`GmActivateObject`, not the dead `EnterPortal`), the recorded route with bounded smooth deviation, and the dungeon whitelist with clear-and-advance. §3 records why firing is **not** hook work at all (auto-fire is a client input option and auto-aim is already built); §6 is the operator's data-collection checklist; §10 is the build order and §10.1 what may run in parallel | you are building the farmer, or you want to know exactly which of it is blocked on live data |
+| **[PLAN-HOOK-CONTROL.md](../docs/bridge/PLAN-HOOK-CONTROL.md)** | **plan, not built**: live toggles from the dashboard and starting the hook from the relay. The transport is the **existing `shared.block` file** (already mapped by three processes and already read on the native frame path) with a new control region, not the pagefile section `JAVA-BRIDGE.md` proposed — that one was tried and replaced by a file. Plus `--config <path>`, the launch button, and the elevation ordering problem | you are building items 3a/3b, or you are about to add any new setting and want to know whether it can be live |
 
 Supporting evidence lives in [`il/`](il) (the IL dump of the exact build), and the tools that produced
 every number are in [`tools/`](tools) — see below.

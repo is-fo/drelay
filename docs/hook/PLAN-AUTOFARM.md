@@ -1,0 +1,717 @@
+# Plan — the auto-farmer: walk to an enemy, farm a realm, follow a route, clear a dungeon
+
+**Items 2a, 2b, 3c and 3d of the farmer work.** Written 2026-10-17. This is an implementation
+plan, not a record; nothing here is built.
+
+Read with: [`PLAN-ENEMY-THREATS.md`](PLAN-ENEMY-THREATS.md) (item 1, and a prerequisite for the
+arrival behaviour in §4), [`PLAN-HOOK-CONTROL.md`](../bridge/PLAN-HOOK-CONTROL.md) (items 3a/3b —
+the reason the farmer's switches can be changed without relaunching),
+[`DODGE-ALGORITHM.md`](DODGE-ALGORITHM.md), [`HANDOFF-DIRECTED-DODGE.md`](HANDOFF-DIRECTED-DODGE.md)
+(the path), [`AUTOAIM.md`](AUTOAIM.md) (the target selection this builds on).
+
+---
+
+## 0. The shape of the answer, up front
+
+The operator's own note on 2b — *"since you can't run the game, this step might need to be split up,
+where I go and collect coordinates and other data that is needed"* — is correct, and this plan is
+arranged around it. Three findings reorganise the work:
+
+| finding | consequence |
+|---|---|
+| **Firing needs no work at all: the client already ships auto-fire.** `InputOptions.AutoFire` is an in-game input option, and with it on the client holds its own `Shooting` input; `Player.Shoot` then overrides the angle with `AimbotSystem.CalculateAimAngle(...)` whenever `Prefs.enable_aimbot` is set (`Player.cs:2970-2977`) — which the auto-aim module already forces on. | §3. **Nothing to build.** The attack loop is *auto-fire (a client setting) + the existing auto-aim module*, and the hook writes no firing input at all. It is recorded here because an earlier draft of this plan wrongly treated it as a feature. |
+| **A tuned, hazard-aware A\* already exists and is already wired to the actuator's slot** (`PathPlanner.cs`, `DodgeAdapter`'s one-frame `DodgeCommand` slot consumed by `SteeringPilot`). | 2a and 3c are mostly *goal plumbing*, not pathfinding work. §4 and §7. |
+| **Portal entry is `GmActivateObject` (id 84) and the client's own entry point is `Portal.Activate(0)`; but there is no realm/dungeon/portal *target* field anywhere in the client, and `docs/` does not mention portals at all.** | 2b and 3d are **blocked on measured data**, not on code. §5 and §8, and the collection instrument in §6. |
+
+The bottom line: **§4 and §7 are buildable now; §5 and §8 need one instrumented session of the
+operator's, and that session should be doing §6's collection list. §3 is not work at all.**
+
+---
+
+## 1. What already exists — the asset inventory
+
+| need | what exists | where |
+|---|---|---|
+| enemy list | `World.GetEnemies()` resolved as a raw function pointer, with `Position.X/Y`, `Dead`, `Npc`, `Health`, `MaxHealth`, `Effects` on the element type | `AutoAim.cs:205-244`, used `:529-595` |
+| enemy bodies for the dodge | declared, wired into rule 7, never filled | `DodgeSnapshot.cs:240-245`, `DodgeSolver.cs:2140-2159` |
+| pathfinding | bounded A\* over the client's collision grid with a spacetime danger cost, 8-connected with the diagonal rule, buffers preallocated, `WallCrossings` self-check | `PathPlanner.cs` entire |
+| path → a preference | `DodgeSolver` scores each admissible candidate by alignment with the planner's waypoint | `DodgeSolver.cs:2973-2982` |
+| movement actuation | three writes at the movement integrator's entry: `GameInput.MoveAngle.Radians`, `.Moving`, `.MoveSpeed`, with `WorldRotation` compensation | `SteeringPilot.cs:951-1000`, `:762-818` |
+| the decision → actuation slot | `DodgeCommand {None, Move, Stop}` published per frame by the adapter, consumed once by the pilot | `DodgeAdapter.cs:1149-1203`, `SteeringPilot.cs:1137-1147` |
+| firing | **a client input option, not hook work**: `InputOptions.AutoFire` (`DarzasDominion.Data/InputOptions.cs:16`) holds `Shooting`; the client's own path is `GameInput.Shooting` → `Player.Attacking` → `Player.Shoot` → the aimbot angle → the weapon gates, cooldown, animation and outbound shot. The hook does not write it — see §3 | `World.cs:12805`, `:12828`; `Player.cs:2938-2977` |
+| the collision grid | the only `byte[,]` on `World`, resolved structurally, windowed 128×128 around the player | `DodgeAdapter.cs:686-714`, `:1007-1045` |
+| whole-map grid | **not built** — specified | `HANDOFF-DIRECTED-DODGE.md` §5.2 |
+| player position, speed, course | measured every frame | `DodgeAdapter.cs:764-767`, `:1061-1120` |
+| map identity | `World.MapInfo` object, `World.Name`, `World.AssetName`, `World.SafeWorld`, `World.IsSoloRun` | `World.cs:4486`, `:13778-13817` |
+| portals | `World.Activatables` (any `StaticObject`-derived `ActivatableObject`), `Portal` with `Called`, `_dungeonLevel`, `locked`; entry via `Portal.Activate(0)` → `GmActivateObject` | `Portal.cs:22-152`, `ObjectActivator.cs:560`, `World.cs:14605-14608` |
+
+Two absences to name now, because both are load-bearing and neither is a coding problem:
+
+- **No realm id, dungeon id or portal destination exists client-side.** `PortalData` carries only
+  `Locked`, `KeyType`, `LockedMessage` (`hook/work/decomp/DarzaCore.Data.Map.Activatable/PortalData.cs:6-12`).
+  Where a portal leads is decided by the server; the client learns it only from the next
+  `GmReconnect` and the next `GmMapInfo`. A dungeon *whitelist* therefore has to be keyed on what the
+  client can see after the fact (`MapInfo.Name`/`AssetName`) or on the portal's free-text `Title`/`Tag`
+  stats — and which of those is stable is a measurement (§6).
+- **The `WeightProjectedDanger` precedent applies to every new weight here.** This project ships ideas
+  at weight 0 until the offline harness says otherwise (`WeightProjectedDanger`,
+  `SPIKE3.2-OFFLINE-SOLVER.md` §15.9.2). Every number this plan adds is a starting value for the
+  harness, never a live tuning target.
+
+---
+
+## 2. Where the farmer sits in the architecture
+
+The farmer is **not a second controller**. The project has already paid for that lesson: two
+controllers arguing in one frame is a *verified* hazard, not a hypothetical one
+(`RISKS.md` §3d, `IMPLEMENTATION-PLAN.md` Phase 3 precedence).
+
+So the farmer is **a new source of the goal**, and nothing else:
+
+```
+per frame (frame tick, the existing sensor path)
+    EnemyReader.Fill(...)                    <- item 1
+    Farmer.ChooseTarget(...)                 <- NEW: nearest enemy, or the route's next waypoint
+        -> snapshot.Goal { HasPoint, X, Y }   <- NEW: a POINT, where today there is only a ray
+    DodgeAdapter.OnFrame(...) -> DodgeSolver.Decide(snapshot)
+        the same admission rules, the same path planner, the same score
+        the same DodgeCommand slot -> SteeringPilot -> GameInput
+
+and nothing else: the aim is the auto-aim module's, and the fire is the client's own
+auto-fire option (§3).  The farmer moves; it does not shoot.
+```
+
+Consequences that follow from that placement, and they are the whole of the safety argument:
+
+1. **The farmer cannot walk into a bullet**, because the candidate set it steers through is the
+   admissible set, unchanged. §5.3's doctrine holds: a preference can only rank options that passed
+   the boundary.
+2. **The farmer cannot disable the dodge.** It changes a goal; it does not touch admission, the plan
+   walk, the dodge's hysteresis or the escape floor.
+3. **The farmer inherits the dodge's degradation behaviour**: no grid, no threats, degraded sensor —
+   all the existing fallbacks apply, and every one of them ends in "the goal term decides as before"
+   rather than "no move".
+4. **It needs a `StandStops`-aware policy of its own** (§4.3): the farmer wants to stop at the enemy,
+   and the dodge's `stand` verdict is the mechanism, so the two must agree rather than fight.
+
+---
+
+## 3. Firing: already a client setting — no work here
+
+**There is nothing for the hook to build, and the earlier draft of this plan was wrong to call it a
+missing actuator.** The client ships **auto-fire as an input option** (`InputOptions.AutoFire`,
+`DarzasDominion.Data/InputOptions.cs:16`), toggled from the game's own input settings, and with it on
+`DesktopInput` holds `Shooting` true every frame. The rest is already in place:
+
+```
+World.hehe_EB2C_E5A5_EE82_E9C5_EF68(logicDt, frameDt)     // the movement integrator
+  :12805   Player.Attacking = GameInput.Shooting && !Player.KnockedUp
+  :12813   if (Player.Attacking && !Player.SpiritMode)
+  :12828       Player.Shoot(GameInput.ShootAngle.AddRadians(-WorldRotation).Radians, ClientTime)
+
+Player.Shoot (Player.cs:2938)
+  :2970   if (Prefs.enable_aimbot)                     // AutoAim already forces this on
+  :2975       angle = AimbotSystem.CalculateAimAngle(this, GetCurrentTarget(), equipmentData)
+```
+
+So the complete attack loop is **auto-fire (a client setting) + the auto-aim module (already built)**:
+auto-aim chooses the target, the client's own `Player.Shoot` overrides the passing angle with
+`CalculateAimAngle` — the client's own leading, wand and curve math — and the weapon gates, cooldown,
+animation and outbound shot are all the client's. The hook writes nothing.
+
+Three consequences for the rest of this plan:
+
+1. **The hook must not write firing input.** Adding a `Shooting` write would duplicate a client setting
+   that already does the job and would take a switch away from the player for no capability. The hook's
+   only contribution is the aim, and that is `AUTOAIM.md`'s module, unchanged.
+2. **Auto-fire is an operator-facing prerequisite**, on the same footing as `--autoaim`: the farmer
+   README and the run checklist say *turn auto-fire on* (`PLAN-HOOK-CONTROL.md` can surface the state
+   as a diagnostic, but it is not a toggle the hook owns). A farmer that walks to a mob and does not
+   shoot is now a one-line diagnosis rather than a code hunt.
+3. **Laser and sweep weapons still take their branch before the aimbot override** (`Player.cs:2960`,
+   `:2965`), so for those the shot goes along the mouse angle and auto-aim does not steer it. That is a
+   property of the client and not something this plan changes; **ship projectile weapons first and name
+   the laser/sweep case as a limitation.**
+
+Nothing else in this document depends on this section; it is here so that the next reader does not
+re-derive it.
+
+---
+
+## 4. 2a — walk to the closest enemy
+
+### 4.1 Design: a point goal, and the smallest possible change
+
+Today the solver's goal is a **ray** (`GoalSource.PlayerIntent` / `Course` / `Intent`,
+`DodgeSolver.cs:843-863`) and `PathPlanner.BeginFrame` derives its target cell from that ray
+(`PathPlanner.cs:724-746`). For the farmer the goal is a **point** — the enemy.
+
+The smallest change that produces the walk:
+
+1. **`DodgeSnapshot` gains a goal point**: `bool GoalHasPoint; float GoalX, GoalY;` — a *point*, not a
+   second ray, because "walk to that enemy" and "keep walking the way you are facing" are different
+   questions and the ray form cannot express arrival.
+2. **`GoalSource.GameplayTarget = 3`** — a new member, so the report can tell "the goal is the
+   farmer's target" from "the goal is the player's hands" (the same instrument argument
+   `GoalSource` was created for, `DodgeSolver.cs:185-215`).
+3. **`DodgeSolver` resolves the point goal ahead of the existing ladder** when `config.FarmMode` is
+   set and the snapshot carries a point. The *rest of the frame is untouched*: the path planner
+   still runs once per frame, the candidate ring is unchanged, admission is unchanged.
+4. **`PathPlanner.BeginFrame`**: when a point goal is present and the point is inside the grid
+   window, use the point's cell as the target (clamped to walkable, and refused with `NoTarget` if
+   it is a wall — the existing honest degradation). When it is outside the window, **keep today's
+   behaviour**: the target is the furthest cell along the direction to it. That is a two-line change
+   and it is what makes the first version work for an enemy 60 units away (inside the 128×128 window)
+   *and* for one across the map (outside it).
+5. **Arrival is free once item 1 lands.** `PLAN-ENEMY-THREATS.md` fills `DodgeSnapshot.Bodies` and
+   rule 7 refuses candidates *into* an enemy body. So the character walks up to the mob and stops at
+   its edge, because the only admissible candidates are outside the disc — **the arrival behaviour
+   falls out of the safety rule rather than needing one of its own.** This is the ordering argument
+   for doing item 1 first.
+
+### 4.2 Which enemy to walk to
+
+Reuse `AutoAim`'s selection rule and, crucially, its **scope**: the same `World.GetEnemies()`, the
+same `Dead`/`Npc` filters, the same weapon range. But **do not reach into `AutoAim`'s state** — a
+second consumer of that module would make the auto-aim mode a switch that changes the farmer. Factor
+the enumeration into the `EnemyReader` of `PLAN-ENEMY-THREATS.md` §4.1 and have both modules read it,
+keeping each module's own *filter* (auto-aim excludes what it cannot damage; the farmer excludes what
+it cannot reach or does not want to fight):
+
+```
+target = the enemy minimising (distance to player)
+         subject to: not Dead, not Npc,
+                     distance <= FarmEngageRadius          (default: the weapon range,
+                                                            from the same client call AutoAim uses)
+         with a stickiness rule: keep the current target while it is alive and in range,
+         and switch only when a different enemy is closer by FarmSwitchMargin (decided below)
+```
+
+**The stickiness rule is not a nicety.** Tab-target thrash between two equidistant mobs is the
+classic farmer defect: the character oscillates between two goals and reaches neither. The rule is
+the same shape as the solver's existing heading hysteresis (`Hysteresis.Keep`/`Take`,
+`DODGE-ALGORITHM.md` §5.7) and belongs in the same family — a hold with a margin, plus a *forced*
+release when the held target dies or leaves range, and a counter for both.
+
+### 4.3 Making the farmer's goal beat `stand`
+
+The farmer's most common state is "no bullets in the air", which is exactly the frame the dodge
+answers `StandSafe` on — and with `StandStops` true that **stops the character**
+(`HANDOFF-DIRECTED-DODGE.md` §3.1, measured at 18–31 % of walking frames). A farmer that stands still
+whenever nothing is shooting at it farms nothing.
+
+The policy, and it must not weaken the existing fix:
+
+- in farm mode, `stand` is admitted only if the character is **already within weapon range of its
+  target**; otherwise the durability test keeps its full force and the goal term decides, which is
+  what makes the character close the distance;
+- the `StandSafe`-vs-walking-player work of `SPIKE3.2-OFFLINE-SOLVER.md` §15.14 is **not** touched:
+  this is a farm-mode condition on the *same* test, reported in its own counter
+  (`stand held for range`), so a regression in the operator's original fix is visible as a nonzero
+  count on a non-farm run — i.e. never.
+
+### 4.4 Tests
+
+| # | check | how |
+|---|---|---|
+| W1 | the goal comes from the enemy | `--decisions` gains `goalsrc=farm` and the target's id/distance; the offline harness's `GoalSource` split must show it |
+| W2 | the path avoids scenery on the way | a `farmer` synthetic scenario: player at A, enemy at B, a wall between; assert the path length exceeds the straight line and `WallCrossings == 0` |
+| W3 | arrival is stable | a scenario with the enemy at 3 units: assert the character does not oscillate (heading-change rate below the existing stutter threshold) and that rule 7 is what stops it, not a `NoAdmissible` frame |
+| W4 | no target → no change | with no enemies, the decision is byte-identical to the non-farm run (T9's doctrine) |
+| W5 | the dodge still wins | a scenario with an enemy to walk to *and* a bullet arriving: the emitted move avoids the bullet even though it is not the one the goal prefers — the ordering proof that the farmer is a preference |
+| W6 | the safety invariants hold | T5/T6/T10 across all five recordings and all scenarios, with farm mode on and off |
+
+---
+
+## 5. 2b — the auto-farmer, and the lobby
+
+### 5.1 The state machine
+
+The farmer is a small, explicit state machine with an operator-readable current state in the
+dashboard and the log. Every transition is a measured fact, not an inference:
+
+```
+IDLE            -> nothing enabled
+IN_LOBBY        World.SafeWorld && no target available        (the Nexus/"The Tavern")
+WALK_TO_PORTAL  a portal object is chosen and being approached
+ENTER_PORTAL    Portal.Activate(0) issued; waiting for the world to change
+IN_REALM        world changed, not a whitelisted dungeon      (farming)
+IN_DUNGEON      world changed and the map matched the whitelist
+FIGHT           a target is selected; approach it (auto-fire and auto-aim do the shooting)
+TRAVEL          no target in radius; follow the route / the goal
+DEAD/ESCAPED    PlayerDead, or an escape was taken -> back to IN_LOBBY
+```
+
+**World-change detection is the pivot of the whole machine**, and it must be an identity, not a
+guess. `HANDOFF-DIRECTED-DODGE.md` §5.2 names the candidates (the `byte[,]` reference changing, the
+`MapInfo` object reference changing, `Width`/`Height` changing, `Tilemap`'s reference) and says
+explicitly: *"This has to be measured, not assumed."* Same rule here. The plan's recommendation:
+**`MapInfo` object-reference change is the primary signal, `MapInfo.Name` change is the
+confirmation, and `SafeWorld` is the lobby bit** — three independent facts, each logged, so a
+transition that fires on the wrong one is visible rather than mysterious.
+
+`World.SafeWorld` is the client's own lobby test (`World.cs:13797`,
+`SafeWorld = Utils.SafeWorld(Name)`), so the farmer does not need to know the map-name literals to
+know it is in a safe area. That is the one piece of lobby detection that needs no new data.
+
+### 5.2 Lobby navigation
+
+The operator's description: *"on escape or start, the player is put into the lobby, if they walk down
+a bit they see (usually two) portals they can enter."* So:
+
+1. **Find the portals.** `World.Activatables` holds every `StaticObject`-derived `ActivatableObject`
+   (`World.cs:14605-14608`), and a portal is a `Portal`. Resolve the list the same way the sensor
+   resolves its own containers (`SensorRead`'s `IDictionary` / `IList` walks are the working
+   precedent, `SensorRead.cs:327-349`, `:387-414`), filter by the portal type, and read each one's
+   `GameId`, `Position` and the three portal stats that matter (`Title` 105, `Tag` 25, `Locked` 51 —
+   `Portal.cs:203-275`).
+2. **Choose one.** With no target identifier available (§1), the choice is by *position* and by
+   *rank*, not by destination: the closest portal, or the operator's own rule (e.g. "the second
+   portal from the left"), or a title/tag substring the operator supplies. Every choice is logged
+   with the portal's title so a session's log says which one was used.
+3. **Walk to it** — the §4 walk, with the portal's position as the goal point and the *same* path
+   planner, so the walk down the lobby and around its scenery needs no new code.
+4. **Enter it.** Three options, in order of preference:
+   - **(preferred) call the client's own entry point**: resolve `Portal.Activate(int)` and invoke it
+     on the chosen object with `0`, from the frame tick. This is the `World.RequestEscape()`
+     doctrine — call the function the input handler calls, not a reimplementation of its gate
+     (`DODGE-ALGORITHM.md` §7.4) — and because the object is a live game object, the invocation
+     route is the one `AutoAim`/`EscapeTest` already use for managed calls
+     (`AutoAim.cs:310-315`, `EscapeTest.cs:162`). It runs the client's own locked/cooldown gates.
+   - **fallback: write `GameInput.Activate`** and let `ObjectActivator`'s portal branch run
+     (`ObjectActivator.cs:560`, `:576-602`). Cheaper to write but **the frame ordering is
+     unverified** — `DesktopInput` sets the field from a key each frame (`DesktopInput.cs:650`) and
+     `ObjectActivator` clears it after use, so *when* the write must happen is a measurement, not an
+     assumption. Do not start here.
+   - **fallback for a bridged setup: inject `GmActivateObject` (id 84) from the relay.** The id, the
+     field order (`ObjectId` varint, `Value` string32, `Position` 2×f32, `Time` int32 — the **Write**
+     order, which is the authoritative one; `Read` disagrees) and the state gate
+     (`Session.injectionReady()`) all exist, and the relay is already the only writer of the socket.
+     What the relay needs is the portal's `GameId`, which is a value the bridge can carry
+     (`PLAN-HOOK-CONTROL.md`). Recorded as the option that removes a second caller of a client
+     method; **not** the first choice, because the in-process call is strictly better informed.
+
+   **`EnterPortal` (id 73) must not be sent.** It is a dead enum slot with no implementing class
+   (`proxy/work/report-loot.md:368-375`) — a finding that exists in no `docs/` file and is exactly
+   the kind of thing a plan has to say out loud.
+
+5. **Confirm.** The world change is the ack. A timeout with no world change means the portal was
+   locked, the walk failed, or the click did not land; the farmer returns to `IN_LOBBY`, logs the
+   reason, and retries with the next portal, with a bounded retry count.
+
+### 5.3 Farming a realm
+
+With §4 in place and auto-fire on, farming is:
+
+```
+repeat:
+    target = nearest enemy within FarmEngageRadius        (§4.2, sticky)
+    if target: walk at it while the client's auto-fire and the auto-aim module do the shooting
+    else:      travel — the operator's start position first, then the route (§7) or a sweep
+    bound every loop with: a per-loop time budget, a maximum death/nexus count,
+                           and a check that `PlayerDead`/`SafeWorld` has not changed the state
+```
+
+The farmer's whole job is *where to walk*. It never fires, never aims and never touches a weapon —
+§3 is the reason, and it is also why the loop above has no attack step in it.
+
+The operator's own observation — *"the bottom part of the map is probably the best place to start
+farming"* — is a **route or a target point**, not a policy: after entering a realm, the first travel
+goal is a coordinate at the bottom of the map (§6 collects it), and from there §7's route takes over.
+Making it a coordinate rather than a "walk south" heuristic is what lets the same code serve 3c
+without a second notion of "where to go".
+
+**Health, death and escape are deliberately not the farmer's business.** The dodge's escape floor is
+gate 6 of the dodge's own decision and stays authoritative (`DODGE-ALGORITHM.md` §7); a farmer that
+added its own nexus threshold would be the second controller this plan exists to avoid. What the
+farmer *must* do is **observe** the death/nexus and return the machine to `IN_LOBBY`, which is the
+one place it needs to be robust: a farmer that does not notice a death farms a corpse.
+
+### 5.4 What 2b cannot be until §6's data exists
+
+- which portal to pick (no destination identifier);
+- the lobby's walk coordinates and the map's bottom region;
+- whether a realm contains portals (needed for 3d's entry from a realm);
+- whether `MapInfo.Name` is stable enough to key a whitelist on.
+
+All four are data, not code.
+
+---
+
+## 6. The collection session — what the operator can gather, and the instrument that gathers it
+
+This is the deliverable the operator offered, and it should be **mechanical**: the hook logs
+everything into one file and the operator only has to walk around.
+
+### 6.1 The instrument: `--world-log`
+
+A new diagnostic mode, off by default, that writes `worlds.jsonl` into the run directory. It is
+*evidence*, on the evidence path, never on the decision path — the same discipline as `TraceRecorder`
+(which is the shape to copy: `TraceRecorder.cs`, `Resolve` + `OnFrame`, its own switch, no cost when
+off).
+
+One line per **world change** and one line per N frames, carrying:
+
+```
+frame, World.ClientTime,
+map:      MapInfo.Name, AssetName, Width, Height, PlayerId, Difficulty, IsSoloRun,
+          OpenedByKey, CanTeleport, Levels,
+world:    SafeWorld, VaultWorld, Space, PlayerDead, worldEntryCount,
+player:   x, y, Radius, Health, MaxHealth, SpeedPerSecond,
+portals:  [ { gameId, x, y, title(105), tag(25), locked(51), called(269) } ],   // Activatables
+enemies:  count, and the 8 nearest [ { gameId, x, y, health, maxHealth, npc } ],
+grid:     whether the collision byte[,] resolved, its GetLength(0), GetLength(1)
+```
+
+and, on a world change only, a `transition` line naming **which signal fired** (MapInfo reference,
+name change, SafeWorld change, grid reference change) — the §5.1 measurement.
+
+Note the two things this instrument deliberately *does not* read: it does not need the full enemy
+list (the 8 nearest is enough to name a boss later) and it does not decode the map. **The map data is
+the collision grid the hook already resolves**; if the whole map is needed, that is §7's full-grid
+mirror and it should be built then, not now.
+
+### 6.2 The operator's checklist
+
+Each line is a thing to walk to and note; the hook's log is the data and the operator's notes are the
+labels. **The labels are the part that cannot be automated**, so they matter more than the
+coordinates.
+
+1. **Lobby (Nexus / "The Tavern").** Stand still; then walk to each portal and stand next to it.
+   Note: how many portals, and which one the operator would pick for a realm (left/right, near/far),
+   and what each portal's on-screen label says.
+2. **The lobby walk.** Walk the intended route from spawn to the chosen portal, at normal pace, once.
+3. **Enter a realm.** Note which portal was used.
+4. **In the realm.** Walk to the bottom of the map along the intended farming route, and note: where
+   the enemies are densest, whether there are portals in the realm, whether the realm has a
+   discernible bottom edge, and where the character spawns on entry.
+5. **Farm for a few minutes.** Move between packs; the goal is to log enemy positions and confirm the
+   course of the intended route.
+6. **Leave / die / nexus.** Note how the character got back to the lobby (nexus key, death, portal,
+   or a timeout) — the return path is as important as the outbound one.
+7. **A dungeon, if the operator wants 3d started.** Enter one specific, easy, whitelistable dungeon;
+   walk to the boss; kill it; note **how the exit works** (a portal that appears, a walk back, a
+   `GmReconnect` back to the lobby) and what the on-screen name of the dungeon is. Repeat for a
+   second dungeon so the whitelist has two entries rather than one.
+
+What the result buys, concretely: the lobby route for §5.2, the realm farming route for §7, the
+dungeon names and exit mechanism for §8, and the map-identity measurement §5.1 needs to be safe.
+
+---
+
+## 7. 3c — a recorded route, replayed with deviation and obstacle avoidance
+
+The operator's specification, restated: *record a path, convert it to a coordinate list that can be
+repeated, capture the general shape rather than the exact path, add deviation so it looks natural,
+and pathfind around anything blocking it.*
+
+Every one of those clauses has an existing mechanism, which is why this item is mostly assembly:
+
+### 7.1 Record
+
+A `RouteRecorder` alongside `TraceRecorder`, switch `DRELAY_ROUTE_RECORD=<name>`:
+
+- samples the player's position — which is **already measured every frame** for the course
+  (`DodgeAdapter.UpdateSpeed`, `:1061-1120`) — at a fixed **time** step (default 10 Hz) *and* with a
+  **minimum distance** filter (default 1.0 unit). The distance filter is what keeps a stationary
+  player from filling the file;
+- writes `%LOCALAPPDATA%\drelay\hook\routes\<name>.json`: `{ name, map: {name, assetName, width,
+  height}, recordedFrom, points: [ {x, y, ms} ] }`. The map block is the route's **validity
+  condition**: a route recorded in one realm is not replayed in another, and replaying it into a
+  different map is a bug, not a fallback. If the map block does not match, the route is refused by
+  name — the same "refuse and name it" discipline as the fingerprint gate.
+
+### 7.2 Convert to the general shape
+
+Two passes, both standard and both cheap, and both performed **at record time** so the file is the
+route:
+
+1. **Douglas–Peucker simplification**, tolerance default 1.5 units — this is literally "the general
+   shape, not the exact path". A hand-drawn curve through an open room becomes three points.
+2. **Resample to a minimum waypoint spacing** (default 3 units) so the follower has a fixed step to
+   count on, and **snap each waypoint to the nearest walkable cell** using the client's own grid. A
+   waypoint that lands in a wall (because the recorder sampled mid-corner) is pulled out along the
+   direction of travel rather than left to trap the follower.
+
+### 7.3 Replay with deviation
+
+```
+RouteFollower, per frame:
+    if reached(waypoint[i], RadiusReached = 1.0):
+        i = (i + 1) % count
+    goal = waypoint[i] + deviation(i, lap)
+    publish goal point                       (§4's snapshot goal)
+```
+
+`deviation` is what makes it natural, and its properties are the design:
+
+- **bounded** — magnitude ≤ `RouteDeviationUnits` (default 1.0 unit, ≤ 1/3 of the resample spacing,
+  so the deviation can never make the follower skip a waypoint);
+- **smooth in time**, not per frame — a slow noise function of `(i, lap, clock)` (a low-frequency sum
+  of two sines with a per-lap random phase is enough and allocates nothing), so the character drifts
+  rather than jitters. Per-frame random offsets would *add* stutter to a follower whose whole point
+  is to look unhurried, and the project has already measured what angle jitter costs
+  (`SPIKE3.2-OFFLINE-SOLVER.md` §13.2);
+- **re-drawn per lap** with a lap seed, so the second lap is not the first;
+- **snapped to walkable**, same as the waypoints, so a deviation cannot push the goal into a wall.
+
+### 7.4 Obstacle avoidance is not new work
+
+The follower's goal is a **point**, so it goes through §4.1's path planner: A\* on the client's own
+collision grid, 8-connected with the diagonal rule, danger-aware, with `WallCrossings` asserted 0.
+A building, a wall or a piece of terrain between the player and the next waypoint is a path around it
+— that is the existing `corridor` scenario's job and it is already green.
+
+Two honest limits, named rather than hidden:
+
+- the planner searches the **128×128 window** centred on the player (`GridRadius = 64`,
+  `DodgeAdapter.cs:189`). A waypoint further than ~60 units away is outside it, and the current
+  behaviour is the "furthest cell along the direction to the goal" fallback — which for a route is
+  *correct*, because the next waypoint is by construction ~3 units away. The limit only bites if a
+  route is recorded with enormous spacing, which the resampler prevents;
+- a route is a *preference path*, so it is followed through the same admissible candidate set as
+  everything else. **A route that walks through a bullet is not followed into the bullet** — the
+  dodge's admission rules still refuse the step, the character deviates around the threat, and
+  returns to the route. That is the desired behaviour and it is also why the route must never be
+  allowed to become an admission filter.
+
+### 7.5 Instruments and tests
+
+| # | check | how |
+|---|---|---|
+| R1 | the recorder writes a route whose shape is the walk | count points before/after simplification on a synthetic walk; assert the file's point count is below the raw sample count and the path's Hausdorff distance to the raw walk is within the tolerance |
+| R2 | a route replayed in a different map is refused by name | a unit test on the validity check |
+| R3 | the follower reaches the end | a synthetic map: waypoints across a room with one wall; assert the follower's goal visits every waypoint in order and the path never crosses the wall |
+| R4 | deviation is bounded and smooth | assert `abs(deviation) <= RouteDeviationUnits` for every (i, lap) over 10 000 samples, and that the second difference stays under a threshold (smoothness is a measurable property, not an impression) |
+| R5 | a real recorded route is reproducible | `--decisions` on a route replay, twice with the same lap seed → identical goals; different seeds → different but bounded goals |
+
+---
+
+## 8. 3d — the dungeon auto-solver, and its whitelist
+
+The operator's question: *"can the dungeon map be parsed and the auto-farmer pathfinds to boss, kills
+it and then exits the dungeon? this should have a whitelist on what dungeons to enter."*
+
+The honest answer, in four parts, in the order they must be built:
+
+### 8.1 The whole-map grid (prerequisite, and it is already specified)
+
+`HANDOFF-DIRECTED-DODGE.md` §5.2 is the specification and it is unchanged by this plan: the full
+`World.<byte[,]>` is `new byte[MapInfo.Width, MapInfo.Height]` (`World.cs:14217`), it is the same
+array rule 2 already tests against, and it must be **mirrored once per map** into a managed array
+(never read per frame), with:
+
+- a **map identity** to invalidate it — §5.1's measurement, and the same three candidate signals;
+- a **size guard** — `MapInfo.Width`/`Height` come off the wire as varints, so a corrupt or hostile
+  value must degrade to "no grid" rather than allocate a gigabyte. This is not hypothetical: it is
+  the same class of defect as §3.9/§3.11 of the spike, where an identity taken for granted cost a
+  session;
+- the snapshot carries a **pointer**, not a copy (the existing no-allocation-on-the-frame-path rule).
+
+This is also the item that makes the *realm* walk work over long distances, so it is worth building
+before 3c's route is used at scale.
+
+### 8.2 Dungeon identity and the whitelist
+
+There is no dungeon id (§1). So the whitelist has to be keyed on what the client can see, and the
+plan is explicit about which and why:
+
+| key | available | verdict |
+|---|---|---|
+| `MapInfo.Name` / `AssetName` | yes, on the `MapInfo` of the dungeon itself (`World.cs:13805`, `:13813`) | **primary.** It identifies the dungeon *after* entry, which is enough to decide whether to *stay* and to key per-dungeon behaviour. |
+| portal `Title` (stat 105) / `Tag` (25) | yes, *before* entry (`Portal.cs:203-275`) | **secondary, and possibly the entry gate.** If §6 shows the title carries a stable dungeon name, the whitelist can gate entry without entering. If it does not, entry gating is impossible and the farmer must enter and leave — which must then be cheap and safe. |
+| `MapInfo.Difficulty` | yes (a byte) | difficulty, not identity. Useful as a *condition* on a whitelisted name. |
+| `GmReconnect` host:port | on the wire, via the relay | correlates the transition but names no dungeon. |
+
+So: **the whitelist is a list of map names** (from §6), with a per-entry `Difficulty` bound and a
+per-entry note (e.g. "has an exit portal", "boss is X"). An unlisted dungeon is never entered, and a
+dungeon entered by mistake is left at once — the whitelist is checked on world entry in both
+directions.
+
+### 8.3 Clear-and-advance, which is 90 % of the value and needs no boss knowledge
+
+"Find the boss and kill it" needs a boss identifier, and there is none: `Enemy` has no boss flag,
+`GmSetBossHealthBar` (id 209) is a **UI** packet (`World.cs:22153-22211`), and `EnemyAnnounce` (183)
+has no implementing class. The one client-visible boss signal that might be usable is the boss health
+bar packet, and it is **unverified as a hook-observable event** — the hook does not currently detach
+the packet layer at all.
+
+So the first version does not look for a boss. It does the thing that is robust without one:
+
+```
+IN_DUNGEON:
+    repeat:
+        if an enemy is within FarmEngageRadius: fight it (the §5.3 loop)
+        else: advance -- pathfind toward the next unexplored region:
+                  in order: (1) the recorded dungeon route, if one exists (3c),
+                            (2) the furthest reachable cell from the entrance,
+                            (3) a frontier sweep of the mirrored grid
+        stop when: the boss-bar signal is observed (if it turns out to be observable),
+                   or every reachable cell has been visited,
+                   or the per-dungeon time budget expires
+    then: exit (§8.4)
+```
+
+Point (2) is deliberate: in most dungeons of this shape the boss room is the far side of the map, and
+"walk to the furthest reachable cell, killing everything on the way" reaches it without a boss
+identifier, without a boss table, and without any new data beyond the full grid. It is also
+**strictly honest about its own failure**: if the boss is not at the far end, the run times out and
+says so.
+
+### 8.4 Exiting
+
+Three mechanisms exist and §6 identifies which one a given dungeon uses:
+
+1. **an exit portal** — a `Portal` in `World.Activatables` after the boss dies, entered by §5.2's
+   preferred path (call `Portal.Activate(0)`);
+2. **a walk to a fixed exit** — the route recorder again, with a short second route;
+3. **`World.RequestEscape()`** — the client's own nexus, which in a dungeon is the "leave" action, and
+   which is already resolved and already proven callable (`EscapeTest.cs:162`, `:256-293`). This is
+   the universal fallback and it needs no per-dungeon knowledge at all, which is exactly why the
+   whitelist can start small: **a dungeon the plan cannot finish can still be left.**
+
+### 8.5 Ordering and risk
+
+| step | needs | risk |
+|---|---|---|
+| 8.1 full-grid mirror | nothing but the identity measurement | low — specified, and the identity is already an open measurement |
+| 8.2 whitelist by name | §6's dungeon names | low, but the *entry* gate depends on the title measurement |
+| 8.3 clear-and-advance | 8.1 + §4, with auto-fire on | medium — the frontier sweep is the only genuinely new algorithm, and it is a BFS on a byte grid |
+| 8.4 exit | §5.2's portal path, or `RequestEscape` | low |
+| 8.6 boss-specific behaviour | **does not exist to build** | needs a boss identifier that is not in the client today; the boss health-bar packet is the one lead, and reading it needs a packet-layer observation the hook does not have |
+
+**Recommendation: ship 8.1–8.4 and treat the boss as "whatever is at the far end".** That is the
+version the evidence supports. A true boss-hunting version is a *new research item* (how does a
+process-side observer see `GmSetBossHealthBar`?), not a step in this plan.
+
+---
+
+## 9. Invariants, and the ones most likely to break
+
+The farmer adds preferences, not rules, so the safety invariants should be untouched. The table names
+what to assert, and — more usefully — *which change would break which*.
+
+| invariant | asserted by | what would break it |
+|---|---|---|
+| **T5** `stand` is never rejected while admitted and durably safe | harness, all recordings + scenarios | §4.3's range condition. Assert T5 with farm mode **off** is byte-identical to today, and that farm mode **on** reports its own `stand held for range` counter. |
+| **T6** no emitted move is inside a disc at arrival | harness, on what was *emitted* | any change that lets the goal bypass admission. The farmer must never be in `Admit`. |
+| **T10** hysteresis cannot hold an unsafe heading | harness | the target-stickiness rule (§4.2) if it is implemented as a heading hold rather than a *goal* hold. Keep it a goal hold. |
+| **T9 / mode-1 equivalence** | paired runs | any module that acts without its own switch. **The farmer writes no input except the movement slot the dodge already owns**, which is what keeps this invariant cheap to hold. |
+| **frame budget** 300 µs shared | `decide()` p99 + stage clocks | the full-grid mirror if it is read per frame; the frontier sweep if it is run every frame instead of on demand. |
+| **`WallCrossings == 0`** | `PathStats`, every search | the route's deviation or waypoint snapping silently moving a goal into a wall. Snap, and assert. |
+| **the bridge is not load-bearing** | kill the relay mid-session | any farmer setting that only exists across the bridge. Every farmer mode must have a launch-time default (`PLAN-HOOK-CONTROL.md` §6). |
+
+---
+
+## 10. Order of work
+
+Ordered so that each row is independently testable and only the last two need the game.
+
+| # | item | needs the game? | depends on |
+|---|---|---|---|
+| 1 | item 1 (`PLAN-ENEMY-THREATS.md`): fill `Bodies`, fold the emitter into the danger field | no | — |
+| 2 | §4 2a: the point goal, the target selection with stickiness, the `stand` range condition, W1–W6 offline | no | 1 |
+| 3 | §6 the `--world-log` instrument | no to build, **yes to use** | 1 (it reuses `EnemyReader` for the enemy lines; the portal and map lines are independent) |
+| 4 | **the operator's collection session** (§6.2) | **yes** | 3 |
+| 5 | §5 2b: the state machine, the portal path, lobby navigation, using §6's data | yes, to confirm | 2, 4 |
+| 6 | §7 3c: the recorder, the simplifier, the follower, the deviation | no to build | 2 |
+| 7 | §8.1 the full-grid mirror | identity measurement from §6 | 4 |
+| 8 | §8.2–8.4 the dungeon whitelist, clear-and-advance, exit | yes | 5, 6, 7 |
+| 9 | §8.6 boss-specific behaviour | **blocked on research, not on this plan** | — |
+| — | §3 firing | **not a work item** — auto-fire is an in-game input option | — |
+
+Rows 1–2 are the first deliverable and they are entirely offline: **a character that walks at the
+nearest mob and stops at its edge, while the client's own auto-fire and the existing auto-aim module do
+the shooting — and it still dodges.** Nothing in it needs the game, and it is the thing to build, run
+in the harness, and then play once, because it is also the thing that shows whether the farmer's
+premise — walk, let the client shoot, dodge — actually works at all.
+
+### 10.1 What may run in parallel, and what may not
+
+These plans can be worked in separate worktrees, but **not all of them at once**, and the binding
+constraint is not the code. Three things decide it:
+
+**(a) File ownership.** The plans overlap in five places, and each overlap is a place two branches
+would have to agree on semantics rather than merely resolve a hunk:
+
+| shared file | claimed by | note |
+|---|---|---|
+| `DodgeSolver.cs`, `PathPlanner.cs`, `DodgeSnapshot.cs`, `DodgeAdapter.cs` | item 1, 2a, 3d, 3a | the solver's goal/admission region and the planner's envelope. **Item 1 and 2a are the same region** and must be sequential — 2a is written against item 1's rule 7. |
+| `StartupHook.cs` (the frame path) | 2a, 2b, 3a, `--world-log` | one-line call sites each, but four branches editing the same method. Merge order matters more than the conflicts. |
+| `native/DrelayHookShared.h` + `GeneratedSharedLayout.cs` | **3a only** | generated file; a second branch touching the header would collide in regenerated code. Keep it in one worktree. |
+| the launcher's `CommandLine.cs`/`Settings.cs`/`ConfigFile.cs`/`EnvironmentBlock.cs` | 3b (`--config`), the farmer's own switches | small, and the only branch that touches them is the one adding the launch surface. |
+| the relay's `WebDashboard.java`/`DashboardPage.java` | 3a **and** 3b | the dashboard's hook panel. Keep 3a and 3b in one worktree, or do 3b after 3a. |
+
+**Nothing on the hook side is edited by two of these plans at once except `StartupHook.cs`, and there
+each edit is a single call site.** That is a consequence of §3 not being work: with the hook writing no
+new input, `SteeringPilot.cs` is untouched by this whole plan and the farmer is confined to a new
+`Farmer.cs` plus call sites.
+
+So the safe maximum is **two concurrent worktrees**, or three if the third is confined to new files:
+
+1. **the solver/farmer chain** — item 1 → 2a → 2b / 3c / 3d. Sequential in that order; item 1 and 2a are
+   the same region and 2a is written against 1's rule 7.
+2. **the control channel** — 3a → 3b. Disjoint from (1) except for one call site in `StartupHook.cs`
+   and (3a's) `DodgeAdapter.cs` line. It owns the generated layout, which is why it must not share a
+   worktree with a header change from elsewhere.
+3. *(optional)* **new-file-only work** — `RouteRecorder`/`RouteFollower`/the simplifier and the
+   deviation math (3c's §7.1–7.4), or the `--world-log` instrument, built and unit-tested against
+   synthetic data. Their *integration* needs 2a, so they merge last, but the files are new and conflict
+   with nothing.
+
+**(b) Validation is serial, and it is the real limit.** Two facts make concurrency worth less than it
+looks:
+
+- the harness replays **all five recordings and all six scenarios** after every change, and two
+  branches that both move `DodgeSolver`/`PathPlanner` each shift those numbers, so the merged result
+  needs a full fresh replay regardless of how cleanly it merged;
+- **live verification is one resource.** One game install, one pinned build, one hook in the process,
+  one `Drelay.Launcher.exe`, and the relay cannot be run twice (the address claim is global —
+  `netsh … store=active`). Several of these plans need a live session (2b, 3d) and the operator's
+  collection session is itself a prerequisite for two of them. **Test-time parallelism is the thing to
+  bound, not authoring-time.**
+
+**(c) Two worktree gotchas that will cost an afternoon each if they are not known.** Both artefacts
+the work needs are *gitignored*, so a fresh worktree has neither:
+
+| artefact | where | workaround |
+|---|---|---|
+| the IL dump, `hook/il/client-5.8.2.il` (~85 MB) | ignored (`hook/.gitignore:30`, only `.gitkeep` is tracked) | `il_index.py` and `check_opcode_table.py` both hard-fail without it; both accept `--il-dump <path>`, so point them at the main checkout, or junction `hook/il` |
+| the decompiled client, `hook/work/decomp` (1916 files, 69 MB) | ignored (`hook/.gitignore:36`) | every one of these plans reads it. Junction it (`New-Item -ItemType Junction`), do not copy it |
+| the default run root `%LOCALAPPDATA%\drelay\hook` and `drelay.config.json` | **shared by every worktree** | give each worktree its own `--runroot` while testing, or 3a's block discovery (which picks the newest directory) will attach to the other worktree's run |
+
+**Recommendation.** Start **two** worktrees: the solver/farmer chain and the control channel. Do the
+`--world-log` instrument early inside the first one, because the operator's collection session is on the
+critical path for 2b and 3d and is the only piece of this work that is not code — it can run while the
+code work continues. Add a third worktree only for the new-file-only items, and only if the
+rebuild-and-replay cost is acceptable.
+
+**And there is a genuinely free head start.** With auto-fire on and `--autoaim closest`, the operator
+can farm *today* — walking manually and letting the client shoot — which is worth doing before any of
+this is built: it establishes whether walking-at-the-nearest-mob is even the right farming behaviour,
+at zero cost and with no code.
+
+---
+
+## 11. What this plan does not establish
+
+- **What has *not* been tested is a client that walks itself while firing.** Neither half is new —
+  the dodge's steering is measured server-accepted with no `GmKicked` ever observed, and auto-fire is
+  the operator's own setting — but the *combination* is a session nobody has run, and the run
+  checklist's live check is exactly that: auto-fire on, the farmer walking, the relay watching for a
+  kick. The relay is the witness, and it is a log read.
+- **Auto-fire is a prerequisite the plan cannot assert.** It is a client input option (§3); if it is
+  off, the farmer walks to mobs and nothing happens, which is a one-line diagnosis and not a bug to
+  chase.
+- **No anti-detection claim of any kind is made.** The project's stated position is unchanged: the
+  traffic shape is what a player could produce with a keyboard and a mouse, the relay and the hook
+  are documented, and use is at the operator's own risk (`README.md` disclaimer).
+- **No realm/dungeon topology is asserted.** §1's absences are exactly that: `docs/` never mentions
+  portals, no target identifier exists client-side, and §6's session is how that changes.
+- **No boss-identification mechanism is specified**, because none was found. §8.6 says so and names
+  the one lead.
+- **Nothing here is measured yet.** Every number in this plan (`FarmEngageRadius`,
+  `FarmSwitchMargin`, `RouteDeviationUnits`, the resample spacing, the simplification tolerance) is a
+  starting value for the offline harness, and none of them may be tuned in a live run — the project's
+  own rule, applied since Phase 3 (`IMPLEMENTATION-PLAN.md` Phase 3, "Spike 3.2 — the solver,
+  offline").

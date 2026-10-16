@@ -53,9 +53,12 @@
 //    that started casting nexus on its own would be a much worse surprise than a gate that does not
 //    fire. `UnavoidableThreats` IS computed and logged, so the gate's input is visible.
 //
-// 2. **RULE 7 (ENEMY BODIES) IS VACUOUS.** `DodgeSnapshot.Bodies` is left empty -- "empty is
-//    legal", says the type -- because no accessor for the live entity list has been resolved. The
-//    counter `bodies=0` in every report is the honest mark of it.
+// 2. **RULE 7 (ENEMY BODIES) IS FILLED, AND IT IS THE ONLY THING THIS FILE HAD TO ADD FOR IT.**
+//    `DodgeSnapshot.Bodies` used to be left empty -- "empty is legal", says the type -- because no
+//    accessor for the live entity list had been resolved, and the `bodies=0` in every report was
+//    the honest mark of it. `EnemyReader` resolves `World.GetEnemies()` and `Fill` is called
+//    immediately after `FillThreats`; rule 7 has been non-vacuous since. The body list is one call
+//    and the emitter pad reaches the planner through the snapshot, so there is no second path here.
 //
 // 3. **THE PLAYER'S SPEED IS MEASURED, NOT DERIVED FROM THE LAW.** `PlayerFunctions.TilesPerSecond`
 //    takes eight arguments that include a tile type, a `PlayerStat` value, two effect tiers and four
@@ -312,6 +315,12 @@ namespace Drelay.Bootstrap
         private static long _framesHeld;
         private static long _threatsConsidered;
         private static long _threatsCulledByCap;
+
+        /// <summary>Enemy bodies in the snapshot, summed over the run. See the report's `bodies` column.</summary>
+        private static long _bodiesSeen;
+
+        /// <summary>Frames whose snapshot carried at least one enemy body -- the denominator of the mean.</summary>
+        private static long _framesWithBodies;
         private static long _candidatesAdmissible;
         private static long _candidatesEvaluated;
         private static long _candidateFrames;
@@ -364,6 +373,13 @@ namespace Drelay.Bootstrap
             Prepare(typeof(DodgeAdapter), "MaybeReport", BindingFlags.NonPublic | BindingFlags.Static);
             Prepare(typeof(DodgeAdapter), "DecisionLine", BindingFlags.NonPublic | BindingFlags.Static);
             Prepare(typeof(DodgeAdapter), "CheckPrecedence", BindingFlags.NonPublic | BindingFlags.Static);
+
+            // THE ENEMY READER IS ON THE FRAME PATH TOO, and for the same reason as everything above:
+            // its first call would otherwise be compiled from inside a patched game frame. Only the
+            // two frame-path methods are named -- `Resolve` and `ResolveWorld` run at arm time.
+            Prepare(typeof(EnemyReader), "Fill", BindingFlags.Public | BindingFlags.Static);
+            Prepare(typeof(EnemyReader), "Describe", BindingFlags.Public | BindingFlags.Static);
+            Prepare(typeof(DodgeSolver), "AnyThreatNearPlayer", BindingFlags.NonPublic | BindingFlags.Instance);
 
             Prepare(typeof(DodgeSolver), "Decide", BindingFlags.Public | BindingFlags.Instance);
             Prepare(typeof(DodgeSolver), "BuildAndAdmit", BindingFlags.NonPublic | BindingFlags.Instance);
@@ -470,6 +486,16 @@ namespace Drelay.Bootstrap
                 _getPlayer = FieldAccessor.Reference(playerField);
                 _getPlayerX = FieldAccessor.NestedFloat(positionField, positionX);
                 _getPlayerY = FieldAccessor.NestedFloat(positionField, positionY);
+
+                // THE ENEMY BODIES, AND THE ONE THING THIS FILE HAS TO DO FOR THEM. `EnemyReader`
+                // owns the whole of the entity list -- what to resolve, what to filter and what to
+                // cull -- and this hands it the two things it cannot find on its own: the assembly,
+                // and the `World.Shared` static it calls `GetEnemies` through. A reader that fails
+                // to resolve is NOT a dodge that fails to arm: rule 7 goes back to being vacuous and
+                // the report says `enemies=unresolved` rather than leaving the count unexplained.
+                EnemyReader.ResolveWorld(sharedField);
+                bool enemies = EnemyReader.Resolve(game);
+                HookEntry.AppendLog(enemies ? "INFO" : "WARN", EnemyReader.Status());
 
                 // The rest are optional and each one degrades a named thing rather than the run.
                 FieldInfo radiusField = FindRadius(playerType);
@@ -833,8 +859,12 @@ namespace Drelay.Bootstrap
 
                 s.Grid = RefreshGrid(world, px, py);
 
-                // Rule 7 is vacuous on the live path; the count in the report is the mark of it.
                 FillThreats(s, liveProjectiles, liveKeys, px, py, radius);
+                // RULE 7'S INPUT, AND IT IS NOT OPTIONAL TO FILL IT. `EnemyReader.Fill` adds this
+                // frame's enemy bodies -- near ones only, dead and NPC ones dropped -- and it does
+                // nothing at all when the reader did not resolve, which is what leaves rule 7 vacuous
+                // on exactly the runs where it cannot be anything else.
+                EnemyReader.Fill(s, _config, px, py, radius);
 
                 long t0 = Stopwatch.GetTimestamp();
                 DodgeDecision d = _solver.Decide(s);
@@ -856,10 +886,10 @@ namespace Drelay.Bootstrap
                 {
                     _firstDecisionLogged = true;
                     HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
-                        "dodge: first decision on frame {0}: {1} over {2} threat(s), "
-                        + "{3} candidate(s), speed {4:0.00} u/s, {5}us",
+                        "dodge: first decision on frame {0}: {1} over {2} threat(s), {3} candidate(s), "
+                        + "speed {4:0.00} u/s, {5} bod(y/ies) in rule 7, {6}us",
                         frame, d.Reason, s.Threats.Count, d.EvaluatedCount,
-                        s.Player.SpeedPerSecond, d.CostMicroseconds));
+                        s.Player.SpeedPerSecond, s.Bodies.Count, d.CostMicroseconds));
                     HookEntry.FlushLog();
                 }
 
@@ -1216,6 +1246,17 @@ namespace Drelay.Bootstrap
 
             DecisionCost.Add(d.CostMicroseconds);
 
+            // THE ENEMY BODIES, COUNTED WHERE THEY WERE USED. `s.Bodies` is the rule-7 input, so
+            // this is the number E1 wants: it reads non-zero exactly when the reader resolved AND
+            // the realm had an enemy inside `EnemyCullRadius`, and it is zero for each of the three
+            // other reasons (empty realm, reader unresolved, feature off) -- which is why the
+            // report prints them together rather than this number alone.
+            _bodiesSeen += s.Bodies.Count;
+            if (s.Bodies.Count > 0)
+            {
+                _framesWithBodies++;
+            }
+
             if (s.Threats.Count > 0)
             {
                 _framesEvaluated++;
@@ -1326,13 +1367,13 @@ namespace Drelay.Bootstrap
             HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
                 "dodge {0} | frame {1} | heading {2:0.0}deg scale {3:0.00} | {4} held {5} | "
                 + "candidates {6}/{7} | durability {8:0}ms clearance {9:0.00} | "
-                + "goal {10:0.0}deg (course {11}) | threats {12} unavoidable {13} | cost {14}us",
+                + "goal {10:0.0}deg (course {11}) | threats {12} bodies {13} unavoidable {14} | cost {15}us",
                 what, frame,
                 d.HeadingRadians * 180.0 / Math.PI, d.SpeedScale, d.Reason,
                 d.Held ? 1 : 0, d.AdmissibleCount, d.EvaluatedCount,
                 d.DurabilitySeconds * 1000.0, d.Clearance,
                 _solver.GoalRadians * 180.0 / Math.PI, s.Player.CourseValid ? 1 : 0,
-                s.Threats.Count, d.UnavoidableThreats,
+                s.Threats.Count, s.Bodies.Count, d.UnavoidableThreats,
                 d.CostMicroseconds));
             HookEntry.FlushLog();
         }
@@ -1419,12 +1460,20 @@ namespace Drelay.Bootstrap
             HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
                 "PHASE 3 DODGE DETAIL | candidates {0:0.0} of {1:0.0} over {2} frame(s) | threats {3} "
                 + "considered, {4} dropped by the 48 cap | speed {5:0.00} u/s ({6} observed, {7} blocked) "
-                + "| course {8} of {9} | goal {10} of {9} | no-hit {11}",
+                + "| course {8} of {9} | goal {10} of {9} | no-hit {11} | bodies {12} on {13} of {9} "
+                + "frame(s) | {14}",
                 meanAdmissible, meanEvaluated, _candidateFrames,
                 _threatsConsidered, _threatsCulledByCap,
                 _speedPerSecond, _speedObservedFrames, _speedBlockedFrames,
                 _framesWithCourse, _frames, _framesWithPlayerGoal,
-                _projectilesNotAHittableThreat));
+                _projectilesNotAHittableThreat,
+                // `bodies` IS THE MEAN PER FRAME AND `{14}` IS THE READER'S OWN COUNT. E1 reads
+                // both: a mean of zero with `enemies=live` is a realm with nothing in view, while a
+                // mean of zero with `enemies=unresolved` is the reader not having resolved --
+                // and those are the two findings that `bodies=0` alone cannot tell apart.
+                _frames > 0 ? (double)_bodiesSeen / _frames : 0.0,
+                _framesWithBodies,
+                EnemyReader.Describe()));
 
             // THE REASONS GET THEIR OWN LINE. They are the longest variable part of the report -- a
             // busy run names seven of them -- and sharing a line with anything else pushed that line

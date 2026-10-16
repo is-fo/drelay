@@ -242,6 +242,25 @@ namespace Drelay.Bootstrap
         public float X;
         public float Y;
         public float Radius;
+
+        /// <summary>
+        /// The radius the EMITTER uses in the danger field: <c>Radius + player radius +
+        /// cfg.EnemyDangerPadUnits</c>, computed once by the reader.
+        ///
+        /// IT IS A SECOND RADIUS BECAUSE THE TWO DO DIFFERENT JOBS, and the split is the
+        /// load-bearing decision of `PLAN-ENEMY-THREATS.md` section 3.1. `Radius` is the body rule
+        /// 7 refuses a candidate against, and it must stay unpadded: an inflated body has the same
+        /// "encloses the player" failure mode the already-inside exception exists for, without the
+        /// exception's justification, so a crowd of mobs would refuse every candidate on the frame
+        /// -- the `NoAdmissible` defect measured at 27.7 % of frames. `DangerRadius` reaches the
+        /// danger field only, where it is a COST: the path and the projected-danger term react to
+        /// it and it cannot remove a candidate.
+        ///
+        /// ZERO MEANS "NO EMITTER", and it is what the harness's recorded frames and any
+        /// hand-built body carry unless the caller sets it. A zero-radius emitter puts nothing in
+        /// the danger field, so a body is rule 7 alone.
+        /// </summary>
+        public float DangerRadius;
     }
 
     /// <summary>
@@ -790,6 +809,69 @@ namespace Drelay.Bootstrap
         /// </summary>
         public float PathHysteresisDwellSeconds;
 
+        // --- The enemy bodies (PLAN-ENEMY-THREATS.md) ------------------------------------
+        //
+        // TWO ROLES AND TWO SWITCHES, AND THE SPLIT IS THE POINT. An enemy is a BODY that rule 7
+        // refuses a candidate against, and an EMITTER that the danger field costs -- "it will shoot"
+        // -- and only the body may refuse. `EnemyBodies` and `EnemyEmitter` are separate so the two
+        // can be A/B'd against each other rather than as one change.
+
+        /// <summary>
+        /// Whether the enemy body list is filled at all, and therefore whether rule 7 applies.
+        ///
+        /// `false` RESTORES TODAY'S BEHAVIOUR EXACTLY, which is what makes the change measurable
+        /// against every existing recording: rule 7 is vacuous when `Bodies` is empty, so a run with
+        /// this off must be byte-identical to one before the reader existed.
+        /// </summary>
+        public bool EnemyBodies;
+
+        /// <summary>
+        /// Whether a body's padded radius reaches the danger field (the path's edge cost and the
+        /// `WeightEnemyDanger` score term). **It is never an admission rule.**
+        ///
+        /// A PREFERENCE AND NOT A GATE, for the reason `PLAN-ENEMY-THREATS.md` section 3.1 records:
+        /// a padded radius inside the admission rules would make a candidate "unsafe" merely for
+        /// passing within the pad of a mob, and in a crowd of mobs it would refuse every candidate
+        /// on the frame -- the `NoAdmissible` defect `ThreatVerdict` was written to fix.
+        /// </summary>
+        public bool EnemyEmitter;
+
+        /// <summary>
+        /// The emitter's pad beyond `enemy radius + player radius`, world units. ~3/4 of a tile.
+        ///
+        /// IT IS SMALL ON PURPOSE, AND THE RATIONALE "IT WILL SHOOT" IS THE REASON. A ranged mob is
+        /// dangerous at whatever its weapon's reach is, which the hook does not know -- so a large
+        /// pad is a model with no range in it, and a melee player must stand next to enemies to hit
+        /// them. The pad buys the fraction of a second between "the enemy is here" and "the bullet
+        /// exists", and the bullet itself is sampled exactly, one frame later, by the existing
+        /// trajectory model. `0.75` is a starting value; the harness is where it is settled
+        /// (`SPIKE3.2-OFFLINE-SOLVER.md`'s doctrine: tune offline, never in a live run).
+        /// </summary>
+        public float EnemyDangerPadUnits;
+
+        /// <summary>
+        /// Bodies further than this from the player are not added to the list at all, world units.
+        ///
+        /// WHAT KEEPS THE FRAME COST BOUNDED. A full realm can hold hundreds of enemies and the
+        /// solver only ever reasons about the few units it can reach; 12 is about twice the longest
+        /// existing horizon (`PathTargetSeconds` at the measured speed), so it removes everything
+        /// the planner could ever cost and nothing it could not.
+        /// </summary>
+        public float EnemyCullRadius;
+
+        /// <summary>
+        /// Weight of the new score term: how much a candidate that ends inside an enemy's EMITTER
+        /// disc is penalised.
+        ///
+        /// ZERO IS THE SHIPPING VALUE AND THAT IS A MEASUREMENT POSTURE, NOT AN OVERSIGHT. It is the
+        /// same precedent `WeightProjectedDanger` set: a term nobody turns on is a term nobody
+        /// measures, so the idea ships with the implementation and the weight starts at zero until
+        /// the harness says otherwise. What it answers that the path's edge cost cannot is the step
+        /// AFTER this one -- `PlanWalk`/`Plan` sets the route, and this re-ranks candidates that
+        /// already passed admission on where they leave the character.
+        /// </summary>
+        public float WeightEnemyDanger;
+
         /// <summary>
         /// How much of the move carries the character toward the imaginary point in front of them.
         ///
@@ -977,6 +1059,16 @@ namespace Drelay.Bootstrap
             c.PathWaypointUnits = 2.5f;
             c.PathWaypointFraction = 0.75f;
             c.PathHysteresisDwellSeconds = 0.15f;
+            // THE ENEMY BODIES. Rule 7 has existed and been vacuous since the solver was written --
+            // `DodgeSnapshot.Bodies` was never filled -- so these ship ON with the emitter weight at
+            // zero: the body refuses (which is the defect the plan exists for), the pad costs nothing
+            // until the harness settles it, and `DRELAY_DODGE_ENEMIES=0` restores the vacuous rule 7
+            // exactly. See `PLAN-ENEMY-THREATS.md` sections 3.1 and 3.2.
+            c.EnemyBodies = true;
+            c.EnemyEmitter = true;
+            c.EnemyDangerPadUnits = 0.75f;
+            c.EnemyCullRadius = 12.0f;
+            c.WeightEnemyDanger = 0.00f;
             // THE GOAL TERM KEEPS ITS OWN VALUE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
             // The first version of this cut `WeightGoal` from 0.90 to 0.30 whenever the path was on,
             // on the reasoning that the path's waypoint IS the goal whenever the goal is walkable and
@@ -1159,6 +1251,15 @@ namespace Drelay.Bootstrap
             c.PathWaypointUnits = Float("DRELAY_DODGE_PATH_WAYPOINT", c.PathWaypointUnits);
             c.PathWaypointFraction = FloatAllowZero("DRELAY_DODGE_PATH_WPFRACTION", c.PathWaypointFraction);
             c.PathHysteresisDwellSeconds = FloatAllowZero("DRELAY_DODGE_PATH_DWELL_S", c.PathHysteresisDwellSeconds);
+            // THE ENEMY KNOBS. `DRELAY_DODGE_ENEMIES=0` is the off-switch for the whole feature and
+            // it is the one that must restore today's decisions byte for byte (the T9 doctrine);
+            // `DRELAY_DODGE_ENEMY_PAD` moves the emitter and must never change admission, which the
+            // harness's E4 asserts rather than assumes.
+            c.EnemyBodies = Environment.GetEnvironmentVariable("DRELAY_DODGE_ENEMIES") != "0";
+            c.EnemyEmitter = Environment.GetEnvironmentVariable("DRELAY_DODGE_EMITTER") != "0";
+            c.EnemyDangerPadUnits = Float("DRELAY_DODGE_ENEMY_PAD", c.EnemyDangerPadUnits);
+            c.EnemyCullRadius = Float("DRELAY_DODGE_ENEMY_CULL", c.EnemyCullRadius);
+            c.WeightEnemyDanger = FloatAllowZero("DRELAY_DODGE_W_ENEMY", c.WeightEnemyDanger);
             c.PlanLookaheadSeconds = Float("DRELAY_DODGE_PLAN_LOOKAHEAD_S", c.PlanLookaheadSeconds);
             c.GoalLookaheadSeconds = Float("DRELAY_DODGE_GOAL_LOOKAHEAD_S", c.GoalLookaheadSeconds);
             c.GoalFanSteps = Int("DRELAY_DODGE_GOAL_FAN", c.GoalFanSteps);
@@ -1246,7 +1347,8 @@ namespace Drelay.Bootstrap
             string plan = DescribePlan().Replace("\n", " ").Replace("\r", " ").Trim();
             string weights = DescribeWeights().Replace("\n", " ").Replace("\r", " ").Trim();
             string path = DescribePath().Replace("\n", " ").Replace("\r", " ").Trim();
-            return plan + " " + weights + " " + path;
+            string enemies = DescribeEnemies().Replace("\n", " ").Replace("\r", " ").Trim();
+            return plan + " " + weights + " " + path + " " + enemies;
         }
 
         /// <summary>A one-line description for the log, so a run's own settings are readable from it.</summary>
@@ -1265,7 +1367,8 @@ namespace Drelay.Bootstrap
             string plan = DescribePlan().TrimEnd('\r', '\n');
             string weights = DescribeWeights().TrimEnd('\r', '\n');
             string path = DescribePath().TrimEnd('\r', '\n');
-            return plan + "\n" + weights + "\n" + path + "\n";
+            string enemies = DescribeEnemies().TrimEnd('\r', '\n');
+            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n";
         }
 
         /// <summary>
@@ -1325,6 +1428,21 @@ namespace Drelay.Bootstrap
                 "path enable={0} target={1}s cap={2} danger={3} pad={4} wp={5}/{7} dwell={6}s",
                 PathEnable, PathTargetSeconds, PathNodeCap, PathStepCostWeight, PathDangerPadUnits,
                 PathWaypointUnits, PathHysteresisDwellSeconds, PathWaypointFraction);
+        }
+
+        /// <summary>
+        /// The enemy-body numbers, on their own line, for the same 256-byte reason as the other two.
+        ///
+        /// THE LINE MATTERS AS MUCH AS THE OTHERS, AND FOR A SHARPER REASON: `bodies=0` in the dodge
+        /// report is ambiguous on its own -- it is what an unresolved reader prints AND what a quiet
+        /// frame prints AND what `DRELAY_DODGE_ENEMIES=0` prints. This line is what tells those three
+        /// apart in a log, and it is what `PLAN-ENEMY-THREATS.md`'s E1 reads.
+        /// </summary>
+        public string DescribeEnemies()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "enemies bodies={0} emitter={1} pad={2} cull={3} wEnemy={4}",
+                EnemyBodies, EnemyEmitter, EnemyDangerPadUnits, EnemyCullRadius, WeightEnemyDanger);
         }
     }
 

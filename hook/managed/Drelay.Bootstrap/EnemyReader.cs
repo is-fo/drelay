@@ -1,0 +1,417 @@
+// EnemyReader.cs -- the live entity list, as `DodgeSnapshot.Bodies`.
+//
+// =====================================================================================
+// WHAT THIS IS, AND THE ONE DEFECT IT CLOSES
+// =====================================================================================
+//
+// `DodgeSnapshot.Bodies` has existed since the solver was written, `DodgeSolver.Admit` has
+// implemented rule 7 against it ("a candidate that sweeps an enemy body is refused, unless the
+// player is already inside that body"), and nothing has ever put an entry in it. `DodgeAdapter`'s
+// own header used to say so in as many words -- *"RULE 7 (ENEMY BODIES) IS VACUOUS"* -- and the
+// `bodies=0` in every report was the honest mark of it.
+//
+// The consequence was not theoretical. `PathPlanner.DangerAt` iterates `snapshot.Threats`, which is
+// bullets, so **an enemy standing in the open was free space as far as the path search was
+// concerned**: the shortest route to a goal beyond it went through it, and on the frames a ranged
+// mob was not currently shooting -- which is most of them -- the path deliberately walked into its
+// muzzle. That is the operator's sentence, and it is a defect in the existing dodge rather than in
+// a future farmer. See `PLAN-ENEMY-THREATS.md` section 2.
+//
+// =====================================================================================
+// IT IS ITS OWN CLASS RATHER THAN A SHARED HELPER WITH `AutoAim`
+// =====================================================================================
+//
+// Two reasons, and the first is substantive rather than architectural:
+//
+//   1. **THE FILTERS ARE DIFFERENT QUESTIONS.** `AutoAim` excludes `Dead`, `Npc` and
+//      `Effects.Unhittable()` because it is asking "can I damage this?". The dodge is asking "can
+//      this damage me?", and the answers differ for the same enemy: an `Invulnerable` or
+//      `Invincible` enemy cannot be hit and can usually still hit back, while a `Cutscene` one can
+//      do neither. So this reader filters on `Dead` and `Npc` ONLY and deliberately does not call
+//      `Unhittable()`. Reusing `AutoAim`'s predicate would make the dodge refuse to walk past an
+//      enemy it cannot shoot -- which is backwards, and would be a live regression the moment the
+//      auto-aim module was switched off.
+//   2. **COUPLING.** `AutoAim`'s state and its resolve path are that module's business, and it
+//      resolves `GetEnemies` only when a mode is selected. A second consumer reaching into it would
+//      make the auto-aim mode a switch that changes the dodge.
+//
+// =====================================================================================
+// FAILURE DISCIPLINE: IT IS THE HOUSE RULE, AND HERE IT IS ALSO THE SAFETY PROPERTY
+// =====================================================================================
+//
+// `Resolve` returns false with a NAMED reason, `Fill` does nothing, the report prints
+// `enemies=unresolved`, and every existing behaviour is byte-identical to a hook that was never
+// asked to read enemies. **A hook that cannot read enemies must not dodge differently from one that
+// was never asked to.** The reader is therefore optional in exactly the way the collision grid and
+// the player's health are: missing it degrades rule 7 back to its old vacuous self and nothing else.
+//
+// Nothing here allocates per frame. The delegate the resolver builds is an emitted `ldfld`, the
+// enemy array is the world's own cached array (see `Fill`), and the only per-frame work is a loop
+// over that array with a squared-distance compare.
+
+using System;
+using System.Globalization;
+using System.Reflection;
+
+namespace Drelay.Bootstrap
+{
+    public static class EnemyReader
+    {
+        private const BindingFlags Any =
+            BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+
+        /// <summary>Set by the operator to switch the whole reader off. On by default.</summary>
+        private const string EnvEnemies = "DRELAY_DODGE_ENEMIES";
+
+        // --- Resolved once ------------------------------------------------------------------
+
+        private static bool _resolved;
+        private static string _unresolvedReason = "not attempted";
+        private static string _rejectionReason;   // non-null only when the feature was switched OFF
+
+        /// <summary>`Enemy[] World.GetEnemies()`, as a raw managed function pointer.</summary>
+        private static IntPtr _getEnemies;
+
+        /// <summary>
+        /// `World.Shared`, resolved separately from the enemy list. See <see cref="ResolveWorld"/>.
+        /// </summary>
+        private static Func<object> _getWorld;
+
+        private static Func<object, float> _getX;
+        private static Func<object, float> _getY;
+        private static Func<object, bool> _getDead;
+        private static Func<object, bool> _getNpc;
+        private static Func<object, float> _getRadius;
+
+        /// <summary>
+        /// True when the game's own radius could not be read, so `DefaultPlayerRadius` is standing in
+        /// for it.
+        ///
+        /// IT IS COUNTED BECAUSE A SILENT ZERO RADIUS IS A BODY YOU CAN WALK THROUGH. A body with no
+        /// radius is a point, and a point is a body rule 7 almost never refuses -- which is the exact
+        /// defect this file exists to close, wearing the reader's own name. `PLAN-ENEMY-THREATS.md`
+        /// section 4.1: "if `Radius` does not resolve, use `DodgeConfig.DefaultPlayerRadius` and
+        /// COUNT THE FALLBACK".
+        /// </summary>
+        private static bool _radiusFallback;
+
+        // --- Per-run counters, for the report ------------------------------------------------
+
+        private static long _framesFilled;
+        private static long _bodiesCulled;
+        private static long _bodiesDropped;      // null, dead or NPC
+        private static long _bodiesRadiusFallback;
+        private static long _skippedFrames;
+
+        /// <summary>Where the reader stands, for the run's own log.</summary>
+        public static string Status()
+        {
+            if (_rejectionReason != null)
+            {
+                return "enemy bodies: off (" + _rejectionReason + ")";
+            }
+            if (!_resolved)
+            {
+                return "enemy bodies: NOT available -- " + _unresolvedReason;
+            }
+            return "enemy bodies: World.GetEnemies()"
+                   + (_radiusFallback
+                        ? ", Radius did NOT resolve -- DefaultPlayerRadius stands in and the"
+                          + " fallback is COUNTED (a silent zero radius is a body to walk through)"
+                        : "");
+        }
+
+        /// <summary>Why the reader is not available; null when it is.</summary>
+        public static string UnresolvedReason
+        {
+            get { return _rejectionReason ?? _unresolvedReason; }
+        }
+
+        // ===================================================================================
+        // Resolve
+        // ===================================================================================
+
+        /// <summary>
+        /// Finds every accessor the body list needs. Nothing new is required of the game: the same
+        /// call and the same four fields `AutoAim` has exercised live since `AUTOAIM.md`'s session.
+        ///
+        /// THE ARRAY ELEMENT TYPE IS TAKEN FROM THE METHOD'S OWN RETURN TYPE, not from a name. That
+        /// is the one place this reader is better than a hand-written list of field names would be:
+        /// `GetEnemies` returns the game's element type, so the fields are looked up on the type the
+        /// method actually returns rather than on a type name that would have to be right.
+        /// </summary>
+        public static bool Resolve(Assembly game)
+        {
+            string switchValue = Environment.GetEnvironmentVariable(EnvEnemies);
+            if (switchValue == "0")
+            {
+                _rejectionReason = EnvEnemies + "=0";
+                return false;
+            }
+
+            try
+            {
+                if (game == null)
+                {
+                    _unresolvedReason = "the game assembly is not loaded";
+                    return false;
+                }
+
+                Type worldType = game.GetType(ManagedArmingProbe.WorldTypeName);
+                if (worldType == null)
+                {
+                    _unresolvedReason = ManagedArmingProbe.WorldTypeName + " not found";
+                    return false;
+                }
+
+                // `GetEnemies` is the same call the client's own selection makes and the same one
+                // `AutoAim.Resolve` resolves, so this reader sees exactly the set of enemies the
+                // client does -- there is no second notion of "what is in the world" to drift.
+                MethodInfo getEnemies = worldType.GetMethod(
+                    "GetEnemies", BindingFlags.Public | BindingFlags.Instance, null, Type.EmptyTypes, null);
+                if (getEnemies == null)
+                {
+                    _unresolvedReason = "World.GetEnemies() not found";
+                    return false;
+                }
+
+                Type enemyType = getEnemies.ReturnType.GetElementType();
+                if (enemyType == null)
+                {
+                    _unresolvedReason = "World.GetEnemies() does not return an array";
+                    return false;
+                }
+
+                FieldInfo positionField = FieldLookup.Find(enemyType, out _, "Position");
+                FieldInfo positionX = positionField != null ? positionField.FieldType.GetField("X") : null;
+                FieldInfo positionY = positionField != null ? positionField.FieldType.GetField("Y") : null;
+                FieldInfo deadField = FieldLookup.Find(enemyType, out _, "Dead");
+                FieldInfo npcField = FieldLookup.Find(enemyType, out _, "Npc");
+
+                string missing = "";
+                if (positionField == null || positionX == null || positionY == null)
+                {
+                    missing += " Position.X/Y";
+                }
+                if (deadField == null) { missing += " Dead"; }
+                if (npcField == null) { missing += " Npc"; }
+                if (missing.Length != 0)
+                {
+                    _unresolvedReason = "field(s) not found on " + enemyType.Name + ":" + missing;
+                    return false;
+                }
+
+                // `GameObject.Radius` -- the same field the dodge already reads for the player and
+                // the same one the game's own hit test adds to a bullet's. It is OPTIONAL rather than
+                // required, and the fallback is counted rather than silent: see `_radiusFallback`.
+                FieldInfo radiusField = FindRadius(enemyType);
+                _radiusFallback = radiusField == null;
+
+                // THE DELEGATES, NOT `FieldInfo.GetValue`. A reflective read on the frame path boxes,
+                // and this project has paid for that once already (`FieldAccessor`'s own header). The
+                // `GetEnemies` call is a raw pointer because a delegate cannot take an `object`
+                // receiver for a method declared on a game type the hook cannot name.
+                _getX = FieldAccessor.NestedFloat(positionField, positionX);
+                _getY = FieldAccessor.NestedFloat(positionField, positionY);
+                _getDead = FieldAccessor.Bool(deadField);
+                _getNpc = FieldAccessor.Bool(npcField);
+                _getRadius = radiusField != null ? FieldAccessor.Float(radiusField) : null;
+                _getEnemies = getEnemies.MethodHandle.GetFunctionPointer();
+
+                _resolved = true;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _unresolvedReason = ex.GetType().Name + ": " + ex.Message;
+                _resolved = false;
+                _getEnemies = IntPtr.Zero;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// `Radius`, up the hierarchy, the same walk `DodgeAdapter.FindRadius` makes for the player.
+        /// It is declared on `GameObject` on the real client, so a lookup restricted to the element
+        /// type would not find it -- the exact mistake `FieldLookup`'s header records being made
+        /// about `GameId`.
+        /// </summary>
+        private static FieldInfo FindRadius(Type enemyType)
+        {
+            for (Type t = enemyType; t != null && t != typeof(object); t = t.BaseType)
+            {
+                FieldInfo f = t.GetField("Radius", Any | BindingFlags.DeclaredOnly);
+                if (f != null)
+                {
+                    return f;
+                }
+            }
+            return null;
+        }
+
+        // ===================================================================================
+        // Fill
+        // ===================================================================================
+
+        /// <summary>
+        /// Adds this frame's enemy bodies to <paramref name="s"/>, with the emitter radius already
+        /// computed.
+        ///
+        /// IT DOES NOTHING AT ALL WHEN THE READER DID NOT RESOLVE OR THE FEATURE IS OFF, which is the
+        /// failure discipline in one line: the snapshot's body list is what `Clear()` left it as --
+        /// empty -- and rule 7 is exactly as vacuous as it was before this file existed.
+        ///
+        /// THE PLAYER'S OWN RADIUS IS AN INPUT RATHER THAN A READ. The adapter has it (it reads
+        /// `Player.Radius` every frame and defaults it), and the emitter radius is
+        /// `enemy.Radius + player.Radius + pad` -- so passing it keeps the arithmetic in one place
+        /// and keeps this reader from needing a `DodgeConfig` at all.
+        ///
+        /// THE CULL IS THE POINT OF THE ENTRY LOOP AND IT IS A DISTANCE, NOT A COUNT. A full realm
+        /// holds hundreds of enemies; `EnemyCullRadius` (12 units, about twice the longest horizon
+        /// the planner reasons over) removes everything the solver could ever cost and nothing it
+        /// could not. It is measured from the PLAYER and not from the goal, because the question is
+        /// "can this enemy reach the decision", and the decision is where the player is.
+        /// </summary>
+        public static void Fill(DodgeSnapshot s, DodgeConfig config, float px, float py, float playerRadius)
+        {
+            if (!_resolved || !config.EnemyBodies || _getEnemies == IntPtr.Zero || s == null)
+            {
+                if (_resolved)
+                {
+                    _skippedFrames++;
+                }
+                return;
+            }
+
+            object raw;
+            unsafe
+            {
+                // `World` caches the array and rebuilds it only when the enemy dictionary changes, so
+                // this is the same allocation the client's own selection makes once per frame and not
+                // a second one. See `AutoAim.Choose`'s identical call.
+                raw = ((delegate* managed<object, object>)(IntPtr)_getEnemies)(WorldObject());
+            }
+
+            object[] enemies = raw as object[];
+            if (enemies == null || enemies.Length == 0)
+            {
+                _framesFilled++;
+                return;
+            }
+
+            float cull = config.EnemyCullRadius;
+            float cull2 = cull * cull;
+            _framesFilled++;
+
+            for (int i = 0; i < enemies.Length; i++)
+            {
+                object enemy = enemies[i];
+                if (enemy == null) { _bodiesDropped++; continue; }
+                if (_getDead(enemy)) { _bodiesDropped++; continue; }
+                if (_getNpc(enemy)) { _bodiesDropped++; continue; }
+
+                float ex = _getX(enemy);
+                float ey = _getY(enemy);
+                float dx = ex - px;
+                float dy = ey - py;
+                float d2 = (dx * dx) + (dy * dy);
+                // Written so a NaN coordinate fails the test instead of passing it -- the same shape
+                // `AutoAim.Choose` uses for the range test, and for the same reason.
+                if (!(d2 <= cull2)) { _bodiesCulled++; continue; }
+
+                float radius;
+                if (_getRadius != null)
+                {
+                    radius = _getRadius(enemy);
+                }
+                else
+                {
+                    radius = config.DefaultPlayerRadius;
+                    _bodiesRadiusFallback++;
+                }
+                if (radius <= 0.0f)
+                {
+                    // A ZERO RADIUS IS NOT "NO BODY", IT IS A BODY WITH NO SIZE. The game's own
+                    // default is 0.25 and a zero here means the field did not carry a value; the
+                    // fallback is the same one the player's own radius uses.
+                    radius = config.DefaultPlayerRadius;
+                    _bodiesRadiusFallback++;
+                }
+
+                s.Bodies.Add(new EntityBody
+                {
+                    X = ex,
+                    Y = ey,
+                    Radius = radius,
+                    // THE EMITTER RADIUS, COMPUTED ONCE HERE RATHER THAN IN THE PLANNER, so the
+                    // body carries both of its own radii and neither consumer re-derives one from
+                    // the other's inputs. See `EntityBody.DangerRadius`.
+                    DangerRadius = radius + playerRadius + config.EnemyDangerPadUnits,
+                });
+            }
+        }
+
+        /// <summary>
+        /// The world, for the `GetEnemies` call.
+        ///
+        /// READ THROUGH THE SAME STATIC FIELD EVERY OTHER PART OF THE HOOK USES (`World.Shared`),
+        /// resolved here rather than passed in, so this reader is self-contained: the adapter hands
+        /// it the frame's numbers and nothing else.
+        /// </summary>
+        private static object WorldObject()
+        {
+            return _getWorld == null ? null : _getWorld();
+        }
+
+        /// <summary>
+        /// The `World.Shared` accessor, resolved by the caller that already has the type.
+        ///
+        /// IT IS HERE RATHER THAN IN `Resolve` BECAUSE THE TWO ARE DIFFERENT QUESTIONS: `Resolve`
+        /// finds the enemy list on the world TYPE, and this finds the world INSTANCE. Keeping them
+        /// apart means a hook whose `World.Shared` never resolves still reports the reader's own
+        /// status honestly instead of failing for a reason that belongs to the caller.
+        /// </summary>
+        public static void ResolveWorld(FieldInfo sharedField)
+        {
+            _getWorld = sharedField != null ? FieldAccessor.Static(sharedField) : null;
+        }
+
+        // ===================================================================================
+        // The report
+        // ===================================================================================
+
+        /// <summary>Zeroes the per-run counters. Called where the report's own are zeroed.</summary>
+        public static void ResetCounters()
+        {
+            _framesFilled = 0;
+            _bodiesCulled = 0;
+            _bodiesDropped = 0;
+            _bodiesRadiusFallback = 0;
+            _skippedFrames = 0;
+        }
+
+        /// <summary>
+        /// The reader's own numbers, for the dodge report line.
+        ///
+        /// `PLAN-ENEMY-THREATS.md`'s E1 is exactly this string: `bodies=0` becomes `bodies=N` on a
+        /// live frame with enemies in view, and `enemies=unresolved` says by name when resolution
+        /// failed, because a zero that cannot say why it is zero is the defect this whole plan
+        /// exists to close. `skipped` is the count of frames where the list was never asked for
+        /// (`DRELAY_DODGE_ENEMIES=0`), which is the third way this can legitimately read zero.
+        /// </summary>
+        public static string Describe()
+        {
+            if (_rejectionReason != null)
+            {
+                return "enemies=off culled=0 fallbackRadius=0";
+            }
+            if (!_resolved)
+            {
+                return "enemies=unresolved culled=0 fallbackRadius=0";
+            }
+            return string.Format(CultureInfo.InvariantCulture,
+                "enemies=live frames={0} culled={1} dropped={2} fallbackRadius={3} skipped={4}",
+                _framesFilled, _bodiesCulled, _bodiesDropped, _bodiesRadiusFallback, _skippedFrames);
+        }
+    }
+}

@@ -146,9 +146,29 @@ namespace Drelay.Bootstrap
         /// </summary>
         public long WallCrossings;
 
+        /// <summary>
+        /// PATH NODES THAT SIT INSIDE AN ENEMY EMITTER DISC: the enemy-side twin of
+        /// <see cref="WallCrossings"/>, and it exists for the same reason.
+        ///
+        /// `PLAN-ENEMY-THREATS.md`'s E3 says the emitter pad's whole claim is "the path routes AROUND
+        /// a body rather than through it", and that claim has exactly the shape the corner-cut
+        /// counter was built for: a longer path and a larger `pathcost` are *consistent* with going
+        /// round and are not evidence of it, because both are also what a pad that costs nothing
+        /// prints. This walks the path the search RETURNED and counts node centres inside any body's
+        /// `DangerRadius`, so a zero here against a non-zero pad is the measurement and not the
+        /// inference.
+        ///
+        /// A NODE CENTRE AND NOT THE EDGE. The centre is the cell's own representative point --
+        /// `WorldX`/`WorldY` -- and it is the same point `DangerAt` was asked about when the edge was
+        /// costed, so the counter reads back the search's own arithmetic rather than a second model.
+        /// It is only meaningful while `EnemyEmitter` is on; with the emitter off bodies are still in
+        /// the envelope but their radius is zero, so a path through them is expected and this count
+        /// is not the claim.
+        /// </summary>
+        public long BodyZoneNodes;
+
         /// <summary>Searches since the last <see cref="PathPlanner.ResetCounters"/> in which a path was found.</summary>
         public long PathsFound;
-
         /// <summary>Sum of `Nodes` over every path found, for the mean.</summary>
         public long NodesTotal;
 
@@ -217,6 +237,47 @@ namespace Drelay.Bootstrap
         private float[] _threatStepMs = new float[0];
         private int[] _threatSamples = new int[0];
 
+        /// <summary>
+        /// WHICH ENTRIES OF THE ENVELOPE ARE ENEMY BODIES, WHICH IS NOW: NONE OF THEM.
+        ///
+        /// This field is kept as a one-line answer to a question a reader will ask -- "where are the
+        /// bodies in this array?" -- and the answer is `_bodyCost`. The first version put them here as
+        /// one-sample trajectories, which is exact and costs a distance test per body per expanded
+        /// node; `_bodyCost` is the same answer precomputed per cell. See `_bodyCost` for the
+        /// measurement that settled it.
+        /// </summary>
+        private bool[] _threatIsBody = new bool[0];
+
+        /// <summary>
+        /// THE ENEMY BODIES' OWN DANGER FIELD: one value per grid cell of the frame's window.
+        ///
+        /// WHY BODIES ARE NOT IN THE PER-THREAT LOOP, AND WHY THAT IS THE HONEST SPLIT RATHER THAN AN
+        /// OPTIMISATION. A bullet needs the per-threat machinery because its position is a function of
+        /// TIME and its path between knots has to be interpolated; a body is a stationary disc, so
+        /// "is this cell inside an emitter disc" is a property of the CELL and a constant of the
+        /// frame. Folding bodies into the trajectory loop -- which the first version did -- made every
+        /// expanded node pay a distance test against every body, and the measurement was blunt:
+        /// `bodyfence` `decide()` p50 136 us against 28 us on the same solver with the bodies in the
+        /// snapshot and not in the envelope. A* expands ~1400 nodes a frame here, so eight bodies cost
+        /// ~17 000 distance tests a frame for an answer that does not change.
+        ///
+        /// So the discs are SPRAYED ONCE, into the cells whose centres fall inside
+        /// `body.DangerRadius`, and `DangerAt` adds one array read. The cost is O(cells in disc) per
+        /// body -- about five cells each at the shipped pad -- assembled in the same
+        /// `BuildDangerEnvelope` call that already runs once per frame.
+        ///
+        /// THE VALUES ARE `[0,1]` LIKE EVERY OTHER DANGER IN THIS FILE, so the two parts compose in
+        /// one sum and `PathStepCostWeight` means one thing. A cell inside a disc is `1` and a cell
+        /// outside is `0`: the emitter is a disc and not a gradient, and inventing a falloff would be
+        /// inventing a range model, which is exactly what §3.2 refuses.
+        ///
+        /// THE INDEXING IS THE CLIENT'S, VIA `_grid`. `IndexOf` truncates exactly as the game does, and
+        /// a cell outside the window gets no body danger -- the same "no evidence" convention
+        /// `CollisionWindow.At` uses, and safe here because the search never expands outside its own
+        /// window.
+        /// </summary>
+        private float[] _bodyCost = new float[0];
+
         // --- The search buffers, sized once -----------------------------------------------------
         private float[] _gScore = new float[0];
         private float[] _costScore = new float[0];
@@ -248,6 +309,14 @@ namespace Drelay.Bootstrap
         private bool _fresh;
         private bool _fieldReady;
         private readonly PathStats _stats = new PathStats();
+
+        /// <summary>
+        /// <see cref="PathStats.BodyZoneNodes"/> for the LAST search alone, for the `--decisions`
+        /// column. The aggregate cannot give a frame's own number, and a per-frame column that is
+        /// really a running total is worse than no column: it changes on every frame whether or not
+        /// that frame did anything.
+        /// </summary>
+        private int _bodyZoneNodes;
 
         public PathPlanner(DodgeConfig config)
         {
@@ -295,6 +364,11 @@ namespace Drelay.Bootstrap
             // couple of tenths across a session's bullets while the player's half is constant. Taking
             // one number per frame keeps the probe the same size for every candidate of that frame,
             // which is what makes the term comparable across the ring.
+            //
+            // THE ENVELOPE IS BULLETS ONLY NOW. An earlier version of this change folded bodies in
+            // here as one-sample entries and had to special-case `[0]` for them; they live in
+            // `_bodyCost` instead, so "the first threat" means what it always meant and the special
+            // case -- and the class of bug it was guarding -- is gone rather than defended against.
             get { return _threatCount > 0 ? _threatNear[0] : 0.5f; }
         }
 
@@ -365,6 +439,20 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
+        /// The same field over ENEMY BODIES alone, for `DodgeSolver`'s enemy-danger term.
+        ///
+        /// IT IS THE SAME FIELD AND NOT A SECOND MODEL: bodies are part of `DangerAt`'s answer through
+        /// the precomputed cell field (`_bodyCost`), and this is that part alone -- what the bullets
+        /// contribute is simply not added. It is 0 wherever no emitter disc covers the point, which is
+        /// also what makes `DRELAY_DODGE_W_ENEMY` an A/B of one thing, and 0 everywhere when
+        /// `EnemyEmitter` is off.
+        /// </summary>
+        public float DangerOverBodies(float x, float y)
+        {
+            return BodyCostAt(x, y);
+        }
+
+        /// <summary>
         /// One threat's own numbers, as the danger field sees them, for the harness's frame dump.
         /// This is the same probe as <see cref="DebugDangerAt"/> one level down: it reports what the
         /// early-out compared, not what it concluded.
@@ -380,7 +468,8 @@ namespace Drelay.Bootstrap
             {
                 return "empty";
             }
-            return "radius=" + _threatRadius[i].ToString("0.###", CultureInfo.InvariantCulture)
+            return "kind=bullet"
+                 + " radius=" + _threatRadius[i].ToString("0.###", CultureInfo.InvariantCulture)
                  + " near=" + _threatNear[i].ToString("0.###", CultureInfo.InvariantCulture)
                  + " samples=" + _threatSamples[i]
                  + " stepMs=" + _threatStepMs[i].ToString("0.###", CultureInfo.InvariantCulture)
@@ -397,6 +486,47 @@ namespace Drelay.Bootstrap
         {
             return i >= 0 && i < _threatCount ? _threatNear[i] : 0.0f;
         }
+
+        /// <summary>
+        /// Whether envelope entry <paramref name="i"/> is an enemy body. **Always false**: the envelope
+        /// is bullets, and the bodies are the frame's precomputed cell field.
+        ///
+        /// IT IS KEPT BECAUSE IT IS THE ANSWER TO A QUESTION A READER WILL ASK, and because a reader
+        /// who cannot ask it will infer the wrong one. `PLAN-ENEMY-THREATS.md` section 4.3's warning --
+        /// "a body in the envelope reads as a bullet with a strange speed" -- is now answered by the
+        /// envelope not containing bodies at all, and this line is where that is said.
+        /// </summary>
+        public bool DebugThreatIsBody(int i)
+        {
+            return i >= 0 && i < _threatCount && _threatIsBody[i];
+        }
+
+        /// <summary>
+        /// Cells the frame's emitter discs cover, for the frame dump and for `--decisions`.
+        ///
+        /// This replaces the body count the envelope used to carry, and it is the more useful number:
+        /// "eight bodies" says nothing about whether the danger field is doing anything, while "1 200
+        /// cells are inside an emitter disc" says exactly how much of the search's world the emitter
+        /// owns.
+        /// </summary>
+        public int DebugBodyCount
+        {
+            get
+            {
+                int covered = 0;
+                for (int i = 0; i < _cells; i++)
+                {
+                    if (_bodyCost[i] > 0.0f)
+                    {
+                        covered++;
+                    }
+                }
+                return covered;
+            }
+        }
+
+        /// <summary>The last search's own <see cref="PathStats.BodyZoneNodes"/>, for the frame dump.</summary>
+        public int DebugBodyZoneNodes => _bodyZoneNodes;
 
         /// <summary>Drops the held waypoint and the counters. A zone change, or a disabled dodge.</summary>
         public void Reset()
@@ -415,6 +545,7 @@ namespace Drelay.Bootstrap
             _stats.NoPath = 0;
             _stats.Held = 0;
             _stats.WallCrossings = 0;
+            _stats.BodyZoneNodes = 0;
             _stats.PathsFound = 0;
             _stats.NodesTotal = 0;
             _stats.LengthTotal = 0.0;
@@ -773,11 +904,12 @@ namespace Drelay.Bootstrap
             int n = snapshot.Threats.Count;
             if (_threats.Length < n)
             {
-                _threats = new Trajectory[n < 8 ? 8 : n];
-                _threatNear = new float[n < 8 ? 8 : n];
-                _threatRadius = new float[n < 8 ? 8 : n];
-                _threatStepMs = new float[n < 8 ? 8 : n];
-                _threatSamples = new int[n < 8 ? 8 : n];
+                int cap = n < 8 ? 8 : n;
+                _threats = new Trajectory[cap];
+                _threatNear = new float[cap];
+                _threatRadius = new float[cap];
+                _threatStepMs = new float[cap];
+                _threatSamples = new int[cap];
             }
             _threatCount = 0;
             for (int i = 0; i < n; i++)
@@ -799,6 +931,90 @@ namespace Drelay.Bootstrap
                 _threatSamples[_threatCount] = t.Count;
                 _threatCount++;
             }
+
+            BuildBodyField(snapshot);
+        }
+
+        /// <summary>
+        /// THE ENEMY BODIES, SPRAYED INTO THE GRID ONCE PER FRAME. See `_bodyCost` for why they are a
+        /// field of their own rather than entries in the trajectory arrays.
+        ///
+        /// IT IS CLEARED AND REBUILT, NOT ACCUMULATED. The array belongs to the frame's window and
+        /// outlives a `Clear()`; a stale disc from the previous frame's window would be a hazard
+        /// nobody put there, and the cheaper thing (clearing only the cells that were set) is the one
+        /// that breaks silently when a body moves.
+        ///
+        /// `EnemyBodies=0` LEAVES THE FIELD EMPTY, and `EnemyEmitter=0` writes an empty field too --
+        /// a body is then rule 7 alone, which is exactly what §3.1 requires. Both are the same code
+        /// path as "no bodies in range", so none of the three can drift from the others.
+        /// </summary>
+        private void BuildBodyField(DodgeSnapshot snapshot)
+        {
+            if (_bodyCost.Length < _cells)
+            {
+                _bodyCost = new float[_cells];
+            }
+            for (int i = 0; i < _cells; i++)
+            {
+                _bodyCost[i] = 0.0f;
+            }
+
+            if (!_config.EnemyBodies || !_config.EnemyEmitter)
+            {
+                return;
+            }
+
+            for (int b = 0; b < snapshot.Bodies.Count; b++)
+            {
+                EntityBody body = snapshot.Bodies[b];
+                float emitter = body.DangerRadius;
+                if (emitter <= 0.0f)
+                {
+                    continue;
+                }
+
+                // THE CELL RANGE THE DISC CAN POSSIBLY TOUCH, clamped to the window. The centres are
+                // tested exactly, so the range only has to be a superset -- one cell of slack either
+                // way covers the truncation `IndexOf` performs.
+                int minX = (int)(body.X - emitter) - _grid.OriginX;
+                int maxX = (int)(body.X + emitter) - _grid.OriginX;
+                int minY = (int)(body.Y - emitter) - _grid.OriginY;
+                int maxY = (int)(body.Y + emitter) - _grid.OriginY;
+                if (minX < 0) { minX = 0; }
+                if (minY < 0) { minY = 0; }
+                if (maxX > _gridW - 1) { maxX = _gridW - 1; }
+                if (maxY > _gridH - 1) { maxY = _gridH - 1; }
+
+                float e2 = emitter * emitter;
+                for (int cy = minY; cy <= maxY; cy++)
+                {
+                    for (int cx = minX; cx <= maxX; cx++)
+                    {
+                        float cellX = _grid.OriginX + cx + 0.5f;
+                        float cellY = _grid.OriginY + cy + 0.5f;
+                        float dx = cellX - body.X;
+                        float dy = cellY - body.Y;
+                        if ((dx * dx) + (dy * dy) < e2)
+                        {
+                            _bodyCost[(cy * _gridW) + cx] = 1.0f;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// The body field's value at a world position, in `[0,1]`.
+        ///
+        /// THE CELL IS THE GAME'S OWN TRUNCATION and this is the only place that reads `_bodyCost`, so
+        /// there is one conversion and not two. A position outside the window reads 0 -- the same "no
+        /// evidence" answer `CollisionWindow.At` gives, and the search never expands outside its own
+        /// window, so the case cannot arise on the path.
+        /// </summary>
+        private float BodyCostAt(float x, float y)
+        {
+            int index = IndexOf(x, y);
+            return index >= 0 && index < _cells ? _bodyCost[index] : 0.0f;
         }
 
         /// <summary>The threat's own speed, from its first two samples; 0 when they coincide.</summary>
@@ -840,6 +1056,7 @@ namespace Drelay.Bootstrap
             _heapCount = 0;
             _pathCount = 0;
             _nodes = 0;
+            _bodyZoneNodes = 0;
 
             _gScore[start] = 0.0f;
             _costScore[start] = 0.0f;
@@ -971,6 +1188,25 @@ namespace Drelay.Bootstrap
                 }
             }
 
+            // THE ENEMY-SIDE TWIN OF THE CORNER-CUT CHECK, ON THE SAME RETURNED PATH. See
+            // `PathStats.BodyZoneNodes`: the emitter pad's claim is "the route goes around a body
+            // rather than through it", and this reads that claim off the path instead of inferring it
+            // from `pathcost` and `pathlen`, which a pad that costs nothing moves in the same
+            // direction. A node whose centre is inside the emitter disc the search itself costed is
+            // the exact quantity E3 asserts at zero.
+            //
+            // IT READS THE SAME CELL FIELD THE EDGE COST READ, so the counter and the search cannot
+            // disagree about what "inside a disc" means -- which is the failure a re-derived distance
+            // test would have introduced the moment one of the two changed.
+            for (int i = 0; i < _pathCount; i++)
+            {
+                if (BodyCostAt(WorldX(_pathIndex[i]), WorldY(_pathIndex[i])) > 0.0f)
+                {
+                    _bodyZoneNodes++;
+                    _stats.BodyZoneNodes++;
+                }
+            }
+
             _length = length;
             _cost = _costScore[target];
             _reason = PathReason.Found;
@@ -1010,11 +1246,15 @@ namespace Drelay.Bootstrap
         /// </summary>
         private float DangerAt(float x, float y, float seconds)
         {
-            float worst = 0.0f;
+            float worst = BodyCostAt(x, y);
             for (int i = 0; i < _threatCount; i++)
             {
                 Trajectory t = _threats[i];
                 float near = _threatNear[i];
+                if (near <= 0.0f)
+                {
+                    continue;
+                }
                 float dx0 = t.Xs[0] - x;
                 float dy0 = t.Ys[0] - y;
                 if ((dx0 * dx0) + (dy0 * dy0) > near * near)

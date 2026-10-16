@@ -27,6 +27,12 @@
 //                  by walking through a wall, and with no wall-aware admission it would.
 //   passing-by     bullets that cross the player's line but never come within a disc. The
 //                  solver must not flinch -- false positives are the failure the operator sees.
+//   body           one enemy body on the goal ray, five units out. The path must route AROUND
+//                  it rather than through it, and no planned node may sit in its emitter disc.
+//   body-close     one enemy body within a frame's step of the player. Rule 7 must refuse the
+//                  straight-ahead candidate, and the emitted move must not sweep the body.
+//   body-fence     eight enemy bodies ringing the player at 0.55 units. The emitter discs cover
+//                  every candidate, so this is the scenario that proves the pad cannot refuse.
 
 using System;
 using System.Collections.Generic;
@@ -58,6 +64,47 @@ namespace Drelay.SolverHarness
         /// fails loudly if any of the admission or durability rules becomes one notch too strict.
         /// </summary>
         Dodge,
+
+        /// <summary>
+        /// ONE ENEMY BODY ON THE GOAL RAY, FAR ENOUGH OUT THAT THE PATH CAN GO ROUND IT.
+        ///
+        /// This is the scenario `PLAN-ENEMY-THREATS.md`'s E3 asks for: with the emitter on and
+        /// `WeightEnemyDanger` (or the path's own `StepCostWeight`) non-zero, the route to the goal
+        /// must DETOUR -- `pathlen` larger than the straight line, `pathcost` larger than `pathlen`,
+        /// and above all `PathStats.BodyZoneNodes` at zero, which is the direct claim rather than the
+        /// two inferences. See `Harness.CheckBodyRouting`.
+        ///
+        /// THE BODY SITS AT FIVE UNITS AND NOT AT ONE. A body within the emitter's radius of the
+        /// player's own cell makes EVERY path start inside a body zone, so the counter could never be
+        /// zero and the scenario would assert nothing but its own geometry. Five units leaves the
+        /// start clear, leaves the detour affordable, and still puts the body squarely on the ray.
+        /// </summary>
+        Body,
+
+        /// <summary>
+        /// One enemy body within a frame's step of the player, directly to the east.
+        ///
+        /// This is E2's scenario: the body's collision radius (`0.25 + 0.25 = 0.5`) is inside the
+        /// player's eastward frame budget (`0.137`), so the straight-ahead candidates are REFUSED by
+        /// rule 7 -- and the body is NOT a trap, because only the headings aimed at it are refused.
+        /// </summary>
+        BodyClose,
+
+        /// <summary>
+        /// THE PLAYER RINGED BY EIGHT ENEMY BODIES AT 0.55 UNITS -- E5's scenario, and its geometry
+        /// is the whole test.
+        ///
+        /// 0.55 IS CHOSEN AGAINST THE RULE, NOT THE PICTURE. Rule 7 refuses a swept path only when
+        /// the sweep enters `body.Radius + player.Radius` (0.5), and one frame's step is `budget`
+        /// (0.137), so a body at 0.55 is inside every candidate's reach and refused by it -- while a
+        /// body at 1.0 would be refused by nothing at all and the ring would test nothing. That is
+        /// what makes this the scenario where "the emitter is a preference and the body is the only
+        /// thing that refuses" has content: EIGHT emitter discs of radius 1.25 cover every candidate
+        /// on every frame, so if the pad were an admission rule nothing would ever be admissible --
+        /// and the recorded failure the plan cites is exactly that, `NoAdmissible` on 1733 of 6267
+        /// frames (27.7 %).
+        /// </summary>
+        BodyFence,
     }
 
     /// <summary>
@@ -74,6 +121,22 @@ namespace Drelay.SolverHarness
         public float PlayerRadius = 0.25f;
         public float BulletRadius = 0.2f;
         public float BulletSpeed = 24.0f;      // world units/s: fast enough that a dodge matters
+
+        /// <summary>
+        /// An enemy body's own radius in the body scenarios. The game's own value for a mob is
+        /// roughly this; what matters for the tests is the SUM with `PlayerRadius`, because that is
+        /// the collision radius rule 7 tests and the geometry of `BodyClose` is chosen against it.
+        /// </summary>
+        public float BodyRadius = 0.5f;
+
+        /// <summary>
+        /// The body's own radius in the CLOSE scenario, where the test is the sum against one
+        /// frame's step rather than against the path's width.
+        /// </summary>
+        public float CloseBodyRadius = 0.25f;
+
+        /// <summary>The ring's distance in the fence scenario. See `Scenario.BodyFence`.</summary>
+        public float FenceDistance = 0.55f;
         public float StartX = 100.0f;
         public float StartY = 100.0f;
         public int GridSize = 64;
@@ -140,6 +203,7 @@ namespace Drelay.SolverHarness
             // sampled on the same 30 ms grid the hook samples on, so the solver sees exactly the
             // shape it sees live.
             List<Spawn> spawns = PlanSpawns();
+            List<EntityBody> bodies = PlanBodies();
 
             float x = StartX;
             float y = StartY;
@@ -159,6 +223,21 @@ namespace Drelay.SolverHarness
                 frame.Intent = heading;
                 frame.Rotation = 0.0f;
                 frame.Grid = grid;
+
+                // THE ENEMY BODIES, AT THEIR OWN POSITIONS FOR THIS FRAME. `DangerRadius` is left at
+                // zero here on purpose: it is `radius + playerRadius + pad`, the pad is a CONFIG
+                // value, and the harness's `BuildSnapshot` computes it from the config the run was
+                // given -- which is what makes `enemypad=N` an A/B of the emitter alone.
+                foreach (EntityBody body in bodies)
+                {
+                    frame.Bodies.Add(new EntityBody
+                    {
+                        X = body.X,
+                        Y = body.Y,
+                        Radius = body.Radius,
+                        DangerRadius = 0.0f,
+                    });
+                }
 
                 foreach (Spawn spawn in spawns)
                 {
@@ -323,6 +402,19 @@ namespace Drelay.SolverHarness
                         }
                         line.Append("]}");
                     }
+                    line.Append("],\"bodies\":[");
+                    for (int b = 0; b < f.Bodies.Count; b++)
+                    {
+                        if (b > 0)
+                        {
+                            line.Append(',');
+                        }
+                        EntityBody body = f.Bodies[b];
+                        line.Append("{\"x\":").Append(Num(body.X))
+                            .Append(",\"y\":").Append(Num(body.Y))
+                            .Append(",\"rad\":").Append(Num(body.Radius))
+                            .Append('}');
+                    }
                     line.Append("],\"skipped\":0}");
                     writer.WriteLine(line.ToString());
                 }
@@ -365,9 +457,52 @@ namespace Drelay.SolverHarness
             }
         }
 
-        private List<Spawn> PlanSpawns()
+        /// <summary>
+        /// The enemy bodies this scenario places, in world coordinates, stationary for the run.
+        ///
+        /// STATIONARY IS A SCENARIO CHOICE RATHER THAN A MODEL LIMIT. `DodgeSnapshot.Bodies` is
+        /// refilled every frame from the live entity list, so a moving enemy is just a different list
+        /// per frame; the property these three scenarios test -- that rule 7 refuses a body, that the
+        /// path routes around one, that an emitter disc cannot fence the player in -- is about
+        /// geometry and not about motion, and a statue is the smallest fixture that has it.
+        /// </summary>
+        private List<EntityBody> PlanBodies()
         {
-            var spawns = new List<Spawn>();
+            var bodies = new List<EntityBody>();
+            switch (Kind)
+            {
+                case Scenario.Body:
+                    // ON THE RAY, FIVE UNITS OUT. See `Scenario.Body` for why five and not one.
+                    bodies.Add(Body(StartX + 6.0f, StartY, BodyRadius));
+                    break;
+
+                case Scenario.BodyClose:
+                    // ONE FRAME'S STEP PLUS THE COLLISION RADIUS IS 0.637; 0.55 IS INSIDE THE
+                    // REFUSAL BUT OUTSIDE "THE PLAYER IS ALREADY IN IT", which is the only window
+                    // where rule 7's refusal and its exception can be told apart.
+                    bodies.Add(Body(StartX + 0.55f, StartY, CloseBodyRadius));
+                    break;
+
+                case Scenario.BodyFence:
+                    for (int k = 0; k < 8; k++)
+                    {
+                        double angle = k * Math.PI / 4.0;
+                        bodies.Add(Body(StartX + ((float)Math.Cos(angle) * FenceDistance),
+                                        StartY + ((float)Math.Sin(angle) * FenceDistance),
+                                        CloseBodyRadius));
+                    }
+                    break;
+            }
+            return bodies;
+        }
+
+        private static EntityBody Body(float x, float y, float radius)
+        {
+            return new EntityBody { X = x, Y = y, Radius = radius, DangerRadius = 0.0f };
+        }
+
+        private List<Spawn> PlanSpawns()
+        {            var spawns = new List<Spawn>();
             switch (Kind)
             {
                 case Scenario.Peaceful:

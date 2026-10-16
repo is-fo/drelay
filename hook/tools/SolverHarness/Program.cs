@@ -181,8 +181,12 @@ namespace Drelay.SolverHarness
                     Frames = frames,
                     // The scenarios whose point is that the solver must react to a bullet keep the
                     // player still; the ones whose point is that it must NOT react let them walk.
+                    // The three body scenarios are on the react side: a player who walks away from
+                    // the fixture changes the geometry the fixture exists to fix.
                     PlayerWalking = kind != Scenario.HeadOn && kind != Scenario.Dodge
-                                    && kind != Scenario.Volley && kind != Scenario.Corridor,
+                                    && kind != Scenario.Volley && kind != Scenario.Corridor
+                                    && kind != Scenario.Body && kind != Scenario.BodyClose
+                                    && kind != Scenario.BodyFence,
                 };
                 trace = synthetic.Build();
                 if (!quiet)
@@ -216,6 +220,7 @@ namespace Drelay.SolverHarness
             }
 
             var harness = new Harness(trace, config);
+            harness.ScenarioName = scenarioName ?? "";
             harness.FrameToExplain = traceFrame;
             harness.FramesToExplain = framesToExplain;
             harness.ExpectMove = string.Equals(scenarioName, "dodge", StringComparison.OrdinalIgnoreCase);
@@ -250,6 +255,12 @@ namespace Drelay.SolverHarness
                 case "corridor": return Scenario.Corridor;
                 case "passingby":
                 case "passing-by": return Scenario.PassingBy;
+                case "body":
+                case "enemy": return Scenario.Body;
+                case "bodyclose":
+                case "body-close": return Scenario.BodyClose;
+                case "bodyfence":
+                case "body-fence": return Scenario.BodyFence;
                 default:
                     throw new ArgumentException("unknown scenario '" + name + "'");
             }
@@ -336,6 +347,16 @@ namespace Drelay.SolverHarness
                     case "horizon": config.HorizonMs = v; break;
                     case "trust": config.TrustSeconds = v; break;
                     case "legalern": config.LethalFraction = v; break;
+                    // THE ENEMY BODIES. `enemies=0` is the feature's off-switch and restores the
+                    // vacuous rule 7 of every run before this one; `emitter=0` leaves rule 7 in force
+                    // and takes the pad out of the danger field, which is the E4 A/B in one flag;
+                    // `enemypad` is the number E4 sweeps. None of them can change admission, and that
+                    // is the property the sweep exists to demonstrate.
+                    case "enemies": config.EnemyBodies = v != 0.0f; break;
+                    case "emitter": config.EnemyEmitter = v != 0.0f; break;
+                    case "enemypad": config.EnemyDangerPadUnits = v; break;
+                    case "enemycull": config.EnemyCullRadius = v; break;
+                    case "wenemy": config.WeightEnemyDanger = v; break;
                     default:
                         throw new ArgumentException("unknown config key '" + kv[0] + "'");
                 }
@@ -349,6 +370,12 @@ namespace Drelay.SolverHarness
   --trace PATH        a trace.jsonl written by DRELAY_TRACE=1
   --collisions PATH   the run's bootstrap.log, for the predicted-vs-actual half of T7
   --scenario NAME     synthetic frames instead: peaceful | headon | volley | corridor | passingby
+                      | body | bodyclose | bodyfence. The three body scenarios are
+                      PLAN-ENEMY-THREATS.md's fixtures: `body` puts one enemy on the goal ray five
+                      units out (the path must go round it); `bodyclose` puts one inside a frame's
+                      step (rule 7 must refuse the straight-ahead candidate); `bodyfence` rings the
+                      player with eight of them at 0.55 units (the emitter pad must not fence them
+                      in). Each asserts its own claim and prints the counters on every run.
   --seed N            synthetic scenario seed (default 1)
   --frames N          synthetic frame count (default 600)
   --export PATH       write the synthetic trace in the recorder's format, for the reader's sake
@@ -366,6 +393,11 @@ namespace Drelay.SolverHarness
                              collision-disc crossing time (default 2.0). disc=0 turns the speed
                              scaling off and runs the rule on `window` alone.
                       window an absolute floor in seconds under that window (default 0).
+                      enemies,emitter,enemypad,enemycull,wenemy  the enemy bodies: whether the list
+                      is filled at all, whether the emitter pad reaches the danger field, the pad
+                      itself, the cull radius and the pad's score weight. `enemies=0` restores the
+                      vacuous rule 7; `wenemy` is 0 by default and is the only one of the five that
+                      changes a score.
   --quiet             suppress the per-part headings
   --repeat N          run the decision N times per frame and keep the FASTEST, for the cost
                       number. Single-shot `decide()` measures the collector as much as the
@@ -629,6 +661,36 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private int _unsafeHold;
         private List<string> _holdViolationExamples = new List<string>();
 
+        // --- The enemy bodies (PLAN-ENEMY-THREATS.md's E2, E3 and E5) -----------------------
+        //
+        // E2: rule 7 refuses the candidate that walks into a body, and the move that IS emitted never
+        // sweeps one. E3: no planned route node sits inside an emitter disc. E5: an emitter disc
+        // cannot fence the player in -- at least one candidate is admissible on every frame that
+        // evaluated any, with eight bodies ringing the player.
+        //
+        // THE COUNTERS ARE SEPARATE RATHER THAN ONE "body failures" BECAUSE THE THREE FAILURES HAVE
+        // THREE OWNERS. A refusal that never happens is a reader that filled nothing; a sweep
+        // violation is an admission rule that is not testing what it says; and a path node inside a
+        // disc is the emitter's edge cost being absent. An aggregate would name none of them.
+
+        /// <summary>Candidates refused by `AdmissionRule.EnemyBody`, over the run.</summary>
+        private int _bodyRule7Refusals;
+
+        /// <summary>Frames on which a body was close enough that rule 7 could refuse something at all.</summary>
+        private int _bodyRule7Frames;
+
+        /// <summary>Emitted moves whose swept path entered a body's collision disc (the player was not in it).</summary>
+        private int _bodySweepViolations;
+        private List<string> _bodySweepExamples = new List<string>();
+
+        /// <summary>Frames that evaluated candidates, and frames that ended with at least one admissible.</summary>
+        private int _bodyFramesWithCandidates;
+        private int _bodyFramesWithAdmissible;
+
+        /// <summary>Path searches that produced a route, and planned nodes found inside an emitter disc.</summary>
+        private int _bodyPathsFound;
+        private long _bodyZoneNodes;
+
         // T7
         private sealed class Prediction
         {
@@ -674,8 +736,14 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             public bool BulletGoneAtImpact;
         }
 
-        private readonly Dictionary<long, Prediction> _firstPrediction = new Dictionary<long, Prediction>();
-        private readonly Dictionary<long, int> _lastFrameSeen = new Dictionary<long, int>();
+        /// <summary>
+        /// The `--scenario` name as given, lower-cased. It decides which of the scenario-specific
+        /// assertions apply: "rule 7 refused something" is a claim about the `body-close` fixture and
+        /// would be vacuous noise on a recording, while the fence claim is about `body-fence`.
+        /// </summary>
+        public string ScenarioName = "";
+
+        private readonly Dictionary<long, Prediction> _firstPrediction = new Dictionary<long, Prediction>();        private readonly Dictionary<long, int> _lastFrameSeen = new Dictionary<long, int>();
         private readonly Dictionary<long, int> _firstFrameSeen = new Dictionary<long, int>();
         private int _degradedFrames;
 
@@ -742,8 +810,8 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                                   + "hintent | intent | course | moving | evaluated | admissible | "
                                   + "durabilityMs | clearance | resolve | score | runnerup | costUs | "
                                   + "windowMs | wp | wpdist | pathn | pathlen | pathcost | pathwhy | "
-                                  + "stSetup | stPath | stGates | stAdmit | stScore | stEscape | "
-                                  + "standdur");
+                                  + "bodyzone | nbody | stSetup | stPath | stGates | stAdmit | stScore | "
+                                  + "stEscape | standdur");
             }
 
             // JIT warm-up. The first `Decide` of a process compiles every method the decision
@@ -872,6 +940,8 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 CheckT5(frame, snapshot, decision, candidates);
                 CheckT6(frame, snapshot, decision, candidates);
                 CheckT10(frame, snapshot, decision, previousIntent);
+                CheckBodies(frame, snapshot, decision, candidates);
+                TrackBodyPath();
                 TrackPredictions(frame, snapshot, decision);
                 if (DebugThreatId >= 0)
                 {
@@ -1022,7 +1092,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // comes before any further change: a distribution over outcomes cannot name a cause.
             if (decision.Action == DodgeAction.Move && decision.CandidateIndex >= 0)
             {
-                float[] terms = new float[13];
+                float[] terms = new float[14];
                 _solver.DescribeChosen(snapshot, decision.CandidateIndex, terms);
                 var parts = new System.Collections.Generic.List<string>();
                 for (int ti = 0; ti < terms.Length; ti++)
@@ -1192,6 +1262,15 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             w.Write(path.Reason == PathReason.Found ? F(path.Length) : "nan");   w.Write(" | ");
             w.Write(path.Reason == PathReason.Found ? F(path.Cost) : "nan");     w.Write(" | ");
             w.Write(PathReasonName(path.Reason));
+            w.Write(" | ");
+            // THE BODIES, WHICH ARE THE SECOND KIND OF ENVELOPE ENTRY AND MUST NOT READ AS BULLETS.
+            // `PLAN-ENEMY-THREATS.md` section 4.3: a body is a one-sample trajectory that sits still,
+            // so without these two columns a frame with a mob in it and a frame with a very slow
+            // bullet in it are the same line. `bodyzone` is the frame's count of planned nodes inside
+            // an emitter disc -- the per-frame form of the aggregate E3 asserts.
+            w.Write(path.DebugBodyZoneNodes);
+            w.Write(" | ");
+            w.Write(snapshot.Bodies.Count);
             // WHERE THIS FRAME'S OWN TIME WENT, per stage, so a TAIL frame can be attributed and
             // not just an average -- SPIKE3.2-OFFLINE-SOLVER.md section 15.11. Six columns because
             // a mean cannot answer "which stage made this frame slow" when the slow frames are one
@@ -1415,6 +1494,25 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     trajectory.Alive[s] = recorded.Alive[s];
                 }
                 snapshot.Threats.Add(trajectory);
+            }
+
+            // THE ENEMY BODIES, WITH THE EMITTER RADIUS COMPUTED FROM THIS RUN'S CONFIG.
+            //
+            // IT IS COMPUTED HERE RATHER THAN READ OFF THE FRAME, and that is what makes
+            // `--config enemypad=N` a sweep of the emitter alone: the positions and the body radii
+            // come from the trace and the pad comes from the run, so two runs differ by exactly the
+            // number the operator moved. `EnemyEmitter=0` writes a zero radius, which is the
+            // off-switch and reaches the planner as "this body costs nothing".
+            foreach (EntityBody recorded in frame.Bodies)
+            {                snapshot.Bodies.Add(new EntityBody
+                {
+                    X = recorded.X,
+                    Y = recorded.Y,
+                    Radius = recorded.Radius,
+                    DangerRadius = _config.EnemyEmitter
+                        ? recorded.Radius + snapshot.Player.Radius + _config.EnemyDangerPadUnits
+                        : 0.0f,
+                });
             }
             return snapshot;
         }
@@ -1691,6 +1789,145 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 }
             }
         }
+
+        // ===================================================================================
+        // The enemy bodies -- E2 of PLAN-ENEMY-THREATS.md
+        // ===================================================================================
+
+        /// <summary>
+        /// THE BODY SIDE OF THE SAME CLAIM T6 MAKES ABOUT BULLETS: a candidate the solver emits must
+        /// not be one rule 7 refused, and one the solver emits must not end inside a body's
+        /// collision disc unless the player was already inside it.
+        ///
+        /// AND IT COUNTS THE REFUSALS, because "rule 7 never refused anything" and "rule 7 refused
+        /// correctly" are the same picture from the decision alone -- the defect this whole plan
+        /// exists for was exactly a rule that was never asked. `_bodyRule7Refusals` non-zero on the
+        /// `body-close` scenario is E2's positive evidence; the sweep check is its negative one.
+        ///
+        /// THE SWEEP IS REBUILT FROM THE SOLVER'S OWN STEP LAW (`MoveSteps` samples at `budget`
+        /// fraction), because the arrival point alone cannot see a body the candidate passes
+        /// THROUGH, and passing through is the case the operator's sentence is about.
+        /// </summary>
+        private void CheckBodies(RecordedFrame frame, DodgeSnapshot snapshot, DodgeDecision decision,
+                                 List<CandidateResult> candidates)
+        {
+            if (snapshot.Bodies.Count == 0)
+            {
+                return;
+            }
+
+            float playerRadius = frame.PlayerRadius > 0.0f ? frame.PlayerRadius : 0.25f;
+
+            bool refusedByRule7 = false;
+            for (int i = 0; i < candidates.Count; i++)
+            {
+                if (!candidates[i].Admissible && candidates[i].RefusedBy == (int)AdmissionRule.EnemyBody)
+                {
+                    refusedByRule7 = true;
+                    _bodyRule7Refusals++;
+                }
+            }
+            if (refusedByRule7)
+            {
+                _bodyRule7Frames++;
+            }
+
+            // E5's denominator: every frame that had a candidate set at all, and every one that had
+            // somewhere to go. `stand` counts as admissible, so a fence that refuses the whole ring
+            // still leaves `stand` -- and the claim is specifically about the RING, so it is the
+            // admissible MOVING candidates that the assertion wants.
+            if (decision.EvaluatedCount > 0)
+            {
+                _bodyFramesWithCandidates++;
+                bool anyMovingAdmissible = false;
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    if (candidates[i].Admissible && candidates[i].Distance > 1e-6f)
+                    {
+                        anyMovingAdmissible = true;
+                        break;
+                    }
+                }
+                if (anyMovingAdmissible)
+                {
+                    _bodyFramesWithAdmissible++;
+                }
+            }
+
+            if (decision.Action != DodgeAction.Move
+                || decision.CandidateIndex < 0 || decision.CandidateIndex >= candidates.Count)
+            {
+                return;
+            }
+            CandidateResult chosen = candidates[decision.CandidateIndex];
+            if (!chosen.Admissible)
+            {
+                return;   // T6 already reports this; it is not a body finding
+            }
+
+            for (int b = 0; b < snapshot.Bodies.Count; b++)
+            {
+                EntityBody body = snapshot.Bodies[b];
+                float r = body.Radius + playerRadius;
+                float r2 = r * r;
+
+                float pdx = frame.PlayerX - body.X;
+                float pdy = frame.PlayerY - body.Y;
+                if ((pdx * pdx) + (pdy * pdy) < r2)
+                {
+                    continue;   // already inside: rule 7's documented exception, and the move may stay in it
+                }
+
+                // THE SAME SWEEP THE SOLVER BUILT, FROM THE SAME CONFIG NUMBER. `BuildSweep` samples
+                // at `ceil(distance / SweepStep)`, and a coarser check here would miss a body the
+                // solver itself refused -- reporting the solver's correct refusal as a violation of a
+                // test that sampled less finely than the thing it is testing.
+                float moveDx = chosen.X - frame.PlayerX;
+                float moveDy = chosen.Y - frame.PlayerY;
+                float moveDistance = (float)Math.Sqrt((moveDx * moveDx) + (moveDy * moveDy));
+                int steps = moveDistance <= 1e-6f ? 1 : (int)Math.Ceiling(moveDistance / _config.SweepStep);
+                if (steps < 1) { steps = 1; }
+                if (steps > 64) { steps = 64; }
+
+                for (int s = 0; s <= steps; s++)
+                {
+                    float t = (float)s / steps;
+                    float sx = frame.PlayerX + (moveDx * t);
+                    float sy = frame.PlayerY + (moveDy * t);
+                    float dx = sx - body.X;
+                    float dy = sy - body.Y;
+                    if ((dx * dx) + (dy * dy) < r2)
+                    {
+                        _bodySweepViolations++;
+                        if (_bodySweepExamples.Count < 5)
+                        {
+                            _bodySweepExamples.Add("frame " + frame.Frame + ": the move sweeps body "
+                                + b + " at (" + F(body.X) + "," + F(body.Y) + ") r=" + F(r)
+                                + ", sample " + s + " of " + steps);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Accumulates the planner's own body counters once per frame. Read after `Decide`, because
+        /// they describe the search that just ran. See `PathStats.BodyZoneNodes`.
+        /// </summary>
+        private void TrackBodyPath()
+        {
+            PathStats stats = _solver.Path.Stats;
+            // `Stats` is cumulative, so the frame's contribution is the difference; the harness keeps
+            // the last total and adds the delta rather than re-deriving the same number.
+            _bodyPathsFound += (int)(stats.PathsFound - _bodyPathsSeen);
+            _bodyPathsSeen = stats.PathsFound;
+            _bodyZoneNodes += stats.BodyZoneNodes - _bodyZoneSeen;
+            _bodyZoneSeen = stats.BodyZoneNodes;
+        }
+
+        private long _bodyPathsSeen;
+        private long _bodyZoneSeen;
 
         // ===================================================================================
         // T10 -- hysteresis cannot lock a heading that has become unsafe
@@ -2232,9 +2469,81 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private long _parityHarnessOnly;
         private long _parityUnwitnessed;
 
+        /// <summary>
+        /// True when at least one frame's enemy bodies already cover the player, in which case a
+        /// planned node inside an emitter disc says nothing about the path.
+        ///
+        /// THE BODY PATH CHECK NEEDS THIS AND IT IS NOT A LICENCE. The claim it makes is "the search
+        /// went AROUND the disc rather than paying to walk through it", and when the player is
+        /// standing inside a disc that claim cannot exist: the first node is inside it whether the
+        /// edge cost is counted or not, so the counter would read non-zero for a reason that has
+        /// nothing to do with the emitter. `BodyClose` (a body half a unit away) and `BodyFence`
+        /// (eight of them) are both that shape BY CONSTRUCTION -- one is rule 7's scenario and the
+        /// other is the fencing scenario -- and `Body` is the one whose geometry can answer the
+        /// question.
+        /// </summary>
+        private bool BodiesCoverThePlayer()
+        {
+            for (int s = 0; s < _trace.Frames.Count; s++)
+            {
+                RecordedFrame frame = _trace.Frames[s];
+                float playerRadius = frame.PlayerRadius > 0.0f ? frame.PlayerRadius : 0.25f;
+                for (int b = 0; b < frame.Bodies.Count; b++)
+                {
+                    EntityBody body = frame.Bodies[b];
+                    float r = body.Radius + playerRadius + _config.EnemyDangerPadUnits;
+                    float dx = frame.PlayerX - body.X;
+                    float dy = frame.PlayerY - body.Y;
+                    if ((dx * dx) + (dy * dy) < (r * r))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         // ===================================================================================
         // The report
         // ===================================================================================
+
+        /// <summary>
+        /// The enemy bodies in the trace, on their own line -- because the alternative is a reader
+        /// inferring their absence from a zero in a check that is vacuously true without them.
+        ///
+        /// `PLAN-ENEMY-THREATS.md` section 4.3's first consequence is that a body in the envelope
+        /// reads as a bullet with a strange speed; the second is that a scenario with no bodies at all
+        /// reads as a scenario where the emitter was harmless. This line is the difference.
+        /// </summary>
+        private void ReportBodies()
+        {
+            int framesWithBodies = 0;
+            for (int i = 0; i < _trace.Frames.Count; i++)
+            {
+                if (_trace.Frames[i].Bodies.Count > 0)
+                {
+                    framesWithBodies++;
+                }
+            }
+            Console.WriteLine("  enemy bodies        : " + framesWithBodies + " of " + _frames
+                              + " frame(s) carried one; emitter "
+                              + (_config.EnemyEmitter ? "ON" : "OFF")
+                              + ", pad " + F(_config.EnemyDangerPadUnits)
+                              + ", wEnemy " + F(_config.WeightEnemyDanger)
+                              + (!_config.EnemyBodies ? ", bodies DISABLED (rule 7 vacuous)" : ""));
+            if (framesWithBodies == 0)
+            {
+                return;
+            }
+            Console.WriteLine("  rule 7              : " + _bodyRule7Refusals
+                              + " candidate(s) refused by AdmissionRule.EnemyBody over "
+                              + _bodyRule7Frames + " frame(s); " + _bodySweepViolations
+                              + " emitted move(s) swept a body");
+            for (int i = 0; i < _bodySweepExamples.Count; i++)
+            {
+                Console.WriteLine("    " + _bodySweepExamples[i]);
+            }
+        }
 
         private void ReportWorld()
         {
@@ -2249,6 +2558,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 Console.WriteLine("  frame delta         : " + F(first.Dt * 1000.0f) + " ms");
             }
             Console.WriteLine("  tracked bullets     : " + _firstFrameSeen.Count);
+            ReportBodies();
             // THE PLAYER'S OWN SHOTS, COUNTED BY THE CLIENT'S OWN PREDICATE. `nohit` is written by
             // the recorder per frame: the projectiles `TrajectorySampler` declined because
             // `Projectile.HitsPlayer` was false or `LocalSeedDerived` was true, i.e. the ones the
@@ -2602,6 +2912,75 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                    + _solver.Path.Stats.PathsFound + " path(s) found -- a diagonal step whose two"
                    + " orthogonal neighbours are BOTH solid. A non-zero count means the planner can"
                    + " route a dodge into scenery on a map with walls in it.");
+            // THE ENEMY TWIN OF THE LINE ABOVE (PLAN-ENEMY-THREATS.md's E3). It is asserted on the
+            // paths the planner returned, over every scenario and recording -- not only the body
+            // ones -- because a pad that leaks into the search is a fact about the search and not
+            // about which scenario was run. It is vacuously true wherever there are no bodies or the
+            // emitter is off, which is the honest reading of "no planned route enters a body's
+            // emitter disc" when there are no emitter discs.
+            bool bodiesCoverPlayer = BodiesCoverThePlayer();
+            Report("BODY no planned route enters an enemy emitter disc",
+                   _bodyZoneNodes == 0 || bodiesCoverPlayer,
+                   _bodyZoneNodes + " planned node(s) inside a body's DangerRadius over "
+                   + _bodyPathsFound + " path(s) found, with the emitter "
+                   + (_config.EnemyEmitter ? "ON" : "OFF")
+                   + (bodiesCoverPlayer
+                       ? ". NOT ASSERTED on this trace: an enemy's emitter disc already covers the"
+                         + " player, so the first path node is inside one whether the edge cost is"
+                         + " counted or not and the count cannot answer the question. Run `body`."
+                       : ". Non-zero means the pad is in the envelope but not in the edge cost, so"
+                         + " the path walks into a mob's doorstep and reports a route that avoids it."));
+            // --- THE SCENARIO-SPECIFIC BODY CLAIMS (E2 and E5) -------------------------------
+            //
+            // THESE ARE CONDITIONAL ON THE FIXTURE, AND THAT IS NOT A WEAKENING. "Rule 7 refused a
+            // candidate" is a claim that can only be made where the geometry guarantees there is one
+            // -- `BodyClose` puts a body inside a frame's step -- and asserting it on a recording with
+            // no mobs nearby would be asserting that the harness set up its own scenario. The count
+            // is printed on every run either way, so a body scenario that stops producing refusals
+            // fails loudly and a recording stays readable.
+            if (ScenarioName == "bodyclose" || ScenarioName == "body-close")
+            {
+                Report("E2  rule 7 refuses a candidate that walks into a body",
+                       _bodyRule7Refusals > 0,
+                       _bodyRule7Refusals + " candidate(s) refused by AdmissionRule.EnemyBody over "
+                       + _bodyRule7Frames + " frame(s) with a body in range. Zero here means the body"
+                       + " list is not reaching `Admit` -- which is exactly the vacuous rule 7 the"
+                       + " plan exists to close, and it prints as a healthy decision otherwise.");
+            }
+            if (ScenarioName == "body" || ScenarioName == "enemy"
+                || ScenarioName == "bodyclose" || ScenarioName == "body-close"
+                || ScenarioName == "bodyfence" || ScenarioName == "body-fence")
+            {
+                Report("E2  no emitted move sweeps an enemy body",
+                       _bodySweepViolations == 0,
+                       _bodySweepViolations + " move(s) swept a body's collision disc the player was"
+                       + " not already inside. This is rule 7's own claim, checked against the"
+                       + " solver's sweep rather than against its account of it.");
+            }
+            if (ScenarioName == "bodyfence" || ScenarioName == "body-fence")
+            {
+                // THE PAD CANNOT FENCE THE PLAYER IN, WHICH IS THE ONE FAILURE MODE THAT WOULD MAKE
+                // THIS FEATURE WORSE THAN NOT HAVING IT. Eight bodies ring the player at 0.55 units,
+                // so rule 7 refuses every heading aimed at a body while eight emitter discs cover
+                // every candidate on every frame; if the pad were an admission rule, `stand` would be
+                // the only admissible candidate and the dodge would freeze exactly as the
+                // 1733-of-6267 `NoAdmissible` frames did. A moving candidate on every frame that
+                // evaluated any is the measurement -- and the denominator is asserted non-zero, so a
+                // gate that closed every frame cannot pass this by having nothing to check.
+                Report("E5  an emitter disc cannot fence the player in",
+                       _bodyFramesWithCandidates > 0
+                       && _bodyFramesWithAdmissible == _bodyFramesWithCandidates,
+                       _bodyFramesWithCandidates == 0
+                           ? "NO FRAME EVALUATED A CANDIDATE SET, so the claim was not tested. The"
+                             + " gate that decides whether a frame is interesting did not open for a"
+                             + " body within rule 7's own reach."
+                           : (_bodyFramesWithCandidates - _bodyFramesWithAdmissible) + " of "
+                             + _bodyFramesWithCandidates + " frame(s) with a candidate set had NO"
+                             + " admissible MOVING candidate with eight bodies ringing the player."
+                             + " Any non-zero count means the emitter radius reached the admission"
+                             + " rules, which is the fencing PLAN-ENEMY-THREATS.md section 3.1"
+                             + " forbids.");
+            }
             if (_trace.Hits.Count == 0)
             {
                 if (_t7 != null && _t7.NotApplicable)

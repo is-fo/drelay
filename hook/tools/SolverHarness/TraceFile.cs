@@ -90,6 +90,21 @@ namespace Drelay.SolverHarness
         public float SpeedOverride;
 
         public readonly List<RecordedThreat> Threats = new List<RecordedThreat>();
+
+        /// <summary>
+        /// The enemy bodies rule 7 tests against, at this frame's positions.
+        ///
+        /// IT IS A LIST ON THE FRAME AND NOT A FIELD ON THE TRACE, because a body moves: an enemy
+        /// that walks toward the player changes the answer on every frame it does, and a scenario or
+        /// a recording that carried one position for the whole run would be a test of a statue.
+        ///
+        /// `DangerRadius` IS NOT READ OFF THE RECORDING. It is `Radius + playerRadius + pad` and the
+        /// pad is a CONFIG value, so the harness computes it from the frame's own player radius and
+        /// the config it is running -- which is what makes `--config enemypad=N` an A/B of the
+        /// emitter alone rather than a change that also had to be baked into the file.
+        /// </summary>
+        public readonly List<EntityBody> Bodies = new List<EntityBody>();
+
         public int Skipped;
 
         /// <summary>
@@ -473,6 +488,21 @@ namespace Drelay.SolverHarness
                     threat.Alive[i] = i < alive.Count ? alive[i].AsInt() != 0 : true;
                 }
                 frame.Threats.Add(threat);
+            }
+
+            // ENEMY BODIES, WHEN THE RECORD CARRIES THEM. A recording from before the reader existed
+            // has no `bodies` key at all, so this reads as the empty list and rule 7 is exactly as
+            // vacuous as it was for that session -- which is the honest replay of it. `danger` is
+            // deliberately NOT read: the emitter radius is a CONFIG value, see `RecordedFrame.Bodies`.
+            foreach (Json b in record["bodies"].Items)
+            {
+                frame.Bodies.Add(new EntityBody
+                {
+                    X = b["x"].AsFloat(),
+                    Y = b["y"].AsFloat(),
+                    Radius = b["rad"].AsFloat(),
+                    DangerRadius = 0.0f,   // the harness fills it from the config it is running
+                });
             }
             return frame;
         }

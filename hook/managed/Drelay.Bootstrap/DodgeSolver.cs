@@ -931,7 +931,8 @@ namespace Drelay.Bootstrap
             // gates are properties of the player rather than of one frame's input object: dead,
             // safe area, and a zero speed law. `Moving` stays in the trace, where it is evidence
             // rather than a decision.
-            if (!AnyThreatNearPlayer(snapshot, player.X, player.Y, playerRadius, _config.WarningRadiusPad))
+            if (!AnyThreatNearPlayer(snapshot, player.X, player.Y, playerRadius,
+                                     _config.WarningRadiusPad, budget))
             {
                 decision.Reason = DodgeReason.NoThreat;
                 return AttachStageClocks(decision);
@@ -1257,7 +1258,7 @@ namespace Drelay.Bootstrap
         /// apart.
         /// </summary>
         private bool AnyThreatNearPlayer(DodgeSnapshot snapshot, float px, float py,
-                                         float playerRadius, float pad)
+                                         float playerRadius, float pad, float budget)
         {
             for (int i = 0; i < snapshot.Threats.Count; i++)
             {
@@ -1277,6 +1278,54 @@ namespace Drelay.Bootstrap
                     {
                         return true;
                     }
+                }
+            }
+
+            // AND THE ENEMY BODIES, OR RULE 7 NEVER RUNS ON A FRAME WITH NO BULLET IN IT.
+            //
+            // This gate is the first thing `DecideCore` does, and a frame that returns here never
+            // builds a candidate set -- so nothing is tested, nothing is refused and the planner is
+            // never asked for a path. Without the loop below, the whole body feature would be
+            // invisible on exactly the frames `PLAN-ENEMY-THREATS.md` exists for: a ranged mob
+            // standing in the open between the player and where they are going, not currently
+            // shooting. The operator's sentence is "pathing over an enemy might look safe until it
+            // spawns projectiles", and those are the frames it describes.
+            //
+            // IT IS NOT THE EMITTER BECOMING A GATE. What this decides is whether the frame is
+            // EVALUATED, not what the evaluation may do: a body still cannot admit or move anything,
+            // so the only hard word it has is rule 7's refusal against its own unpadded radius.
+            //
+            // THE REACH IS THE BODY'S COLLISION RADIUS PLUS ONE FRAME'S STEP, AND NOT THE PAD. A body
+            // is interesting to rule 7 when a candidate of THIS FRAME could sweep into it -- the
+            // collision radius alone would miss every body in the one window where the refusal
+            // matters (`body.Radius + player.Radius < distance <= that + budget`), which is exactly
+            // the case `bodyclose` builds. The step is `budget`, which is the same quantity the
+            // candidate ring is scaled by, so the gate and the ring cannot disagree about how far
+            // the player can go.
+            //
+            // IT IS WHAT MAKES THE PAD SWEEPABLE. E4 asserts that `EnemyDangerPadUnits` has no effect
+            // on admission, and a gate that opened only for a positive pad would break that claim in
+            // the most confusing possible way: every candidate would read "not admissible" at pad 0
+            // because the frame was never evaluated, which is indistinguishable from the emitter
+            // refusing everything. Rule 7's reach does not move when the pad does.
+            //
+            // AND IT IS ONLY EVER TRUE FOR A BODY THAT IS THERE. `EnemyBodies=0` leaves the list
+            // empty, so this loop cannot open a frame that today's gate would have closed -- which is
+            // E9, the requirement that switching the module off changes nothing.
+            float stepReach = budget;
+            for (int b = 0; b < snapshot.Bodies.Count; b++)
+            {
+                if (snapshot.Player.Dead || snapshot.Player.SafeWorld)
+                {
+                    break;      // the two guards this gate sits behind; see `DecideCore`
+                }
+                EntityBody body = snapshot.Bodies[b];
+                float reach = body.Radius + playerRadius + stepReach;
+                float dx = body.X - px;
+                float dy = body.Y - py;
+                if ((dx * dx) + (dy * dy) <= reach * reach)
+                {
+                    return true;
                 }
             }
             return false;
@@ -2782,6 +2831,7 @@ namespace Drelay.Bootstrap
                     + (_config.WeightLateral * lateral)
                     - (_config.WeightAxial * Axialness(snapshot, player, r))
                     - (_config.WeightProjectedDanger * projected)
+                    - (_config.WeightEnemyDanger * EnemyDanger(player, r, budget))
                     - (_config.WeightMove * move)
                     + (_config.WeightStandBias * stand);
                 _results[i] = r;
@@ -2807,11 +2857,11 @@ namespace Drelay.Bootstrap
         /// </summary>
         public void DescribeChosen(DodgeSnapshot snapshot, int index, float[] into)
         {
-            if (into == null || into.Length < 13)
+            if (into == null || into.Length < 14)
             {
                 return;
             }
-            for (int i = 0; i < 13; i++)
+            for (int i = 0; i < 14; i++)
             {
                 into[i] = 0.0f;
             }
@@ -2847,14 +2897,15 @@ namespace Drelay.Bootstrap
             into[9] = _config.WeightStandBias * stand;
             into[10] = -(_config.WeightAxial * axial);
             into[11] = -(_config.WeightProjectedDanger * ProjectedDanger(_lastPlayer, r, budget));
-            into[12] = r.Score;
+            into[12] = -(_config.WeightEnemyDanger * EnemyDanger(_lastPlayer, r, budget));
+            into[13] = r.Score;
         }
 
         /// <summary>The candidate names of <see cref="DescribeChosen"/>'s terms, in its own order.</summary>
         public static readonly string[] ScoreTermNames =
         {
             "resolve", "clearance", "durability", "intent", "goal", "path", "heading",
-            "lateral", "move", "stand", "axial", "projected", "score",
+            "lateral", "move", "stand", "axial", "projected", "enemy", "score",
         };
 
         /// <summary>
@@ -2958,6 +3009,53 @@ namespace Drelay.Bootstrap
                 total += worst;
             }
             return total / samples;
+        }
+
+        /// <summary>
+        /// How close a candidate leaves the character to an enemy's EMITTER disc. In `[0,1]`, and 0
+        /// whenever the frame has no enemy bodies or the emitter is off.
+        ///
+        /// IT IS THE SAME FIELD `ProjectedDanger` READS, OVER THE OTHER HALF OF THE ENVELOPE. See
+        /// `PathPlanner.DangerOverBodies`: bodies are folded into the planner's one envelope as
+        /// one-sample stationary entries, so this is a second question asked of one measurement --
+        /// "does this candidate end up on a mob's doorstep" -- rather than a second model of where
+        /// the mobs are.
+        ///
+        /// IT READS THE CANDIDATE'S ARRIVAL POINT, NOT ITS PROJECTED PATH, AND THAT IS THE DIVISION OF
+        /// LABOUR RATHER THAN AN OMISSION. The PATH is what answers "will the route go through the
+        /// enemy's pad" -- the edge cost in `PathPlanner.Search` -- and it answers it for the whole
+        /// horizon at once. This term exists for the frames the path declined (no grid, no goal,
+        /// unreachable) and for the ranking among admissible candidates: it can only re-rank what
+        /// already passed admission, exactly like `WeightPath`, and it can never admit, refuse or
+        /// move a candidate.
+        ///
+        /// ZERO WHEN `stand` IS THE CANDIDATE, for the same reason `ProjectedDanger` returns zero
+        /// there: standing has no direction and no projected position, which is what standing is.
+        ///
+        /// THE DEFAULT WEIGHT IS ZERO. This ships implemented and switched off, the
+        /// `WeightProjectedDanger` precedent: the harness sweeps it, a live run reads it, and nobody
+        /// has to guess whether the term is absent or merely silent.
+        /// </summary>
+        private float EnemyDanger(PlayerView player, CandidateResult r, float budget)
+        {
+            if (_config.WeightEnemyDanger <= 0.0f)
+            {
+                return 0.0f;   // the off-switch, and it costs one compare on every frame
+            }
+            if (r.Distance <= 1e-6f || budget <= 0.0f)
+            {
+                return 0.0f;   // `stand` has no arrival point that is any different from the player's
+            }
+            if (!_planner.FieldReady)
+            {
+                return 0.0f;   // no grid or no violence this frame: no field, and so no opinion
+            }
+
+            // THE POINT, NOT THE REGION, AND THAT IS THE DESIGN RATHER THAN A SHORTCUT. The body field
+            // is a set of CELLS whose centres are inside an emitter disc, so "is this arrival point in
+            // a mob's doorstep" is a single cell lookup -- the same lookup the search's edge cost made
+            // for the same cell. A 3x3 probe here would ask about cells the candidate is not in.
+            return _planner.DangerOverBodies(r.X, r.Y);
         }
 
         /// <summary>
