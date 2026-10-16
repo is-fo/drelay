@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    WorldLogVerify: the offline half of `worlds.jsonl`.
+
+    WHY THIS PROJECT EXISTS AND WHY IT IS NOT A UNIT TEST IN DISGUISE.
+
+    `worlds.jsonl` is what PLAN-AUTOFARM.md section 6's collection session produces, and it is the
+    only source of the map names, portal titles and realm geometry that sections 5 and 8 are blocked
+    on. A session written by a broken writer is a session the operator has to run again, and this
+    project has already paid for exactly that once: `TraceRecorder`'s hand-rolled JSON writer left an
+    unescaped newline in the trace header and turned a healthy recording into a file every reader
+    reported as CORRUPT at line 3.
+
+    So the REAL `WorldLog.cs` and the REAL `EnemyReader.cs` are compiled here, by the same mechanism
+    `SolverHarness.csproj` uses for the solver, against a fake game whose field and property names
+    are the client's own (checked against `hook/work/decomp`), and every line the writer emits is
+    parsed by the project's existing reader. A change to the writer that produces a malformed line
+    breaks this check rather than the operator's session.
+
+    IT FOUND TWO REAL DEFECTS BEFORE THE INSTRUMENT SHIPPED, and they are worth naming because
+    neither would have been visible in the game for a whole session:
+
+      * the enemy rows were written in `World.GetEnemies()`'s own order rather than nearest first,
+        because the distance sort sat inside the truncation branch, so "the 8 nearest" was "the
+        first 8" on every frame with more than eight mobs;
+      * the portal fields were resolved on the ELEMENT type of `World.Activatables`, which is
+        `ActivatableObject`, while `Title`, `Tag`, `Called` and `locked` are declared on `Portal`.
+        Every portal row would have carried a null title and `locked: false` for a whole session,
+        with the row present and the file well formed.
+
+    IT WRITES NOTHING INTO THE REPOSITORY. The log goes to `bin/<config>/net8.0/verify-run`, which
+    is gitignored with the rest of the build output.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>WorldLogVerify</AssemblyName>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <!-- The linked reader reads the game's own function pointers, exactly as it does in the hook. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- The fake game's fields are never read in this process; the whole point is that reflection
+         finds them. The real client's warnings do not apply to a stand-in. -->
+    <NoWarn>CS0169;CS0649;CS0414</NoWarn>
+    <Deterministic>true</Deterministic>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="FakeGame.cs" />
+    <Compile Include="Shim.cs" />
+    <Compile Include="Program.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\WorldLog.cs" Link="WorldLog.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\EnemyReader.cs" Link="EnemyReader.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSnapshot.cs" Link="DodgeSnapshot.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\FieldAccessor.cs" Link="FieldAccessor.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\FieldLookup.cs" Link="FieldLookup.cs" />
+    <Compile Include="..\SolverHarness\MiniJson.cs" Link="MiniJson.cs" />
+  </ItemGroup>
+
+</Project>

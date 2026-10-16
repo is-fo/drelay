@@ -1625,6 +1625,16 @@ namespace Drelay.Bootstrap
                 TraceRecorder.OnFrame(SensorRead.LiveObjects, SensorRead.LiveKeys,
                                       (int)SensorRead.Frame, TrajectorySampler.LastFrameSeconds());
 
+                // THE WORLD LOG, WHICH IS THE OPERATOR'S COLLECTION INSTRUMENT AND NOT PART OF THE
+                // DECISION (`PLAN-AUTOFARM.md` section 6). It runs here, on the frame tick, because
+                // that is where the world is freshest -- and it runs AFTER the trace recorder and
+                // BEFORE the adapter for a reason that is about the file and not about the frame: it
+                // reads the world, the map, the portals and the enemy list, none of which the
+                // adapter's snapshot is allowed to carry (the solver is a pure function of plain
+                // data), so it needs the live objects rather than the snapshot. It is off by default
+                // and returns on one boolean when it is off.
+                WorldLog.OnFrame((int)SensorRead.Frame, (float)Clock.Elapsed.TotalMilliseconds);
+
                 // DELIVERABLE 3.3'S DECIDING END, AND IT RUNS HERE FOR THE REASON SECTION 4 OF
                 // PHASE3-HANDOFF.md GIVES: the frame tick is where the world is freshest and where
                 // the snapshot belongs. It borrows the sensor's own projectile list for the same
@@ -2403,6 +2413,14 @@ namespace Drelay.Bootstrap
                                            + why + " -- no trace will be written");
                     }
                 }
+
+                // THE WORLD LOG IS NOT RESOLVED HERE, AND THE ORDER IS THE REASON. It samples the
+                // enemy list through `EnemyReader`, whose `Resolve`/`ResolveWorld` are called from
+                // `DodgeAdapter.Resolve` further down -- so a world log resolved at this point would
+                // write a header saying the enemy list was missing and would carry no enemy rows for
+                // a whole session, with nothing in the file to say why. It is still outside the trace
+                // recorder's `else if` chain, for the reason recorded there: this is evidence, and
+                // the decision must not gate it. See the resolve after the adapter below.
             }
             catch (Exception ex)
             {
@@ -2431,6 +2449,31 @@ namespace Drelay.Bootstrap
                         AppendLog("ERROR", "the dodge adapter was asked for and is NOT available: "
                                            + why + " -- the sensor, the trace and the actuator are "
                                            + "unaffected, but no live decision will be made");
+                    }
+                }
+
+                // THE WORLD LOG IS RESOLVED HERE RATHER THAN BESIDE THE TRACE RECORDER, AND THE
+                // ORDER IS THE REASON. It samples the enemy list through `EnemyReader`, and
+                // `EnemyReader.Resolve`/`ResolveWorld` are called from `DodgeAdapter.Resolve` -- so a
+                // world log resolved before the adapter would write a header saying the enemy list
+                // was missing and would carry no enemy rows for a whole session, with nothing in the
+                // file to say why. It is still outside the trace recorder's `else if` chain, for the
+                // reason recorded there: this is evidence and the decision must not gate it.
+                if (WorldLog.Resolve(game, Environment.GetEnvironmentVariable("DRELAY_HOOK_RUNDIR")))
+                {
+                    AppendLog("INFO", WorldLog.Describe());
+                }
+                else
+                {
+                    string why = WorldLog.UnresolvedReason;
+                    if (why != null && why.IndexOf("DRELAY_WORLDLOG", StringComparison.Ordinal) >= 0)
+                    {
+                        AppendLog("INFO", "world log idle: " + why);
+                    }
+                    else
+                    {
+                        AppendLog("ERROR", "the world log was asked for and is NOT available: "
+                                           + why + " -- no worlds.jsonl will be written");
                     }
                 }
             }

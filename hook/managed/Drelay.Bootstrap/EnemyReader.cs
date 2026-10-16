@@ -84,6 +84,22 @@ namespace Drelay.Bootstrap
         private static Func<object, float> _getRadius;
 
         /// <summary>
+        /// `Health` and `MaxHealth`, read for the WORLD LOG and for nothing else.
+        ///
+        /// THEY ARE OPTIONAL AND THEY ARE A DIFFERENT QUESTION FROM RULE 7'S. The dodge has never
+        /// needed an enemy's health -- it reasons about geometry -- and `PLAN-ENEMY-THREATS.md`'s
+        /// reader deliberately resolves the smallest set that answers "can this damage me". The world
+        /// log (`PLAN-AUTOFARM.md` section 6) wants health because "the 8 nearest" is how the
+        /// operator's session names a boss later, and a boss is a health number. So they are resolved
+        /// here, where the enumeration already is, and a build where they moved costs a column.
+        ///
+        /// THE NAMES ARE `AutoAim`'s, WHICH HAS READ BOTH LIVE: `Health` and `MaxHealth` on the
+        /// element type. See `AutoAim.Resolve`.
+        /// </summary>
+        private static Func<object, float> _getHealth;
+        private static Func<object, float> _getMaxHealth;
+
+        /// <summary>
         /// `GameObject.GameId`, read for the FARMER's target list and not for the body list.
         ///
         /// IT IS OPTIONAL FOR THE BODIES AND REQUIRED FOR THE FARMER, and that asymmetry is the same
@@ -245,6 +261,14 @@ namespace Drelay.Bootstrap
                 _getDead = FieldAccessor.Bool(deadField);
                 _getNpc = FieldAccessor.Bool(npcField);
                 _getRadius = radiusField != null ? FieldAccessor.Float(radiusField) : null;
+
+                // THE WORLD LOG'S TWO OPTIONAL FIELDS. See `_getHealth`: a missing one costs the log
+                // a column and nothing else, which is the same discipline every other accessor here
+                // follows.
+                FieldInfo healthField = FieldLookup.Find(enemyType, out _, "Health");
+                FieldInfo maxHealthField = FieldLookup.Find(enemyType, out _, "MaxHealth");
+                _getHealth = healthField != null ? FieldAccessor.Float(healthField) : null;
+                _getMaxHealth = maxHealthField != null ? FieldAccessor.Float(maxHealthField) : null;
 
                 // THE FARMER'S IDENTITY FIELD. Optional for the bodies, required for the farm
                 // half -- see `_getGameId`.
@@ -427,6 +451,117 @@ namespace Drelay.Bootstrap
                 });
             }
         }
+
+        /// <summary>
+        /// One enemy, as the WORLD LOG wants it. `PLAN-AUTOFARM.md` section 6.1.
+        ///
+        /// IT IS ITS OWN TYPE RATHER THAN `EntityBody`, and the difference is the point: `EntityBody`
+        /// is geometry rule 7 tests, and this is a row of evidence for a file. Sharing one type would
+        /// make every future addition to the log a change to the solver's input.
+        /// </summary>
+        public struct EnemySample
+        {
+            public int GameId;
+            public float X;
+            public float Y;
+            public float Radius;
+            public float Health;
+            public float MaxHealth;
+            public bool Npc;
+            public bool Dead;
+        }
+
+        /// <summary>
+        /// Copies up to <paramref name="max"/> enemies into <paramref name="into"/>, nearest first.
+        /// Returns the number written; zero when the reader did not resolve.
+        ///
+        /// IT IS THE SAME ENUMERATION AND A DIFFERENT FILTER, which is `PLAN-AUTOFARM.md` section
+        /// 4.2's instruction applied to the log: "factor the enumeration into the `EnemyReader` ...
+        /// and have both modules read it, keeping each module's own filter". The bodies drop dead and
+        /// NPC enemies and cull at `EnemyCullRadius`, because rule 7 must not reason about a corpse;
+        /// **the log drops nothing**, because "there were four corpses in view" is exactly the kind of
+        /// thing the operator's session is for. It sorts by distance and keeps `max`.
+        ///
+        /// IT IS CALLED FROM THE DIAGNOSTIC PATH ONLY. When the world log is off this method is never
+        /// entered, so its `List` sort costs the frame nothing -- the same accounting
+        /// `PLAN-ENEMY-THREATS.md` made for `EnemyReader.Fill` itself.
+        /// </summary>
+        public static int SampleEnemies(System.Collections.Generic.List<EnemySample> into, int max,
+                                        float px, float py, out int total)
+        {
+            total = 0;
+            if (into == null)
+            {
+                return 0;
+            }
+            into.Clear();
+            if (!_resolved || _getEnemies == IntPtr.Zero || max <= 0)
+            {
+                return 0;
+            }
+
+            object raw;
+            unsafe
+            {
+                raw = ((delegate* managed<object, object>)(IntPtr)_getEnemies)(WorldObject());
+            }
+            object[] enemies = raw as object[];
+            if (enemies == null || enemies.Length == 0)
+            {
+                return 0;
+            }
+
+            for (int i = 0; i < enemies.Length; i++)
+            {
+                object enemy = enemies[i];
+                if (enemy == null)
+                {
+                    continue;
+                }
+                into.Add(new EnemySample
+                {
+                    GameId = _getGameId != null ? _getGameId(enemy) : 0,
+                    X = _getX(enemy),
+                    Y = _getY(enemy),
+                    Radius = _getRadius != null ? _getRadius(enemy) : 0.0f,
+                    Health = _getHealth != null ? _getHealth(enemy) : 0.0f,
+                    MaxHealth = _getMaxHealth != null ? _getMaxHealth(enemy) : 0.0f,
+                    Npc = _getNpc(enemy),
+                    Dead = _getDead(enemy),
+                });
+            }
+
+            // NEAREST FIRST, AND THE SORT IS THE WHOLE OF "the 8 nearest". A log that wrote the
+            // first eight the world happened to return would be a sample of the array's order, which
+            // nothing guarantees -- `World` rebuilds it from a dictionary. The comparer is a closure
+            // over the player's position and it allocates once per call; the log runs at a few hertz
+            // on a diagnostic path, so that is the right trade for not carrying an index array.
+            //
+            // `total` IS THE WHOLE POPULATION AND NOT THE SAMPLE, because `PLAN-AUTOFARM.md` section
+            // 6.1 asks for "count, and the 8 nearest" as two different facts: how many mobs are in
+            // the realm is what says whether the realm is worth farming, and the eight rows are what
+            // names them.
+            total = into.Count;
+            if (into.Count > 1)
+            {
+                into.Sort((a, b) =>
+                {
+                    float adx = a.X - px;
+                    float ady = a.Y - py;
+                    float bdx = b.X - px;
+                    float bdy = b.Y - py;
+                    return ((adx * adx) + (ady * ady)).CompareTo((bdx * bdx) + (bdy * bdy));
+                });
+            }
+            if (into.Count > max)
+            {
+                into.RemoveRange(max, into.Count - max);
+            }
+            return into.Count;
+        }
+
+        /// <summary>True when the reader resolved and the world log may ask it for rows.</summary>
+        public static bool Available => _resolved && _getEnemies != IntPtr.Zero;
 
         /// <summary>
         /// The world, for the `GetEnemies` call.

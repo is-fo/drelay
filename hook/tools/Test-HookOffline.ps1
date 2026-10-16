@@ -166,6 +166,20 @@ Invoke-Check 'steering report fixture' {
     & python (Join-Path $tools 'tests\test_steering_report.py')
 }
 
+# The WORLD LOG's writer, against a fake game. It compiles the real `WorldLog.cs` and the real
+# `EnemyReader.cs` and parses every line the writer emits, so this is the check that catches a
+# malformed line, an unescaped portal title, or a "8 nearest" that is really "first 8" -- before the
+# operator's one collection session (PLAN-AUTOFARM.md section 6) is spent on it. It found two real
+# defects on its first run; `WorldLogVerify.csproj`'s header names them.
+Invoke-Check 'world log writer fixture' {
+    $verify = Join-Path $hookRoot 'tools\WorldLogVerify\bin\Release\net8.0\WorldLogVerify.exe'
+    if (-not (Test-Path -LiteralPath $verify)) {
+        Write-Bad "missing $verify -- run build.ps1 first."
+        exit 2
+    }
+    & $verify
+}
+
 # The launcher's configuration: HANDOFF-LAUNCH-CONFIG.md section 13's invariants C1-C8, plus the
 # boundary cases section 11 asks for. It compiles the launcher's own settings, config reader,
 # command-line parser, discovery walk and environment builder, so this check is about the shipped

@@ -406,6 +406,32 @@ if ($doManaged) {
     }
 
     # ---------------------------------------------------------------------------
+    # WorldLogVerify, which is ALSO not part of the hook and IS built here.
+    # ---------------------------------------------------------------------------
+    #
+    # SAME ARGUMENT AS THE SOLVER HARNESS, one step further out.  It compiles the REAL
+    # `WorldLog.cs` and the REAL `EnemyReader.cs` against a fake game and parses every line the
+    # world log writes, so a writer that emits malformed JSON -- or that fails to escape a portal
+    # title -- breaks THIS build instead of the operator's one collection session.  That session is
+    # the only source of the map names and portal titles `PLAN-AUTOFARM.md` sections 5 and 8 are
+    # blocked on, and the project has already lost a recording to an unescaped newline once.
+    # `Test-HookOffline.ps1` runs it.
+    $worldLogProj = Join-Path $root 'tools\WorldLogVerify\WorldLogVerify.csproj'
+    if (Test-Path -LiteralPath $worldLogProj) {
+        Write-Note 'building WorldLogVerify (the world log, offline)'
+        $worldLogOut = & dotnet build $worldLogProj -c Release -v minimal --nologo 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Bad 'WorldLogVerify build FAILED -- and because it compiles WorldLog.cs and'
+            Write-Bad 'EnemyReader.cs from managed/Drelay.Bootstrap, that means those two no longer'
+            Write-Bad 'compile without the game in sight.'
+            $worldLogOut | Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
+            $failures += 'WorldLogVerify'
+        } else {
+            Write-Ok 'WorldLogVerify built'
+        }
+    }
+
+    # ---------------------------------------------------------------------------
     # The launcher's configuration, offline: LauncherHarness, also NOT part of the hook.
     # ---------------------------------------------------------------------------
     #
