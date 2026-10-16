@@ -23,7 +23,9 @@ name: hook release
 # CI has no copy of the game, so this build is verified to compile and to pass the source-only
 # checks (see hook-build.yml). The build-stamping in build.ps1 records which pinned game build it was
 # compiled against, read from known-build.json -- but the fingerprint gate and the live injection
-# tests are a local step and are not run here. The release notes say so rather than implying more.
+# tests are a local step and are not run here. THE RELEASE NOTES SAY NONE OF THIS, deliberately: they
+# are three lines (see the notes step), and this paragraph and docs/hook/HOOK-BUILD-MATRIX.md are
+# where the gap is recorded instead. A release note is not a place to correct a claim.
 on:
   push:
     branches: [master, main]
@@ -256,51 +258,21 @@ jobs:
           name: hook-release-files
           path: hook/dist
 
-      - name: Read the pinned game build
-        id: game
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' hook/known-build.json | head -n 1)"
-          echo "version=${version:-unknown}" >> "$GITHUB_OUTPUT"
-
+      # THREE LINES, AND THAT IS THE WHOLE RELEASE WINDOW.  The operator edited the 0.1.0 notes
+      # down to exactly this and asked for it to stay this way: a release note says what to
+      # download, what to run, and how to check the signature, and nothing else. Everything the
+      # notes used to carry -- how the launcher finds the game, what the written configuration
+      # turns on, what CI did and did not verify -- is in the README and under docs/hook/, where it
+      # can be corrected without cutting a release, which is exactly what those paragraphs could
+      # not be. DO NOT GROW THIS BACK.
       - name: Write the release notes
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          GAME: ${{ steps.game.outputs.version }}
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
           {
-            printf '**Download `drelay-hook-%s.zip`, unpack it next to the game, and run `Drelay.Launcher.exe`.**\n\n' "${VERSION}"
-            printf 'With no arguments it reads `%%LOCALAPPDATA%%\\drelay\\hook\\drelay.config.json`, creates\n'
-            printf 'that file if it is not there yet, and finds the game itself -- the Steam library, the\n'
-            printf 'path this build was verified from, or the folder you unpacked it into -- so a\n'
-            printf 'double-click is enough.\n\n'
-            printf 'This build is pinned to **Darza'"'"'s Dominion %s**. The hook matches its detour targets\n' "${GAME}"
-            printf 'by the SHA-256 of their IL bytes, so a game patch changes those hashes and the hook\n'
-            printf 'refuses to install rather than patching the wrong function. It checks the installed\n'
-            printf 'assembly itself at attach: a mismatch is one line in `hook.log` in the run directory,\n'
-            printf 'with the sizes and the MVID in `<run dir>\\selfcheck.txt`, and the game is left running.\n'
-            printf 'The `OpenGL\\` apphost carries a different assembly and is refused too; point `GamePath`\n'
-            printf 'at the root install instead.\n\n'
-            printf 'The zip contains `Drelay.Hook.dll`, `Drelay.Bootstrap.dll`, `Drelay.Launcher.exe` and the\n'
-            printf 'runtime files that must travel beside them, plus a `VERSION.txt` recording the hook\n'
-            printf 'version and the game build it was compiled against.\n\n'
-            printf '**What it does, and what to do next.** The written configuration is the release\n'
-            printf 'default: auto-aim at the closest damageable enemy, and the live dodge -- the solver\n'
-            printf 'decides every frame and steers the player when it has a move. Both are in that file:\n'
-            printf 'set `"AutoAim"` to `null` and `"Dodge"."Act"` to `false` to stop them, and fill in\n'
-            printf '`"GamePath"` if the game was not found. The command line still wins over the file.\n\n'
-            printf '### What was verified before this release\n\n'
-            printf 'The binary built here, and passed the checks that need only the sources: the exported\n'
-            printf 'ABI self-test, both generated tables against the record they come from, the two report\n'
-            printf 'fixtures, and the launcher'"'"'s own configuration invariants (the four sources, their\n'
-            printf 'per-field precedence, the discovery walk and the environment it builds).\n\n'
-            printf 'The checks that need an installed copy of the game - the fingerprint gate, the\n'
-            printf 're-derivation of the target table from the real assembly, the metadata reader against\n'
-            printf 'this build'"'"'s own PE, and the end-to-end injection test - are a local step on a machine\n'
-            printf 'that has it, and they did **not** run for this artifact. See\n'
-            printf '`docs/hook/HOOK-BUILD-MATRIX.md` for that procedure and the order to run it in.\n\n'
+            printf 'Download drelay-hook-%s.zip, unpack it and run Drelay.Launcher.exe.\n\n' "${VERSION}"
             printf 'This release is also signed with a build provenance attestation:\n\n'
             printf '```powershell\ngh attestation verify drelay-hook-%s.zip --repo %s\n```\n' "${VERSION}" "${REPOSITORY}"
           } > notes.md
