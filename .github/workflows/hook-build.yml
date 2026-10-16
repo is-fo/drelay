@@ -53,7 +53,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # The managed half targets net8.0 on purpose: it is loaded by the game's .NET 9 runtime, and
+      # WHICH POWERSHELL THE DEFAULT `run:` GETS, REPORTED AS AN ANNOTATION.
+      #
+      # This step deliberately has no `shell:`.  PowerShell Core and Windows PowerShell 5.1 are
+      # different enough to matter here -- the scripts use `$LASTEXITCODE` across script calls, and
+      # the ABI self-test loads and unloads a native DLL in-process -- so the version the steps run
+      # under belongs in the run's own record, not in a log nobody without a browser session can
+      # read.  `::warning::` becomes an annotation, and annotations are what the check-run API
+      # returns.
+      - name: Report the default shell
+        run: Write-Host "::warning title=default shell::$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+
+      # THE MANAGED HALF TARGETS net8.0 ON PURPOSE: it is loaded by the game's .NET 9 runtime, and
       # building against the older TFM is what keeps an accidental use of a .NET 9-only API from
       # compiling into a DLL that is then injected into a process that cannot load it.
       - name: Set up .NET 8
@@ -64,10 +75,18 @@ jobs:
       # MSVC arrives with the runner image's Visual Studio; build.ps1 finds it through vswhere and
       # reports which toolset it used, because "which compiler built this DLL" belongs in the build
       # log. Python is present on the image too, and the build uses it to regenerate the two tables.
+      #
+      # `shell: pwsh` IS PINNED ON THE TWO STEPS THAT RUN THIS REPOSITORY'S SCRIPTS.  They are
+      # developed, documented and run locally under PowerShell 7; a runner default that happens to
+      # be 5.1 would be a different interpreter with different `$LASTEXITCODE` and exception
+      # behaviour, and a green local run would mean nothing. The step above is what records the
+      # default, so a future change to the image is visible rather than inferred.
       - name: Build everything
+        shell: pwsh
         run: .\build.ps1
 
       - name: Run the offline checks
+        shell: pwsh
         run: .\tools\Test-HookOffline.ps1
 
       - name: Upload the hook

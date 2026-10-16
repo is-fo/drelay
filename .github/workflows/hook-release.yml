@@ -173,12 +173,21 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      # WHICH POWERSHELL THE DEFAULT `run:` GETS, AS AN ANNOTATION -- and `shell: pwsh` pinned on
+      # the two steps that run this repository's scripts. Both are explained in hook-build.yml: the
+      # scripts are PowerShell 7, a 5.1 default would be a different interpreter, and the version
+      # belongs in the run's own record because a step log needs a signed-in browser.
+      - name: Report the default shell
+        run: Write-Host "::warning title=default shell::$($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion)"
+
       - name: Build everything
         working-directory: hook
+        shell: pwsh
         run: .\build.ps1
 
       - name: Run the offline checks
         working-directory: hook
+        shell: pwsh
         run: .\tools\Test-HookOffline.ps1
 
       # The release file is the whole of `out\`: the native DLL, the bootstrap, the launcher and the

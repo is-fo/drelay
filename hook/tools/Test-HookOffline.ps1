@@ -42,13 +42,42 @@ function Write-Ok   { param([string]$t) Write-Host $t -ForegroundColor Green }
 function Write-Bad  { param([string]$t) Write-Host $t -ForegroundColor Red }
 function Write-Note { param([string]$t) Write-Host $t -ForegroundColor DarkGray }
 
+# A FAILING CHECK HAS TO BE READABLE FROM THE OUTSIDE.
+#
+# These checks gate a release, and the first time they ran in CI the step reported nothing but
+# "Process completed with exit code 1": a run's step log needs a signed-in browser, the check-run
+# API carries only the annotations, and `gh` is not installed everywhere. So a failure is emitted
+# as a runner ANNOTATION as well as a line of output -- `::error::` is the runner's own protocol,
+# and it is what the API can read back. GITHUB_ACTIONS is set by the runner, so a local run prints
+# nothing extra.
+function Write-Annotation {
+    param([string]$Text)
+    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::error title=offline checks::$Text" }
+}
+
+# WHICH CHECK WAS RUNNING, KEPT WHERE AN UNPLANNED STOP CAN REACH IT.  A terminating error -- an
+# exception rather than a non-zero exit code -- used to abort the script with nothing said about
+# where it happened, which is the other half of the same blind spot.
+$script:currentCheck = 'startup'
+
+trap {
+    $where = "the offline suite stopped in '$script:currentCheck': " + $_.Exception.Message
+    Write-Bad $where
+    Write-Note "  the check's own output is above, under '--- $script:currentCheck'"
+    Write-Annotation $where
+    exit 1
+}
+
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
     Write-Bad 'python is not on PATH; the generators and the metadata reader need it.'
+    Write-Annotation 'python is not on PATH; the generators and the metadata reader need it.'
     exit 2
 }
 foreach ($required in 'Drelay.Hook.dll', 'Drelay.Bootstrap.dll', 'Drelay.Launcher.exe') {
     if (-not (Test-Path -LiteralPath (Join-Path $outDir $required))) {
-        Write-Bad "missing $outDir\$required -- run build.ps1 first."
+        $missing = "missing $outDir\$required -- run build.ps1 first."
+        Write-Bad $missing
+        Write-Annotation $missing
         exit 2
     }
 }
@@ -58,10 +87,12 @@ $ran = @()
 
 function Invoke-Check {
     param([string]$Name, [scriptblock]$Body)
+    $script:currentCheck = $Name
     Write-Step "--- $Name"
     & $Body
     if ($LASTEXITCODE -ne 0) {
         Write-Bad "FAIL: $Name"
+        Write-Annotation "FAIL: $Name (exit $LASTEXITCODE)"
         $script:failures += $Name
     } else {
         if (-not $Quiet) { Write-Ok "ok: $Name" }
