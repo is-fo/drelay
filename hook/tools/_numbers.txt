@@ -1,0 +1,169 @@
+==============================================================================
+1. GmHealthUpdate (id 70) inter-arrival, within one world
+==============================================================================
+  235440 Game_Slave#11                                     n=193    min=3.0      p10=43.4     p25=49.0     med=54.0     p75=100.0    p90=101.0    max=12198.0   ms
+  235440 Game_Slave#14                                     n=452    min=0.0      p10=3.0      p25=49.0     med=50.5     p75=100.0    p90=101.9    max=15899.0   ms
+  235440 Game_Slave#17                                     n=158    min=3.0      p10=5.0      p25=48.0     med=53.0     p75=99.0     p90=101.0    max=5348.0    ms
+  235440 Game_Slave#20                                     n=27     min=4.0      p10=5.0      p25=47.5     med=87.0     p75=100.0    p90=101.0    max=111.0     ms
+  235440 Game_Slave#3                                      n=291    min=1.0      p10=48.0     p25=49.0     med=52.0     p75=100.0    p90=100.0    max=228.0     ms
+  235440 Game_Slave#5                                      n=418    min=0.0      p10=3.7      p25=50.0     med=98.0     p75=100.0    p90=100.0    max=55550.0   ms
+  235440 Game_Slave#9                                      n=1355   min=0.0      p10=48.0     p25=50.0     med=97.0     p75=100.0    p90=101.0    max=32150.0   ms
+  === 235440 ALL SESSIONS                                  n=2894   min=0.0      p10=47.0     p25=50.0     med=63.5     p75=100.0    p90=101.0    max=55550.0   ms
+
+  012701 Game_Slave#11                                     n=82     min=0.0      p10=0.0      p25=1.0      med=46.5     p75=50.0     p90=99.0     max=4049.0    ms
+  012701 Game_Slave#13                                     n=141    min=0.0      p10=0.0      p25=4.0      med=51.0     p75=99.0     p90=100.0    max=6999.0    ms
+  012701 Game_Slave#15                                     n=194    min=0.0      p10=48.0     p25=50.0     med=99.0     p75=100.0    p90=101.0    max=9949.0    ms
+  012701 Game_Slave#17                                     n=30     min=0.0      p10=1.0      p25=49.0     med=51.0     p75=99.8     p90=100.0    max=16849.0   ms
+  012701 Game_Slave#5                                      n=221    min=2.0      p10=48.0     p25=50.0     med=51.0     p75=100.0    p90=100.0    max=20798.0   ms
+  012701 Game_Slave#7                                      n=2038   min=0.0      p10=47.0     p25=50.0     med=52.0     p75=100.0    p90=101.0    max=42201.0   ms
+  012701 Game_Slave#9                                      n=46     min=0.0      p10=0.0      p25=1.0      med=24.5     p75=98.0     p90=100.0    max=102.0     ms
+  === 012701 ALL SESSIONS                                  n=2752   min=0.0      p10=40.2     p25=49.0     med=52.0     p75=100.0    p90=101.0    max=42201.0   ms
+
+  023129 Game_Slave#11                                     n=21     min=0.0      p10=0.0      p25=0.0      med=48.0     p75=100.0    p90=100.0    max=101.0     ms
+  023129 Game_Slave#13                                     n=12     min=49.0     p10=59.9     p25=149.0    med=150.0    p75=151.2    p90=196.1    max=13398.0   ms
+  023129 Game_Slave#3                                      n=112    min=2.0      p10=49.0     p25=49.0     med=50.5     p75=100.0    p90=100.0    max=101.0     ms
+  023129 Game_Slave#5                                      n=118    min=2.0      p10=2.7      p25=49.0     med=74.0     p75=99.0     p90=100.0    max=101.0     ms
+  023129 Game_Slave#7                                      n=25     min=0.0      p10=0.0      p25=49.0     med=51.0     p75=100.0    p90=100.6    max=15048.0   ms
+  023129 Game_Slave#9                                      n=153    min=0.0      p10=49.0     p25=50.0     med=99.0     p75=100.0    p90=100.0    max=102.0     ms
+  === 023129 ALL SESSIONS                                  n=441    min=0.0      p10=3.0      p25=49.0     med=97.0     p75=100.0    p90=100.0    max=15048.0   ms
+
+=== ALL THREE RUNS, ALL SESSIONS                           n=6087   min=0.0      p10=46.0     p25=50.0     med=53.0     p75=100.0    p90=101.0    max=55550.0   ms
+
+  bucket histogram (all three runs, within one world):
+           0 ms :    138    2.3%
+        1-10 ms :    380    6.2%
+       11-45 ms :     81    1.3%
+       46-55 ms :   2539   41.7%
+       56-70 ms :     58    1.0%
+       71-95 ms :    103    1.7%
+      96-105 ms :   2602   42.7%
+     106-150 ms :     84    1.4%
+     151-210 ms :     54    0.9%
+     211-400 ms :      6    0.1%
+        >400 ms :     42    0.7%
+    total       : 6087
+
+==============================================================================
+2. Biggest single-reading HP drops and the delayed reflection
+==============================================================================
+ % of max     run session               from    hp        to    hp     gap drops
+    98.92  023129 Game#12             358362  9999    367689   108    9327 1
+    24.58  012701 Game_Slave#7        461267   887    461267   712       0 220
+    23.03  012701 Game_Slave#11       580370   288    580418   148      48 20
+    16.45  012701 Game_Slave#9        564268   608    564269   508       1 8
+    14.61  012701 Game#8              504217   712    550578   608   46361 1
+    14.14  235440 Game_Slave#9       1322466   807   1322466   707       0 71
+    13.98  012701 Game_Slave#15       655966   608    658519   523    2553 17
+    10.03  023129 Game_Slave#9        328084   476    328183   415      99 19
+    10.03  023129 Game_Slave#7        127883   608    142931   547   15048 8
+     9.21  012701 Game_Slave#17       688169   216    688169   160       0 12
+     6.60  235440 Game_Slave#14      1537871   707   1538271   660     400 114
+     3.29  023129 Game_Slave#5         57932   608     67031   588    9099 25
+     3.29  023129 Game_Slave#3         28531   608     41431   588   12900 25
+     3.29  012701 Game_Slave#13       609670   587    609717   567      47 26
+     2.83  235440 Game_Slave#5         55550   701     55650   681     100 53
+     2.83  235440 Game_Slave#3          6899   707     17067   687   10168 44
+     2.83  235440 Game_Slave#11      1421718   707   1433916   687   12198 31
+     2.81  235440 Game_Slave#20      1820322   707   1820369   687      47 5
+     2.81  235440 Game_Slave#17      1756570   712   1761918   692    5348 30
+     2.81  012701 Game_Slave#5         95601   712    116399   692   20798 33
+     0.61  023129 Game_Slave#11       337034   608    349983   547   12949 12
+     0.59  023129 Game_Slave#13       372385   108    385783    49   13398 2
+drop sizes as % of max (one entry per session)             n=22     min=0.6      p10=2.8      p25=2.8      med=4.9      p75=14.1     p90=22.4     max=98.9      %
+
+==============================================================================
+3. ProjHit (GmHit id 102): the client's own hit reports
+==============================================================================
+  235440 Game_Slave#14    PlayerProj=true   16   PlayerProj=false   19
+  235440 Game_Slave#9     PlayerProj=true   22   PlayerProj=false    2
+  012701 Game#8           PlayerProj=true    1   PlayerProj=false    0
+  012701 Game_Slave#11    PlayerProj=true    0   PlayerProj=false   11
+  012701 Game_Slave#15    PlayerProj=true    0   PlayerProj=false   16
+  012701 Game_Slave#17    PlayerProj=true    0   PlayerProj=false   13
+  012701 Game_Slave#7     PlayerProj=true  380   PlayerProj=false   54
+  012701 Game_Slave#9     PlayerProj=true    0   PlayerProj=false    9
+  023129 Game_Slave#11    PlayerProj=true    0   PlayerProj=false   14
+  023129 Game_Slave#13    PlayerProj=true    0   PlayerProj=false    7
+  023129 Game_Slave#7     PlayerProj=true    0   PlayerProj=false    9
+  023129 Game_Slave#9     PlayerProj=true    0   PlayerProj=false    7
+
+  total ProjHit captured: 580   PlayerProj=true 419   PlayerProj=false 161
+  report -> next HealthUpdate, PlayerProj=false            n=160    min=1.0      p10=10.9     p25=34.0     med=55.5     p75=92.0     p90=98.1     max=1478.0    ms
+  report -> next HealthUpdate, PlayerProj=true             n=419    min=1.0      p10=19.0     p25=40.0     med=89.0     p75=1831.0   p90=3568.0   max=33591.0   ms
+
+==============================================================================
+4. Round-trip time
+==============================================================================
+  235440 Game#10                                                                     n=8      min=192.0    p10=208.8    p25=219.0    med=238.0    p75=240.8    p90=243.9    max=246.0     ms
+  235440 Game#13                                                                     n=2      min=203.0    p10=211.1    p25=223.2    med=243.5    p75=263.8    p90=275.9    max=284.0     ms
+  235440 Game#16                                                                     n=2      min=281.0    p10=287.5    p25=297.2    med=313.5    p75=329.8    p90=339.5    max=346.0     ms
+  235440 Game#19                                                                     n=3      min=207.0    p10=207.6    p25=208.5    med=210.0    p75=281.0    p90=323.6    max=352.0     ms
+  235440 Game#2                                                                      n=3      min=251.0    p10=254.2    p25=259.0    med=267.0    p75=286.0    p90=297.4    max=305.0     ms
+  235440 Game#21                                                                     n=29     min=185.0    p10=188.4    p25=198.0    med=244.0    p75=277.0    p90=334.8    max=355.0     ms
+  235440 Game#4                                                                      n=4      min=202.0    p10=205.6    p25=211.0    med=257.0    p75=305.2    p90=314.7    max=321.0     ms
+  235440 Game#6                                                                      n=10     min=180.0    p10=186.3    p25=226.0    med=235.0    p75=243.5    p90=274.7    max=380.0     ms
+  235440 Game#8                                                                      n=3      min=196.0    p10=202.0    p25=211.0    med=226.0    p75=255.0    p90=272.4    max=284.0     ms
+  235440 Game_Slave#11                                                               n=12     min=42.0     p10=44.1     p25=45.8     med=58.0     p75=80.5     p90=87.7     max=93.0      ms
+  235440 Game_Slave#14                                                               n=38     min=40.0     p10=47.7     p25=52.2     med=61.5     p75=72.8     p90=87.2     max=117.0     ms
+  235440 Game_Slave#17                                                               n=8      min=56.0     p10=60.2     p25=63.5     med=69.0     p75=75.8     p90=85.5     max=89.0      ms
+  235440 Game_Slave#20                                                               n=7      min=35.0     p10=38.0     p25=42.5     med=52.0     p75=59.0     p90=86.0     max=122.0     ms
+  235440 Game_Slave#3                                                                n=15     min=187.0    p10=191.6    p25=199.5    med=219.0    p75=271.0    p90=282.4    max=304.0     ms
+  235440 Game_Slave#5                                                                n=47     min=34.0     p10=47.6     p25=56.0     med=65.0     p75=71.0     p90=77.8     max=102.0     ms
+  235440 Game_Slave#9                                                                n=79     min=36.0     p10=42.6     p25=53.0     med=59.0     p75=74.5     p90=89.4     max=124.0     ms
+  === 235440 ALL                                           n=270    min=34.0     p10=46.0     p25=56.0     med=71.0     p75=193.8    p90=258.1    max=380.0     ms
+  235440 Ping->Pong (relay skew, not RTT)                  n=537    min=0.0      p10=0.0      p25=0.0      med=0.0      p75=1.0      p90=1.0      max=5.0       ms
+  012701 Game#10                                                                     n=3      min=219.0    p10=219.8    p25=221.0    med=223.0    p75=225.0    p90=226.2    max=227.0     ms
+  012701 Game#12                                                                     n=10     min=186.0    p10=191.4    p25=238.5    med=244.5    p75=281.8    p90=335.5    max=367.0     ms
+  012701 Game#14                                                                     n=6      min=219.0    p10=229.0    p25=247.8    med=277.5    p75=281.8    p90=283.5    max=285.0     ms
+  012701 Game#16                                                                     n=4      min=180.0    p10=181.5    p25=183.8    med=208.5    p75=236.2    p90=243.9    max=249.0     ms
+  012701 Game#18                                                                     n=4      min=225.0    p10=226.5    p25=228.8    med=232.0    p75=237.8    p90=244.5    max=249.0     ms
+  012701 Game#2                                                                      n=2      min=191.0    p10=200.2    p25=214.0    med=237.0    p75=260.0    p90=273.8    max=283.0     ms
+  012701 Game#4                                                                      n=20     min=185.0    p10=186.8    p25=195.8    med=219.5    p75=258.2    p90=311.0    max=356.0     ms
+  012701 Game#6                                                                      n=9      min=190.0    p10=194.8    p25=197.0    med=216.0    p75=250.0    p90=274.2    max=295.0     ms
+  012701 Game#8                                                                      n=26     min=181.0    p10=184.5    p25=187.2    med=198.5    p75=209.8    p90=217.5    max=226.0     ms
+  012701 Game_Slave#11                                                               n=4      min=41.0     p10=53.6     p25=72.5     med=85.5     p75=88.0     p90=88.0     max=88.0      ms
+  012701 Game_Slave#13                                                               n=7      min=40.0     p10=43.6     p25=46.5     med=50.0     p75=61.5     p90=77.2     max=85.0      ms
+  012701 Game_Slave#15                                                               n=14     min=46.0     p10=53.9     p25=67.2     med=82.0     p75=106.2    p90=110.8    max=113.0     ms
+  012701 Game_Slave#17                                                               n=9      min=38.0     p10=39.6     p25=42.0     med=46.0     p75=50.0     p90=54.2     max=71.0      ms
+  012701 Game_Slave#3                                                                n=4      min=57.0     p10=60.0     p25=64.5     med=68.5     p75=78.5     p90=93.8     max=104.0     ms
+  012701 Game_Slave#5                                                                n=20     min=182.0    p10=187.4    p25=193.8    med=203.5    p75=232.8    p90=247.3    max=258.0     ms
+  012701 Game_Slave#7                                                                n=174    min=29.0     p10=43.3     p25=49.0     med=59.0     p75=71.0     p90=81.7     max=118.0     ms
+  012701 Game_Slave#9                                                                n=4      min=61.0     p10=61.6     p25=62.5     med=69.0     p75=75.2     p90=75.7     max=76.0      ms
+  === 012701 ALL                                           n=320    min=29.0     p10=45.0     p25=54.0     med=72.5     p75=192.2    p90=238.1    max=367.0     ms
+  012701 Ping->Pong (relay skew, not RTT)                  n=644    min=0.0      p10=0.0      p25=0.0      med=0.0      p75=1.0      p90=1.0      max=2.0       ms
+  023129 Game#10                                                                     n=3      min=180.0    p10=181.6    p25=184.0    med=188.0    p75=188.0    p90=188.0    max=188.0     ms
+  023129 Game#12                                                                     n=7      min=208.0    p10=254.8    p25=290.0    med=301.0    p75=305.5    p90=314.2    max=322.0     ms
+  023129 Game#14                                                                     n=1      min=374.0    p10=374.0    p25=374.0    med=374.0    p75=374.0    p90=374.0    max=374.0     ms
+  023129 Game#2                                                                      n=2      min=284.0    p10=284.6    p25=285.5    med=287.0    p75=288.5    p90=289.4    max=290.0     ms
+  023129 Game#4                                                                      n=4      min=191.0    p10=195.5    p25=202.2    med=269.5    p75=334.5    p90=337.2    max=339.0     ms
+  023129 Game#6                                                                      n=26     min=176.0    p10=190.5    p25=205.2    med=235.0    p75=313.8    p90=339.5    max=372.0     ms
+  023129 Game#8                                                                      n=2      min=214.0    p10=217.4    p25=222.5    med=231.0    p75=239.5    p90=244.6    max=248.0     ms
+  023129 Game_Slave#11                                                               n=10     min=69.0     p10=69.9     p25=71.5     med=77.5     p75=82.8     p90=95.7     max=102.0     ms
+  023129 Game_Slave#13                                                               n=16     min=34.0     p10=40.0     p25=45.8     med=53.5     p75=63.8     p90=69.5     max=71.0      ms
+  023129 Game_Slave#3                                                                n=10     min=43.0     p10=49.3     p25=54.0     med=62.5     p75=68.2     p90=72.6     max=78.0      ms
+  023129 Game_Slave#5                                                                n=8      min=39.0     p10=41.8     p25=43.0     med=51.0     p75=54.0     p90=66.9     max=90.0      ms
+  023129 Game_Slave#7                                                                n=8      min=35.0     p10=40.6     p25=44.5     med=53.5     p75=59.0     p90=64.1     max=69.0      ms
+  023129 Game_Slave#9                                                                n=89     min=36.0     p10=45.8     p25=55.0     med=64.0     p75=69.0     p90=73.0     max=103.0     ms
+  === 023129 ALL                                           n=186    min=34.0     p10=45.0     p25=55.0     med=68.0     p75=102.8    p90=285.0    max=374.0     ms
+  023129 Ping->Pong (relay skew, not RTT)                  n=374    min=0.0      p10=0.0      p25=0.0      med=0.0      p75=1.0      p90=1.0      max=1.0       ms
+=== CheckPing->CheckPingAck on Game_Slave#NN               n=583    min=29.0     p10=44.0     p25=51.5     med=63.0     p75=74.0     p90=99.6     max=304.0     ms
+=== CheckPing->CheckPingAck on Game#NN                     n=193    min=176.0    p10=187.0    p25=198.0    med=226.0    p75=277.0    p90=320.8    max=380.0     ms
+
+==============================================================================
+5. Server tick (GmUpdate arrival cadence) and EscapeAck latency
+==============================================================================
+  235440 GmUpdate tick gap                                 n=2636   min=18.0     p10=198.0    p25=199.0    med=200.0    p75=201.0    p90=202.0    max=327.0     ms
+  235440 Game#4           Escape @41861 -> EscapeAck @42140  = 279 ms
+  235440 Game_Slave#20    Escape @1821721 -> EscapeAck @1822019  = 298 ms
+  235440 Game_Slave#3     Escape @37297 -> EscapeAck @37357  = 60 ms
+  235440 Game_Slave#5     Escape @140319 -> EscapeAck @140609  = 290 ms
+  235440 Game_Slave#9     Escape @1402991 -> EscapeAck @1403404  = 413 ms
+  235440 Escape -> EscapeAck (relay-observed)              n=5      min=60.0     p10=147.6    p25=279.0    med=290.0    p75=298.0    p90=367.0    max=413.0     ms
+  012701 GmUpdate tick gap                                 n=3161   min=1.0      p10=198.0    p25=199.0    med=200.0    p75=201.0    p90=202.0    max=393.0     ms
+  012701 Game#8           Escape @531753 -> EscapeAck @532016  = 263 ms
+  012701 Game_Slave#3     Escape @52937 -> EscapeAck @53074  = 137 ms
+  012701 Escape -> EscapeAck (relay-observed)              n=2      min=137.0    p10=149.6    p25=168.5    med=200.0    p75=231.5    p90=250.4    max=263.0     ms
+  023129 GmUpdate tick gap                                 n=1831   min=22.0     p10=199.0    p25=200.0    med=200.0    p75=200.0    p90=201.0    max=240.0     ms
+  023129 Game_Slave#11    Escape @357450 -> EscapeAck @357726  = 276 ms
+  023129 Game_Slave#13    Escape @404193 -> EscapeAck @404481  = 288 ms
+  023129 Escape -> EscapeAck (relay-observed)              n=2      min=276.0    p10=277.2    p25=279.0    med=282.0    p75=285.0    p90=286.8    max=288.0     ms

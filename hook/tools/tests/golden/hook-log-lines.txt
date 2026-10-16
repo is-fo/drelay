@@ -1,0 +1,9 @@
+[INFO ] target table: 5 entries from the bootstrap
+[INFO ]   movementIntegrator FOUND    IL size key  2574  native  4585  entry 00007FFF9EFB3100  token 0x00000000  (Phase 0 says 0x06002961)
+[INFO ] PATCHED 'frameTick' at 00007FFF9E2A42A0 (trampoline 00007FFF9D300FC0)
+[INFO ] PATCHED 'movementIntegrator' at 00007FFF9EFB3100 (trampoline 00007FFF9D300F80)
+PILOT: [INFO] boot: the steering pilot is ARMED: mode 'sweep:240', 8 phase(s) of 240 frame(s)
+PILOT: [INFO] boot: steering plan: 8 phase(s), 240 frame(s) each, target frame the client's own input angle
+PILOT: [INFO] boot: steering phase 1/8 begins: input 0deg
+PILOT: [INFO] boot: steer frame 60 phase 1 cmd 0.0deg wrote 0.0000rad read-back 0.0000rad rot 0.0deg pos (100.000,100.000) d (0.0300,0.0300) |d| 0.0424
+PILOT: [INFO] boot: steering phase 1 (input 0deg): target 0.0deg, moved on 238 frame(s), observed heading 45.0deg, mean |delta| 0.0424 world units, mean cos(observed - last commanded) 0.970

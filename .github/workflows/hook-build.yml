@@ -1,0 +1,78 @@
+name: hook build
+
+# The hook is the other component in this repository. Its workflow is path-filtered to `hook/`, so a
+# commit that only touches the relay does not build the hook, and a commit that only touches the hook
+# does not build the relay. The workflow files themselves are listed as paths so a change to this
+# pipeline is verified by the pipeline it changes.
+#
+# WHAT CI CAN AND CANNOT VERIFY ABOUT THIS COMPONENT
+#
+# This is a Windows-only, native + managed build whose whole design is pinned to one installed build
+# of one game, and the runner has no copy of that game. So CI verifies that the hook *builds*, and
+# runs the checks that depend only on the sources in this directory (tools/Test-HookOffline.ps1 -- the
+# ABI self-test, the metadata reader's self-test, the two generated files against their record, the
+# two report fixtures, and the launcher's configuration invariants C1-C8, which need no game, no
+# Steam and no registry because their discovery walk runs against a fake tree). It cannot run
+# Fingerprint.ps1, il_index.py --check/--mutation-test,
+# Test-FingerprintGate.ps1, Test-PeReader.ps1 or Test-Injection.ps1, all of which need the game. Those
+# stay a local, documented, pre-install step: docs/hook/HOOK-BUILD-MATRIX.md.
+#
+# That gap is a property of the component rather than of this pipeline, and Test-HookOffline.ps1
+# prints the list of what it did not run on every invocation, so a green build here is never mistaken
+# for "the hook was verified against the game".
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - 'hook/**'
+      - '.github/workflows/hook-build.yml'
+      - '.github/workflows/hook-release.yml'
+  pull_request:
+    paths:
+      - 'hook/**'
+      - '.github/workflows/hook-build.yml'
+      - '.github/workflows/hook-release.yml'
+  workflow_dispatch:
+
+# Nothing here writes to the repository, so the token needs no more than read access. A pull request
+# from a fork gets even less, which is the point.
+permissions:
+  contents: read
+
+concurrency:
+  group: hook-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build the hook
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: hook
+    steps:
+      - uses: actions/checkout@v7
+
+      # The managed half targets net8.0 on purpose: it is loaded by the game's .NET 9 runtime, and
+      # building against the older TFM is what keeps an accidental use of a .NET 9-only API from
+      # compiling into a DLL that is then injected into a process that cannot load it.
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # MSVC arrives with the runner image's Visual Studio; build.ps1 finds it through vswhere and
+      # reports which toolset it used, because "which compiler built this DLL" belongs in the build
+      # log. Python is present on the image too, and the build uses it to regenerate the two tables.
+      - name: Build everything
+        run: .\build.ps1
+
+      - name: Run the offline checks
+        run: .\tools\Test-HookOffline.ps1
+
+      - name: Upload the hook
+        uses: actions/upload-artifact@v7
+        with:
+          name: drelay-hook
+          path: hook/out/
+          if-no-files-found: error

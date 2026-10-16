@@ -1,0 +1,54 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Drelay.Bootstrap: the startup hook.
+
+    OutputType is Library because this is never executed. The host loads it into
+    the game's process through DOTNET_STARTUP_HOOKS. It must NOT be published or
+    self-contained, and it must not carry a runtimeconfig.json that the game's
+    host could mistake for its own, so GenerateRuntimeConfigurationFiles is off.
+  -->
+  <PropertyGroup>
+    <!--
+      TARGET FRAMEWORK: net8.0, DELIBERATELY.
+
+      The game runs .NET 9.0.20, so net9.0 looks like the obvious choice. The only
+      SDK on this machine is 8.0.202, which refuses to target .NET 9 (NETSDK1045)
+      and cannot fetch a newer one offline. That turns out not to matter, and the
+      reason is worth recording so nobody "fixes" it:
+
+        * the bootstrap is not an application. It is loaded into the game's
+          process by the host, which is already running .NET 9, through
+          DOTNET_STARTUP_HOOKS. A lower-TFM assembly in that role is not refused;
+          TFM governs compilation against a reference surface and the host's
+          runtime choice, and the host has already chosen;
+        * nothing here needs a .NET 9 API. Reflection, Marshal/Unsafe, and
+          UnmanagedCallersOnly with CallConvCdecl all exist in net8.0 and behave
+          identically on the .NET 9 runtime.
+
+      What this does cost is a guarantee, recorded as a known gap rather than
+      glossed over: if the game ever ships a runtime older than this TFM, the
+      startup hook will not load. That is caught loudly, not silently, the
+      native side times out waiting for the bootstrap and says so in hook.log.
+    -->
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <AssemblyName>Drelay.Bootstrap</AssemblyName>
+    <RootNamespace>Drelay.Bootstrap</RootNamespace>
+    <GenerateRuntimeConfigurationFiles>false</GenerateRuntimeConfigurationFiles>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
+    <!-- Never executed directly, so it needs no apphost. -->
+    <UseAppHost>false</UseAppHost>
+  </PropertyGroup>
+
+  <!--
+    No reference to the native header, and no copy of it either. The managed view
+    of the block lives in DrelayBlock.cs, and the two are kept in step by the
+    attach-time checks (magic, version, struct size, and the explicit offsets
+    re-derived by SharedLayout.VerifyOffsets) rather than by an include. A copy
+    of the header here would be a third definition of the layout and would invite
+    someone to trust it.
+  -->
+
+</Project>

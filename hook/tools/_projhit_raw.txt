@@ -1,0 +1,46 @@
+==============================================================================
+PART 2b: ProjHit (GmHit id 102) as the client->server damage report
+==============================================================================
+
+--- events-20261004-235440-1500.jsonl
+  Game_Slave#14    ProjHit   35  PlayerProj True=  16 False=  19 None=0
+  Game_Slave#9     ProjHit   24  PlayerProj True=  22 False=   2 None=0
+
+--- events-20261005-012701-2400.jsonl
+  Game#8           ProjHit    1  PlayerProj True=   1 False=   0 None=0
+  Game_Slave#11    ProjHit   11  PlayerProj True=   0 False=  11 None=0
+  Game_Slave#15    ProjHit   16  PlayerProj True=   0 False=  16 None=0
+  Game_Slave#17    ProjHit   13  PlayerProj True=   0 False=  13 None=0
+  Game_Slave#7     ProjHit  434  PlayerProj True= 380 False=  54 None=0
+  Game_Slave#9     ProjHit    9  PlayerProj True=   0 False=   9 None=0
+
+--- events-20261005-023129-2000.jsonl
+  Game_Slave#11    ProjHit   14  PlayerProj True=   0 False=  14 None=0
+  Game_Slave#13    ProjHit    7  PlayerProj True=   0 False=   7 None=0
+  Game_Slave#7     ProjHit    9  PlayerProj True=   0 False=   9 None=0
+  Game_Slave#9     ProjHit    7  PlayerProj True=   0 False=   7 None=0
+
+==============================================================================
+TOTALS
+==============================================================================
+ProjHit packets                : 580
+  PlayerProj = true  (our shot): 419
+  PlayerProj = false (we were hit): 161
+delay report -> next HP reading, PlayerProj=false (n=160): min 1  p10 11  median 56  p90 99  max 1478 ms
+delay report -> next HP reading, PlayerProj=true (n=419): min 1  p10 19  median 89  p90 3668  max 33591 ms
+HP fall after a PlayerProj=false report: 105 of 160 reports had a fall by the next reading; fall size as % of max: median 6.7%, p90 10.5%, max 54.6%
+
+worked examples (PlayerProj=false = 'I was hit' report):
+  session          report@ms  wire Time  projId   objId  payload                     hpBefore -> hpAtNextReading (@ms, +delay)
+  Game_Slave#14      1516905    291903   235221  460542  6600BFD02395DB1CBE9B3800       707 -> 680 (@1516967, +62 ms) DROP
+  Game_Slave#14      1516950    291948   235223  460542  6600ACD12397DB1CBE9B3800       707 -> 680 (@1516967, +17 ms) DROP
+  Game_Slave#14      1517030    292028   235225  460542  6600BCD22399DB1CBE9B3800       643 -> 598 (@1517117, +87 ms) DROP
+  Game_Slave#14      1518586    293584   235328  460542  660090EB2380DD1CBE9B3800       590 -> 563 (@1518667, +81 ms) DROP
+  Game_Slave#14      1520254    295252   235509  460542  6600948524B5DF1CBE9B3800       555 -> 528 (@1520316, +62 ms) DROP
+  Game_Slave#14      1520419    295417   235527  460542  6600B9872487E01CBE9B3800       527 -> 500 (@1520467, +48 ms) DROP
+  Game_Slave#14      1522082    297080   235619  460542  6600B8A124A3E11CBE9B3800       484 -> 448 (@1522167, +85 ms) DROP
+  Game_Slave#14      1522178    297176   235599  460542  660098A3248FE11CBE9B3800       446 -> 410 (@1522267, +89 ms) DROP
+  Game_Slave#14      1522314    297311   235621  460542  66009FA524A5E11CBE9B3800       410 -> 365 (@1522366, +52 ms) DROP
+  Game_Slave#14      1535493    310491    35362    1361  66009BF325A2A804911500         707 -> 671 (@1536971, +1478 ms) DROP
+  Game_Slave#14      1535871    310869    35424    1361  660095F925A0A904911500         707 -> 671 (@1536971, +1100 ms) DROP
+  Game_Slave#14      1536918    311916    35642    1361  6600AC8926BAAC04911500         707 -> 671 (@1536971, +53 ms) DROP

@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    SyntheticHost: a stand-in apphost for testing injection without the game.
+
+    Its only job is to be a self-contained .NET process with the same relevant
+    runtime configuration as the game, so that the launcher, the injection stub,
+    the startup hook, the handshake and the native validation can all be exercised
+    without an operator and without a game session.  See SyntheticHost.cs.
+
+    `UseAppHost` is on because the launcher starts an *executable* and the whole
+    point is to reproduce the game's process shape.  A hostfxr-based launch would
+    skip the CREATE_SUSPENDED path that is being tested.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>SyntheticHost</AssemblyName>
+    <RootNamespace>SyntheticHost</RootNamespace>
+    <UseAppHost>true</UseAppHost>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DebugType>none</DebugType>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

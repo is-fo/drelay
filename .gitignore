@@ -1,3 +1,11 @@
+# Repository-wide ignores.
+#
+# This is a two-component repository -- `proxy/` (the Java relay) and `hook/` (the native/managed
+# in-process hook) -- so anything specific to one component lives in that component's own
+# .gitignore: proxy/.gitignore and hook/.gitignore. What is left here is what applies to a checkout
+# of the repository as a whole: editor state, OS droppings, and the compiler/linker artefacts that
+# are not a source in any language.
+
 ### IntelliJ IDEA ###
 out/
 !**/src/main/**/out/
@@ -30,33 +38,31 @@ bin/
 ### Mac OS ###
 .DS_Store
 
-### Build output ###
-/target/
-/dist/
+### Compiled output common to both components ###
 *.class
 
-### Local runtime state ###
-# The relay's own working directory: per-run event logs, the generated route table, the install
-# manifest, the dashboard's port hint and the claims a running relay learned. All regenerable.
-/work/
-/logs/
+# Linker and compiler program-database droppings, written beside whatever was built.
+vc140.pdb
+vc142.pdb
+*.ilk
+*.exp
+*.lib
 
-# Written next to the jar by the launcher. Both are artifacts: relay-routes.json is extracted from
-# the bundled template, and drelay.jar is the build output of build.ps1 or Maven. (The template
-# itself lives in src/main/resources/, which these root-anchored rules do not match.)
-/relay-routes.json
-/drelay.jar
-/drelay-*.jar
-/drelay-update.log
+### Python bytecode from the tooling in both components ###
+__pycache__/
+*.pyc
 
-### Local tool installs and scratch analysis (regenerable, never published) ###
-/.tools/
-/.dnscan/
-
-### Game binaries and decompiled client source (third-party; not ours to publish) ###
-/binaries/
-/decomp/
+### Third-party binaries and archives (not ours to publish) ###
 *.dll
 *.exe
 *.nupkg
 *.zip
+
+### Decompiled client source, wherever a tool decides to put it ###
+/binaries/
+/decomp/
+
+### Subagent scratch directories ###
+# Research agents download reference sources into a scratch directory. It is regenerable and never
+# published; the distilled findings live under docs/.
+/.research/

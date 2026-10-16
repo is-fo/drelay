@@ -1,7 +1,7 @@
 # Line endings are pinned, not left to each machine's core.autocrlf.
 #
 # This matters beyond tidiness: the launcher ships relay-routes.json and the two PowerShell helpers
-# inside the jar and records a SHA-256 of each one in work/install-manifest.txt. If a checkout on
+# inside the jar and records a SHA-256 of each one in proxy/work/install-manifest.txt. If a checkout on
 # Windows rewrote those files to CRLF while the released jar carried LF, the same release would hash
 # differently on two machines, and the "has the user edited this file?" check would start answering
 # wrongly - the failure mode being a silently overwritten route table.

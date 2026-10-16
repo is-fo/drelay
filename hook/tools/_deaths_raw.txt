@@ -1,0 +1,157 @@
+==============================================================================
+PART 1: how honest is the health stream?  deaths and the worst bursts
+==============================================================================
+
+--- events-20261004-235440-1500.jsonl
+  Game_Slave#11    n=  194  maxHealth values seen={707: 194}
+      worst single-reading drop: 20 HP = 2.8% of 707   @1421718 hp=707 -> @1433916 hp=687 (gap 12198 ms)   [world entries in file: 1]
+  Game_Slave#14    n=  455  maxHealth values seen={707: 306, 712: 149}
+      worst single-reading drop: 47 HP = 6.6% of 707   @1537871 hp=707 -> @1538271 hp=660 (gap 400 ms)   [world entries in file: 3]
+  Game_Slave#17    n=  159  maxHealth values seen={712: 159}
+      worst single-reading drop: 20 HP = 2.8% of 712   @1756570 hp=712 -> @1761918 hp=692 (gap 5348 ms)   [world entries in file: 1]
+  Game_Slave#20    n=   29  maxHealth values seen={712: 29}
+      worst single-reading drop: 20 HP = 2.8% of 712   @1820322 hp=707 -> @1820369 hp=687 (gap 47 ms)   [world entries in file: 1]
+  Game_Slave#3     n=  293  maxHealth values seen={707: 293}
+      worst single-reading drop: 20 HP = 2.8% of 707   @6899 hp=707 -> @17067 hp=687 (gap 10168 ms)   [world entries in file: 1]
+  Game_Slave#5     n=  419  maxHealth values seen={707: 419}
+      worst single-reading drop: 20 HP = 2.8% of 707   @55550 hp=701 -> @55650 hp=681 (gap 100 ms)   [world entries in file: 1]
+  Game_Slave#9     n= 1357  maxHealth values seen={707: 1357}
+      worst single-reading drop: 100 HP = 14.1% of 707   @1322466 hp=807 -> @1322466 hp=707 (gap 0 ms)   [world entries in file: 1]
+
+--- events-20261005-012701-2400.jsonl
+  Game#8           n=    2  maxHealth values seen={712: 1, 608: 1}
+      worst single-reading drop: 104 HP = 14.6% of 712   @504217 hp=712 -> @550578 hp=608 (gap 46361 ms)   [world entries in file: 3]
+  Game_Slave#11    n=   83  maxHealth values seen={608: 83}
+      worst single-reading drop: 140 HP = 23.0% of 608   @580370 hp=288 -> @580418 hp=148 (gap 48 ms)   [world entries in file: 1]
+  Game_Slave#13    n=  142  maxHealth values seen={608: 142}
+      worst single-reading drop: 20 HP = 3.3% of 608   @609670 hp=587 -> @609717 hp=567 (gap 47 ms)   [world entries in file: 1]
+  Game_Slave#15    n=  195  maxHealth values seen={608: 195}
+      worst single-reading drop: 85 HP = 14.0% of 608   @655966 hp=608 -> @658519 hp=523 (gap 2553 ms)   [world entries in file: 1]
+  Game_Slave#17    n=   31  maxHealth values seen={608: 31}
+      worst single-reading drop: 56 HP = 9.2% of 608   @688169 hp=216 -> @688169 hp=160 (gap 0 ms)   [world entries in file: 1]
+  Game_Slave#5     n=  222  maxHealth values seen={712: 222}
+      worst single-reading drop: 20 HP = 2.8% of 712   @95601 hp=712 -> @116399 hp=692 (gap 20798 ms)   [world entries in file: 1]
+  Game_Slave#7     n= 2043  maxHealth values seen={712: 2043}
+      worst single-reading drop: 175 HP = 24.6% of 712   @461267 hp=887 -> @461267 hp=712 (gap 0 ms)   [world entries in file: 4]
+  Game_Slave#9     n=   48  maxHealth values seen={608: 48}
+      worst single-reading drop: 100 HP = 16.4% of 608   @564268 hp=608 -> @564269 hp=508 (gap 1 ms)   [world entries in file: 1]
+
+--- events-20261005-023129-2000.jsonl
+  Game#12          n=    2  maxHealth values seen={9999: 1, 108: 1}
+      worst single-reading drop: 9891 HP = 98.9% of 9999   @358362 hp=9999 -> @367689 hp=108 (gap 9327 ms)   [world entries in file: 2]
+  Game_Slave#11    n=   23  maxHealth values seen={608: 22, 9999: 1}
+      worst single-reading drop: 61 HP = 10.0% of 608   @337034 hp=608 -> @349983 hp=547 (gap 12949 ms)   [world entries in file: 1]
+      DEATH at 350636 ms (hp=0, max=608)
+        previous reading 350635 ms hp=7 -> in 1 ms the bar went 7 -> 0 (1.2% of 608)
+  Game_Slave#13    n=   13  maxHealth values seen={108: 12, 9999: 1}
+      worst single-reading drop: 59 HP = 54.6% of 108   @372385 hp=108 -> @385783 hp=49 (gap 13398 ms)   [world entries in file: 1]
+      DEATH at 387084 ms (hp=0, max=108)
+        previous reading 387034 ms hp=57 -> in 50 ms the bar went 57 -> 0 (52.8% of 108)
+  Game_Slave#3     n=  114  maxHealth values seen={608: 114}
+      worst single-reading drop: 20 HP = 3.3% of 608   @28531 hp=608 -> @41431 hp=588 (gap 12900 ms)   [world entries in file: 1]
+  Game_Slave#5     n=  120  maxHealth values seen={608: 120}
+      worst single-reading drop: 20 HP = 3.3% of 608   @57932 hp=608 -> @67031 hp=588 (gap 9099 ms)   [world entries in file: 1]
+  Game_Slave#7     n=   26  maxHealth values seen={608: 26}
+      worst single-reading drop: 61 HP = 10.0% of 608   @127883 hp=608 -> @142931 hp=547 (gap 15048 ms)   [world entries in file: 1]
+  Game_Slave#9     n=  155  maxHealth values seen={608: 155}
+      worst single-reading drop: 61 HP = 10.0% of 608   @328084 hp=476 -> @328183 hp=415 (gap 99 ms)   [world entries in file: 1]
+
+  TOP 12 single-reading drops across the three real sessions:
+     98.92%  Game#12          358362 hp=9999 -> 367689 hp=108 (gap 9327 ms)  [events-20261005-023129-2000.jsonl]
+     54.63%  Game_Slave#13    372385 hp=108 -> 385783 hp=49 (gap 13398 ms)  [events-20261005-023129-2000.jsonl]
+     24.58%  Game_Slave#7     461267 hp=887 -> 461267 hp=712 (gap 0 ms)  [events-20261005-012701-2400.jsonl]
+     23.03%  Game_Slave#11    580370 hp=288 -> 580418 hp=148 (gap 48 ms)  [events-20261005-012701-2400.jsonl]
+     16.45%  Game_Slave#9     564268 hp=608 -> 564269 hp=508 (gap 1 ms)  [events-20261005-012701-2400.jsonl]
+     14.61%  Game#8           504217 hp=712 -> 550578 hp=608 (gap 46361 ms)  [events-20261005-012701-2400.jsonl]
+     14.14%  Game_Slave#9     1322466 hp=807 -> 1322466 hp=707 (gap 0 ms)  [events-20261004-235440-1500.jsonl]
+     13.98%  Game_Slave#15    655966 hp=608 -> 658519 hp=523 (gap 2553 ms)  [events-20261005-012701-2400.jsonl]
+     10.03%  Game_Slave#9     328084 hp=476 -> 328183 hp=415 (gap 99 ms)  [events-20261005-023129-2000.jsonl]
+     10.03%  Game_Slave#7     127883 hp=608 -> 142931 hp=547 (gap 15048 ms)  [events-20261005-023129-2000.jsonl]
+     10.03%  Game_Slave#11    337034 hp=608 -> 349983 hp=547 (gap 12949 ms)  [events-20261005-023129-2000.jsonl]
+      9.21%  Game_Slave#17    688169 hp=216 -> 688169 hp=160 (gap 0 ms)  [events-20261005-012701-2400.jsonl]
+
+==============================================================================
+PART 2: does the client report damage taken?  (GmHit / ProjHit, id 102)
+==============================================================================
+captured GmHit packets: 580
+payload lengths         : {'len=10': 138, 'len=12': 129, 'len=11': 231, 'len=9': 82}
+PlayerProj byte values  : {True: 580}
+
+first samples, decoded under the GmHit.Write order (Time, PlayerProj, ProjectileId, ObjectId):
+  Game_Slave#9   1309788 6600B2AC0A05B3FB3701               Time=84786 PlayerProj=5 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1309923 6600B9AE0A06B3FB3701               Time=84921 PlayerProj=6 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1310090 6600A0B10A07B3FB3701               Time=85088 PlayerProj=7 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1310281 66009EB40A08B3FB3701               Time=85278 PlayerProj=8 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1310742 6600ACBB0A0BB3FB3701               Time=85740 PlayerProj=11 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1310953 6600BFBE0A0CB3FB3701               Time=85951 PlayerProj=12 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1311154 660087C20A0DB3FB3701               Time=86151 PlayerProj=13 ProjectileId=458483 ObjectId=1 consumed-all=True
+  Game_Slave#9   1311332 6600BAC40A0EB3FB3701               Time=86330 PlayerProj=14 ProjectileId=458483 ObjectId=1 consumed-all=True
+
+==============================================================================
+PART 3: every Escape <-> EscapeAck pair in the relay transcript
+==============================================================================
+
+--- relay-20261004-235440-1500.log
+  Game#4           C->S Escape   2  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 86163.570 payload=9E0001 <- Escape 86163.290  delta=280 ms
+  Game_Slave#14    C->S Escape   0  S->C EscapeAck   0 (payload(s) [])  S->C ForcedEscape   0  C->S ProjHit   35
+  Game_Slave#20    C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 1543.448 payload=9E0001 <- Escape 1543.151  delta=297 ms
+  Game_Slave#3     C->S Escape   2  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 86158.786 payload=9E0001 <- Escape 86158.726  delta=60 ms
+  Game_Slave#5     C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 86262.038 payload=9E0001 <- Escape 86261.748  delta=290 ms
+  Game_Slave#9     C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit   24
+      ack 1124.833 payload=9E0001 <- Escape 1124.420  delta=413 ms
+
+--- relay-20261005-012701-2400.log
+  Game#8           C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    1
+      ack 5753.617 payload=9E0001 <- Escape 5753.355  delta=262 ms
+  Game_Slave#11    C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit   11
+      ack 5802.325 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#13    C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 5840.568 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#15    C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit   16
+      ack 5881.769 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#17    C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit   13
+      ack 5910.016 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#3     C->S Escape   2  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 5274.676 payload=9E0001 <- Escape 5274.539  delta=137 ms
+  Game_Slave#5     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 5358.429 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#7     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit  434
+      ack 5725.178 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#9     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    9
+      ack 5787.870 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+
+--- relay-20261005-023129-2000.log
+  Game_Slave#11    C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit   14
+      ack 9447.501 payload=9E0001 <- Escape 9447.225  delta=276 ms
+  Game_Slave#13    C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    7
+      ack 9494.256 payload=9E0001 <- Escape 9493.968  delta=288 ms
+  Game_Slave#3     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 9138.910 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#5     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 9165.053 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#7     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    9
+      ack 9234.354 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#9     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    7
+      ack 9418.754 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+
+--- relay.out.log
+  Game_Slave#11    C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit   14
+      ack 9447.501 payload=9E0001 <- Escape 9447.225  delta=276 ms
+  Game_Slave#13    C->S Escape   1  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    7
+      ack 9494.256 payload=9E0001 <- Escape 9493.968  delta=288 ms
+  Game_Slave#3     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 9138.910 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#5     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    0
+      ack 9165.053 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#7     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    9
+      ack 9234.354 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+  Game_Slave#9     C->S Escape   0  S->C EscapeAck   1 (payload(s) ['9E0001'])  S->C ForcedEscape   0  C->S ProjHit    7
+      ack 9418.754 payload=9E0001 <- NO preceding C->S Escape in this session (client idle / relay-injected after reset)
+
+  Escape -> EscapeAck deltas observed at the relay (n=11):
+    min 60  p10 137  median 280  max 413 ms
+    60, 137, 262, 276, 276, 280, 288, 288, 290, 297, 413

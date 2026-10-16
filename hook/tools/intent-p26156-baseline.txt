@@ -1,0 +1,29 @@
+frames in the trace: 7169
+
+== 1. is `intent` the player's input, or the pilot's last write? ==
+   frames the pilot wrote NOTHING on : 249
+   distinct intent values there      : 14
+   ...of which compass directions    : 8  [0, 45, 90, 135, 180, 225, 270, 315]
+   the odd few are a compass direction plus the camera's own rounding.
+   -> the field is the PLAYER's live eight-way input.
+
+== 1b. does `moving` mean the player is holding a direction? ==
+   moving=true over the run          : 4803 of 7169 (67.0%)
+   moving=true on the PILOT-SILENT frames : 158 of 249 (63.5%)   <- the decisive one
+   moving=false frames whose intent did NOT change : 2206 of 2366 (93.2%)
+   -> the intent goes stale when the player stops; gate it on `moving`.
+
+== 2. on the frames the dodge steered ==
+   logged moves (the log caps at 400) : 400
+   the player was holding a direction : 342 (85.5%)
+   the goal came from the measured course : 391 (97.8%)
+   the heading EQUALLED its own goal  : 306 (76.5%)
+   mean |heading - the player's direction| : 47.4 deg
+   angle to the player's direction:
+        0- 15 deg :   99 (24.8%)
+       15- 45 deg :  109 (27.2%)
+       45- 90 deg :  124 (31.0%)
+       90-135 deg :   51 (12.8%)
+      135-181 deg :   17 (4.2%)
+   scales written : {1.0: 101, 0.35: 297, 0.7: 2}
+   reasons        : {'OverrideUnsafe': 90, 'Hysteresis': 297, 'IntentSafe': 13}

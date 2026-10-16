@@ -1,0 +1,59 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    LauncherHarness: the launcher's configuration, without a game, a registry or a console.
+
+    WHY IT COMPILES THE LAUNCHER'S SOURCES RATHER THAN REFERENCING ITS DLL.
+
+    Same argument as SolverHarness, and the same mechanism.  The launcher's assembly is an
+    executable whose entry point starts a game, so a test process cannot reference it without
+    inheriting that; and a second implementation of the merge in the harness would agree with the
+    shipped one until it did not, which is the failure HANDOFF-LAUNCH-CONFIG.md section 13 is
+    written to prevent.  `Compile Include` puts the SAME source into both places, so a change to
+    the precedence rules breaks this build immediately.
+
+    WHAT IS DELIBERATELY NOT COMPILED HERE:
+
+      * Program.cs: it owns `Main`, the console and the P/Invokes; the checks that are about it
+        (C5's pause rule) read it as source instead, which is stated where it happens;
+      * DiscoveryWindows.cs: the registry and the filesystem.  Everything *decided* about
+        discovery is in Discovery.cs, which is compiled here and driven through a fake
+        environment, so the Steam library walk is tested with no Steam installed.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>LauncherHarness</AssemblyName>
+    <RootNamespace>Drelay.LauncherHarness</RootNamespace>
+    <UseAppHost>true</UseAppHost>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12.0</LangVersion>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <Deterministic>true</Deterministic>
+    <!--
+      CS0649 is `Options.RunDirectory` never being assigned, in THIS compilation.  The only code
+      that assigns it is `Program.Run`, which this project deliberately does not compile; the field
+      is real, used, and warned about in neither place that ships.  Suppressing it here keeps the
+      warning list meaningful for the sources that do compile.
+    -->
+    <NoWarn>$(NoWarn);CS0649</NoWarn>
+    <!--
+      WarningLevel is deliberately not inherited from managed/Directory.Build.props: this project
+      lives under hook/tools, which that props file does not reach, and the harness is not shipped
+      into the game.
+    -->
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\managed\Drelay.Launcher\Settings.cs" Link="Launcher\Settings.cs" />
+    <Compile Include="..\..\managed\Drelay.Launcher\CommandLine.cs" Link="Launcher\CommandLine.cs" />
+    <Compile Include="..\..\managed\Drelay.Launcher\ConfigFile.cs" Link="Launcher\ConfigFile.cs" />
+    <Compile Include="..\..\managed\Drelay.Launcher\Discovery.cs" Link="Launcher\Discovery.cs" />
+    <Compile Include="..\..\managed\Drelay.Launcher\EnvironmentBlock.cs" Link="Launcher\EnvironmentBlock.cs" />
+    <Compile Include="..\..\managed\Drelay.Launcher\Configuration.cs" Link="Launcher\Configuration.cs" />
+    <Compile Include="..\..\managed\Drelay.Launcher\FirstRun.cs" Link="Launcher\FirstRun.cs" />
+  </ItemGroup>
+
+</Project>
