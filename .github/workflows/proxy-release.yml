@@ -1,0 +1,321 @@
+name: proxy release
+
+# A release happens one of two ways:
+#
+#   * a push to master whose version in proxy/src/main/resources/drelay.properties has no tag yet - so
+#     merging a version bump IS the release, and a push that did not bump anything is a no-op;
+#   * a push of a v* tag, or a manual run, which are the explicit paths.
+#
+# The version is bumped in the repository rather than invented here. That keeps the invariant this
+# project rests on - drelay.properties is the single source of truth, the jar's embedded version is
+# what the auto-updater compares against, and a tag whose name disagrees with the jar would either
+# make an update invisible or make the same release install itself forever.
+#
+# The tag has to be `v<version>` and not `hook-v<version>`, because the hook publishes its own
+# releases out of this same repository. Note that the `paths` filter below does *not* provide that
+# isolation: GitHub Actions does not evaluate path filters for tag pushes, so a tag push starts this
+# workflow whatever it touched (actions/runner#3933). The tag namespace is what separates the two
+# streams - `tags: ['v*']` here, `tags: ['hook-v*']` in hook-release.yml - and the updater refuses a
+# hook tag a second time by its shape (Updater.isProxyTag), because both streams share one release
+# list. The paths filter does its work on branch pushes, where it keeps a hook-only commit from
+# re-running this pipeline at all.
+#
+# Publishing creates the tag at the exact commit that was built. The ordering is deliberate: a tag
+# made before the build succeeded would leave the next push deciding "already tagged" and the release
+# would never happen.
+on:
+  push:
+    branches: [master, main]
+    tags: ['v*']
+    paths:
+      - 'proxy/**'
+      - '.github/workflows/proxy-release.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release once the build passes
+        type: boolean
+        default: true
+      bump:
+        description: Bump the version in the repository first (choosing one commits and pushes it)
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+        default: none
+
+permissions:
+  contents: write        # create the tag and the release; push a bump commit
+  id-token: write        # attest the build provenance
+  attestations: write
+
+# One release at a time. Two pushes landing together would otherwise both decide "no tag yet" and
+# race to create the same one.
+concurrency:
+  group: proxy-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: decide what to release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      sha: ${{ steps.sha.outputs.sha }}
+      build: ${{ steps.decide.outputs.build }}
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Optional, and only from a branch: bumping a tag's own version would move it out from under
+      # the tag that was just pushed.
+      - name: Bump the version
+        if: github.event_name == 'workflow_dispatch' && inputs.bump != 'none' && startsWith(github.ref, 'refs/heads/')
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          current="$(sed -n 's/^version=//p' proxy/src/main/resources/drelay.properties | tr -d '[:space:]')"
+          suffix=""
+          case "$current" in *-*) suffix="-${current#*-}" ;; esac
+          base="${current%%-*}"
+          IFS='.' read -r major minor patch <<< "$base"
+          case "$BUMP" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            *) echo "unknown bump '$BUMP'"; exit 1 ;;
+          esac
+          next="$major.$minor.$patch$suffix"
+          echo "$current -> $next"
+          sed -i "s/^version=.*/version=$next/" proxy/src/main/resources/drelay.properties
+          # The first <version> in the pom is the project's; the rest belong to plugins.
+          sed -i "0,/<version>[^<]*<\/version>/s//<version>$next<\/version>/" proxy/pom.xml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore(release): $next"
+          git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Read and check the version
+        id: read
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version=//p' proxy/src/main/resources/drelay.properties | tr -d '[:space:]')"
+          if [ -z "$version" ]; then
+            echo "no version= line in proxy/src/main/resources/drelay.properties"
+            exit 1
+          fi
+          # A prerelease version (0.0.2-alpha) is still published, but as a GitHub prerelease, which
+          # keeps it out of /releases/latest. The updater reads the release list rather than that
+          # endpoint, so it does see it - the flag is a label on the releases page, not a gate.
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "version '$version' is not a semantic version (major.minor.patch, optionally -prerelease)"
+            exit 1
+          fi
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "this build is drelay $version, tagged $tag"
+
+          # The Maven version is a second copy of the same fact, and a release whose jar and pom
+          # disagree is exactly the kind of drift that is invisible until someone tries to use it.
+          pom="$(sed -n 's|.*<version>\(.*\)</version>.*|\1|p' proxy/pom.xml | head -n 1)"
+          if [ "$pom" != "$version" ]; then
+            echo "proxy/pom.xml says $pom but drelay.properties says $version; bump both"
+            exit 1
+          fi
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          expected="v${{ steps.read.outputs.version }}"
+          actual="${GITHUB_REF_NAME}"
+          if [ "$expected" != "$actual" ]; then
+            echo "the tag is $actual but drelay.properties says $expected"
+            echo "bump proxy/src/main/resources/drelay.properties, commit, re-tag"
+            echo "(a hook tag such as hook-v1.0.0 belongs to hook-release.yml, not here)"
+            exit 1
+          fi
+
+      # `git ls-remote` rather than a local lookup: checkout's tag refspec is not something to depend
+      # on, and this is the question the whole job turns on.
+      - name: Decide whether this version still needs a release
+        id: decide
+        env:
+          TAG: ${{ steps.read.outputs.tag }}
+        run: |
+          set -euo pipefail
+          build=true
+          release=false
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            # A manual run does what it is told: publish, or just build a candidate to download.
+            if [ "${{ inputs.publish }}" = "true" ]; then release=true; fi
+          elif [ "${GITHUB_REF}" = "refs/tags/${TAG}" ]; then
+            release=true
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "tag ${TAG} already exists; this push has nothing to release"
+            build=false
+          else
+            release=true
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "build=$build release=$release"
+
+      # What gets built is what gets tagged, and after a bump that is no longer the commit the push
+      # named - so it is resolved once here and carried through both later jobs.
+      - name: Resolve the commit to build and tag
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build the jar
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: proxy
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+          cache: maven
+
+      - name: Build
+        run: mvn --batch-mode --no-transfer-progress clean package
+
+      - name: Verify the jar
+        run: |
+          set -euo pipefail
+          test -f target/drelay.jar
+          java -jar target/drelay.jar --version
+          java -jar target/drelay.jar --help > /dev/null
+          # The jar's own version has to be the version being released: the updater compares against
+          # it, so a mismatch makes the release invisible or endlessly re-installable.
+          java -jar target/drelay.jar --version | grep -F "${{ needs.version.outputs.version }}"
+          for entry in relay-routes.json tools/Set-AddressClaim.ps1 tools/Restore-HostsFile.ps1; do
+            unzip -l target/drelay.jar "$entry" > /dev/null || { echo "missing from the jar: $entry"; exit 1; }
+          done
+          if unzip -l target/drelay.jar | grep -E 'Tests\.class'; then
+            echo "test classes must not be packaged: they live in src/test/java"
+            exit 1
+          fi
+          echo "jar size: $(du -h target/drelay.jar | cut -f1)"
+
+      - name: Run the offline checks
+        run: |
+          for check in PrimitiveTests FrameTests ClientPacketsTests InjectionTests UpdateScanTests SettingsTests UpdaterTests; do
+            echo "== networking.$check"
+            java -cp "target/classes:target/test-classes" "networking.$check"
+          done
+
+      - name: Collect the release files
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cp target/drelay.jar dist/drelay.jar
+          cd dist
+          # The same format the launcher parses, and the same file name it fetches from the release.
+          sha256sum drelay.jar > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: proxy/dist/drelay.jar
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: proxy-release-files
+          path: proxy/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish the release
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          fetch-depth: 0
+
+      # Created here rather than before the build, so a failed build cannot leave a tag that makes
+      # the next push believe this version was already released.
+      - name: Tag the commit that was built
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ needs.version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "tag ${TAG} already exists; publishing it"
+          else
+            git tag "$TAG" "$SHA"
+            git push origin "refs/tags/${TAG}"
+            echo "created tag ${TAG} at ${SHA}"
+          fi
+
+      - name: Download the release files
+        uses: actions/download-artifact@v8
+        with:
+          name: proxy-release-files
+          path: proxy/dist
+
+      - name: Write the release notes
+        env:
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Written with printf rather than a heredoc: YAML indents the whole block, and stripping that
+          # indentation afterwards would also strip the indentation inside the fenced code examples.
+          {
+            printf '**Download `drelay.jar` and run it.** It needs Java 25 or newer and nothing else:\n\n'
+            printf '```powershell\njava -jar drelay.jar\n```\n\n'
+            printf 'Windows will ask for administrator rights, because claiming the game server addresses\n'
+            printf 'on the loopback interface needs them. The launcher then extracts the files it ships,\n'
+            printf 'refreshes the server addresses, claims them, starts the relay and opens the dashboard at\n'
+            printf '<http://127.0.0.1:8765/>. Ctrl+C in that window stops it and gives the claims back.\n\n'
+            printf 'Already running an older version? It updates itself on the next start, checking the\n'
+            printf 'download against `SHA256SUMS.txt` before it replaces anything.\n\n'
+            printf 'This release is also signed with a build provenance attestation:\n\n'
+            printf '```powershell\ngh attestation verify drelay.jar --repo %s\n```\n\n' "${REPOSITORY}"
+            printf 'This repository also publishes the `hook` component, whose releases are tagged\n'
+            printf '`hook-v<version>` and are listed alongside this one. The updater tells the two apart by\n'
+            printf 'the tag, so a hook release is never offered to an installed relay.\n'
+          } > notes.md
+          cat notes.md
+
+      - name: Verify the checksum file before publishing
+        working-directory: proxy/dist
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: drelay ${{ needs.version.outputs.version }}
+          body_path: notes.md
+          files: |
+            proxy/dist/drelay.jar
+            proxy/dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}

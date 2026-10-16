@@ -1,3 +1,11 @@
+# Repository-wide ignores.
+#
+# This is a two-component repository -- `proxy/` (the Java relay) and `hook/` (the native/managed
+# in-process hook) -- so anything specific to one component lives in that component's own
+# .gitignore: proxy/.gitignore and hook/.gitignore. What is left here is what applies to a checkout
+# of the repository as a whole: editor state, OS droppings, and the compiler/linker artefacts that
+# are not a source in any language.
+
 ### IntelliJ IDEA ###
 out/
 !**/src/main/**/out/
@@ -30,49 +38,8 @@ bin/
 ### Mac OS ###
 .DS_Store
 
-### Build output ###
-/target/
-/dist/
+### Compiled output common to both components ###
 *.class
-
-### Local runtime state ###
-# The relay's own working directory: per-run event logs, the generated route table, the install
-# manifest, the dashboard's port hint and the claims a running relay learned. All regenerable.
-/work/
-/logs/
-
-# Written next to the jar by the launcher. Both are artifacts: relay-routes.json is extracted from
-# the bundled template, and drelay.jar is the build output of build.ps1 or Maven. (The template
-# itself lives in src/main/resources/, which these root-anchored rules do not match.)
-/relay-routes.json
-/drelay.jar
-/drelay-*.jar
-/drelay-update.log
-
-### Local tool installs and scratch analysis (regenerable, never published) ###
-/.tools/
-/.dnscan/
-
-### Game binaries and decompiled client source (third-party; not ours to publish) ###
-/binaries/
-/decomp/
-*.dll
-*.exe
-*.nupkg
-*.zip
-
-### Generated research inputs ###
-# The full IL dump of the game assembly is an 85 MB artifact regenerated from the installed
-# build with ilspycmd; it is third-party content and is never published. The small tools and the
-# raw measurement outputs beside it ARE tracked, because they are the evidence behind the reports.
-/autododgeresearch/il/
-__pycache__/
-*.pyc
-
-# The spike's scratch: per-run decision dumps, cost tables and probe output. Regenerable with
-# `Capture-DodgeDecisions.ps1` and the harness, and never the evidence itself -- the numbers that
-# matter are quoted into the reports, which ARE tracked.
-/autododgeresearch/work/
 
 # Linker and compiler program-database droppings, written beside whatever was built.
 vc140.pdb
@@ -81,10 +48,21 @@ vc142.pdb
 *.exp
 *.lib
 
+### Python bytecode from the tooling in both components ###
+__pycache__/
+*.pyc
+
+### Third-party binaries and archives (not ours to publish) ###
+*.dll
+*.exe
+*.nupkg
+*.zip
+
+### Decompiled client source, wherever a tool decides to put it ###
+/binaries/
+/decomp/
+
 ### Subagent scratch directories ###
-# Research agents download reference sources (e.g. JNA jars and sources) into a scratch
-# directory. It is regenerable and never published; the distilled findings live in
-# autododgeresearch/.
+# Research agents download reference sources into a scratch directory. It is regenerable and never
+# published; the distilled findings live under docs/.
 /.research/
-### Commit-message scratch ###
-/autododgeresearch/.commitmsg

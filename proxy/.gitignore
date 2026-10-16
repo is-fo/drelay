@@ -1,0 +1,22 @@
+# What the proxy component keeps out of the repository.
+#
+# The proxy is a Maven project, so `target/` is its build output and the launcher's working
+# directory is the one it is started from -- which, in a checkout, is this directory.
+
+### Build output ###
+/target/
+/dist/
+
+### Local runtime state ###
+# The relay's own working directory: per-run event logs, the generated route table, the install
+# manifest, the dashboard's port hint and the claims a running relay learned. All regenerable.
+/work/
+/logs/
+
+# Written next to the jar by the launcher. Both are artifacts: relay-routes.json is extracted from
+# the bundled template, and drelay.jar is the build output of build.ps1 or Maven. (The template
+# itself lives in src/main/resources/, which these root-anchored rules do not match.)
+/relay-routes.json
+/drelay.jar
+/drelay-*.jar
+/drelay-update.log

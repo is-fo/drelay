@@ -1,0 +1,316 @@
+name: hook release
+
+# A hook release happens the same way a proxy release does:
+#
+#   * a push to master whose version in hook/version.txt has no `hook-v<version>` tag yet - so
+#     merging a version bump IS the release, and a push that did not bump anything is a no-op;
+#   * a push of a `hook-v*` tag, or a manual run, which are the explicit paths.
+#
+# WHY THE TAGS ARE NAMESPACED
+#
+# Both components publish releases out of this one repository, and both tags have to coexist in the
+# release list the proxy's auto-updater reads. `hook-v<version>` is namespaced for that reason, and
+# the namespace is the actual mechanism: GitHub Actions does not evaluate `paths` filters for tag
+# pushes (actions/runner#3933), so a tag push starts whichever workflow owns that tag prefix no
+# matter what the commit touched. The `paths` filter below only trims branch pushes.
+#
+# The proxy's updater decides what is installable by the shape of the tag (Updater.isProxyTag) and by
+# the presence of an asset named `drelay.jar`. A hook release has neither, so it is never offered to
+# an installed relay.
+#
+# WHAT A RELEASE HERE HAS BEEN VERIFIED AGAINST
+#
+# CI has no copy of the game, so this build is verified to compile and to pass the source-only
+# checks (see hook-build.yml). The build-stamping in build.ps1 records which pinned game build it was
+# compiled against, read from known-build.json -- but the fingerprint gate and the live injection
+# tests are a local step and are not run here. The release notes say so rather than implying more.
+on:
+  push:
+    branches: [master, main]
+    tags: ['hook-v*']
+    paths:
+      - 'hook/**'
+      - '.github/workflows/hook-release.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish a GitHub release once the build passes
+        type: boolean
+        default: true
+      bump:
+        description: Bump hook/version.txt first (choosing one commits and pushes it)
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+        default: none
+
+permissions:
+  contents: write        # create the tag and the release; push a bump commit
+  id-token: write        # attest the build provenance
+  attestations: write
+
+# One hook release at a time. Two pushes landing together would otherwise both decide "no tag yet"
+# and race to create the same one.
+concurrency:
+  group: hook-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: decide what to release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+      tag: ${{ steps.read.outputs.tag }}
+      sha: ${{ steps.sha.outputs.sha }}
+      build: ${{ steps.decide.outputs.build }}
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # Optional, and only from a branch: bumping a tag's own version would move it out from under
+      # the tag that was just pushed. The hook has one version file rather than two, so unlike the
+      # proxy there is no second copy to keep in step.
+      - name: Bump the version
+        if: github.event_name == 'workflow_dispatch' && inputs.bump != 'none' && startsWith(github.ref, 'refs/heads/')
+        env:
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          current="$(tr -d '[:space:]' < hook/version.txt)"
+          suffix=""
+          case "$current" in *-*) suffix="-${current#*-}" ;; esac
+          base="${current%%-*}"
+          IFS='.' read -r major minor patch <<< "$base"
+          case "$BUMP" in
+            patch) patch=$((patch + 1)) ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            *) echo "unknown bump '$BUMP'"; exit 1 ;;
+          esac
+          next="$major.$minor.$patch$suffix"
+          echo "$current -> $next"
+          printf '%s\n' "$next" > hook/version.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -am "chore(hook): release $next"
+          git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Read and check the version
+        id: read
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < hook/version.txt)"
+          if [ -z "$version" ]; then
+            echo "hook/version.txt is empty"
+            exit 1
+          fi
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "version '$version' is not a semantic version (major.minor.patch, optionally -prerelease)"
+            exit 1
+          fi
+          tag="hook-v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "this build is the drelay hook $version, tagged $tag"
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          expected="hook-v${{ steps.read.outputs.version }}"
+          actual="${GITHUB_REF_NAME}"
+          if [ "$expected" != "$actual" ]; then
+            echo "the tag is $actual but hook/version.txt says $expected"
+            echo "bump hook/version.txt, commit, re-tag"
+            echo "(a proxy tag such as v0.0.3 belongs to proxy-release.yml, not here)"
+            exit 1
+          fi
+
+      - name: Decide whether this version still needs a release
+        id: decide
+        env:
+          TAG: ${{ steps.read.outputs.tag }}
+        run: |
+          set -euo pipefail
+          build=true
+          release=false
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.publish }}" = "true" ]; then release=true; fi
+          elif [ "${GITHUB_REF}" = "refs/tags/${TAG}" ]; then
+            release=true
+          elif git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "tag ${TAG} already exists; this push has nothing to release"
+            build=false
+          else
+            release=true
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+          echo "build=$build release=$release"
+
+      - name: Resolve the commit to build and tag
+        id: sha
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build the hook
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build everything
+        working-directory: hook
+        run: .\build.ps1
+
+      - name: Run the offline checks
+        working-directory: hook
+        run: .\tools\Test-HookOffline.ps1
+
+      # The release file is the whole of `out\`: the native DLL, the bootstrap, the launcher and the
+      # runtime files that must travel beside them. VERSION.txt is written by build.ps1 and records
+      # the hook version together with the pinned game build it was compiled against, which is the
+      # single most important fact about any hook binary.
+      - name: Collect the release files
+        working-directory: hook
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = '${{ needs.version.outputs.version }}'
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $name = "drelay-hook-$version.zip"
+          Compress-Archive -Path 'out\*' -DestinationPath (Join-Path 'dist' $name) -Force
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path 'dist' $name)).Hash.ToLower()
+          # The same two-space format sha256sum writes, so the file is checked with the same tools.
+          "$hash  $name" | Set-Content -LiteralPath 'dist\SHA256SUMS.txt' -Encoding ascii
+          Get-Content -LiteralPath 'dist\SHA256SUMS.txt'
+          Get-Content -LiteralPath 'out\VERSION.txt'
+
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: hook/dist/drelay-hook-*.zip
+
+      - name: Upload the release files
+        uses: actions/upload-artifact@v7
+        with:
+          name: hook-release-files
+          path: hook/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: publish the release
+    needs: [version, build]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+          fetch-depth: 0
+
+      # Created here rather than before the build, so a failed build cannot leave a tag that makes
+      # the next push believe this version was already released.
+      - name: Tag the commit that was built
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SHA: ${{ needs.version.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" > /dev/null 2>&1; then
+            echo "tag ${TAG} already exists; publishing it"
+          else
+            git tag "$TAG" "$SHA"
+            git push origin "refs/tags/${TAG}"
+            echo "created tag ${TAG} at ${SHA}"
+          fi
+
+      - name: Download the release files
+        uses: actions/download-artifact@v8
+        with:
+          name: hook-release-files
+          path: hook/dist
+
+      - name: Read the pinned game build
+        id: game
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' hook/known-build.json | head -n 1)"
+          echo "version=${version:-unknown}" >> "$GITHUB_OUTPUT"
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          GAME: ${{ steps.game.outputs.version }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          {
+            printf '**Download `drelay-hook-%s.zip`, unpack it next to the game, and run `Drelay.Launcher.exe`.**\n\n' "${VERSION}"
+            printf 'With no arguments it reads `%%LOCALAPPDATA%%\\drelay\\hook\\drelay.config.json`, creates\n'
+            printf 'that file if it is not there yet, and finds the game itself -- the Steam library, the\n'
+            printf 'path this build was verified from, or the folder you unpacked it into -- so a\n'
+            printf 'double-click is enough.\n\n'
+            printf 'This build is pinned to **Darza'"'"'s Dominion %s**. The hook matches its detour targets\n' "${GAME}"
+            printf 'by the SHA-256 of their IL bytes, so a game patch changes those hashes and the hook\n'
+            printf 'refuses to install rather than patching the wrong function. It checks the installed\n'
+            printf 'assembly itself at attach: a mismatch is one line in `hook.log` in the run directory,\n'
+            printf 'with the sizes and the MVID in `<run dir>\\selfcheck.txt`, and the game is left running.\n'
+            printf 'The `OpenGL\\` apphost carries a different assembly and is refused too; point `GamePath`\n'
+            printf 'at the root install instead.\n\n'
+            printf 'The zip contains `Drelay.Hook.dll`, `Drelay.Bootstrap.dll`, `Drelay.Launcher.exe` and the\n'
+            printf 'runtime files that must travel beside them, plus a `VERSION.txt` recording the hook\n'
+            printf 'version and the game build it was compiled against.\n\n'
+            printf '**What it does, and what to do next.** The written configuration is the release\n'
+            printf 'default: auto-aim at the closest damageable enemy, and the live dodge -- the solver\n'
+            printf 'decides every frame and steers the player when it has a move. Both are in that file:\n'
+            printf 'set `"AutoAim"` to `null` and `"Dodge"."Act"` to `false` to stop them, and fill in\n'
+            printf '`"GamePath"` if the game was not found. The command line still wins over the file.\n\n'
+            printf '### What was verified before this release\n\n'
+            printf 'The binary built here, and passed the checks that need only the sources: the exported\n'
+            printf 'ABI self-test, the metadata reader against signatures the documents state independently,\n'
+            printf 'both generated tables against the record they come from, the report fixtures, and the\n'
+            printf 'launcher'"'"'s own configuration invariants (the four sources, their per-field precedence,\n'
+            printf 'the discovery walk and the environment it builds).\n\n'
+            printf 'The checks that need an installed copy of the game - the fingerprint gate, the\n'
+            printf 're-derivation of the target table from the real assembly, and the end-to-end injection\n'
+            printf 'test - are a local step on a machine that has it, and they did **not** run for this\n'
+            printf 'artifact. See `docs/hook/HOOK-BUILD-MATRIX.md` for that procedure and the order to run\n'
+            printf 'it in.\n\n'
+            printf 'This release is also signed with a build provenance attestation:\n\n'
+            printf '```powershell\ngh attestation verify drelay-hook-%s.zip --repo %s\n```\n' "${VERSION}" "${REPOSITORY}"
+          } > notes.md
+          cat notes.md
+
+      - name: Verify the checksum file before publishing
+        working-directory: hook/dist
+        run: |
+          set -euo pipefail
+          sha256sum --check SHA256SUMS.txt
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.version.outputs.tag }}
+          name: drelay hook ${{ needs.version.outputs.version }}
+          body_path: notes.md
+          files: |
+            hook/dist/drelay-hook-*.zip
+            hook/dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
+          draft: false
+          prerelease: ${{ contains(needs.version.outputs.version, '-') }}
