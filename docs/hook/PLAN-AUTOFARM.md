@@ -3,6 +3,12 @@
 **Items 2a, 2b, 3c and 3d of the farmer work.** Written 2026-10-17. This is an implementation
 plan, not a record; nothing here is built.
 
+> **§12 IS THE RECORD AND IT SUPERSEDES PARTS OF §4 AND §6.** Rows 2 and 3 of §10's order of work
+> are built on branch `feat/autofarm` — the farmer walks (`a38de9d`) and the `--world-log` collection
+> instrument exists (`68233d7`). §12 names the five places §4's own numbers did not survive contact
+> with the harness, all of them measured rather than argued, and the two bugs the world log's offline
+> verifier found before it shipped. Rows 4–9 are not built; §12.6 says what each is waiting on.
+
 Read with: [`PLAN-ENEMY-THREATS.md`](PLAN-ENEMY-THREATS.md) (item 1, and a prerequisite for the
 arrival behaviour in §4), [`PLAN-HOOK-CONTROL.md`](../bridge/PLAN-HOOK-CONTROL.md) (items 3a/3b —
 the reason the farmer's switches can be changed without relaunching),
@@ -715,3 +721,156 @@ at zero cost and with no code.
   starting value for the offline harness, and none of them may be tuned in a live run — the project's
   own rule, applied since Phase 3 (`IMPLEMENTATION-PLAN.md` Phase 3, "Spike 3.2 — the solver,
   offline").
+
+---
+
+## 12. What was actually built — rows 2 and 3, and the five places the plan was wrong
+
+Written after the fact, on branch `feat/autofarm`. The body of this document above is left as
+written: it is the specification the implementation was measured against, and this section is the
+diff. Rows 4, 5, 6, 7, 8 and 9 of §10's table are **not built**; §12.5 says what each is waiting on.
+
+### 12.1 Row 2 (§4) is in — `a38de9d`, "the farmer walks"
+
+`Farmer.cs` (new), plus `DodgeSnapshot`, `DodgeSolver`, `PathPlanner`, `EnemyReader` and
+`DodgeAdapter`. `SteeringPilot.cs` is untouched, exactly as §10.1's file-ownership table predicted,
+because the farm writes no input: the client's own auto-fire and the existing auto-aim module do the
+shooting (§3).
+
+The farmer is what §2 says it is — a source of the goal and nothing else. It publishes
+`DodgeSnapshot.GoalHasPoint/GoalX/GoalY`, the solver resolves it into `_goalRadians` ahead of its
+existing ladder and records `GoalSource.GameplayTarget`, and the planner aims at the point's own
+cell. Nothing in `Admit`, the plan walk, the hysteresis or the escape floor changed.
+
+> **A value is not where §4.1 item 2 says it is.** The plan gives the new member as
+> `GoalSource.GameplayTarget = 3`; `PlayerIntent` already holds 3. The new member takes 4, because
+> renumbering an enum the trace format carries would change the meaning of every recorded line.
+
+### 12.2 The four places the plan's own numbers did not survive contact
+
+Each was found by a harness fixture and fixed, and each is a place a reader of §4 alone would get it
+wrong. All five fixtures are new: `--scenario farmer | farmerclose | farmerorbit | farmerpair |
+farmerdodge`.
+
+**(a) `FarmStopRadius` had to become a SECOND radius (§4.1 item 5's arrival claim is wrong).** The
+plan uses `FarmEngageRadius` for both acquisition and arrival, and one number cannot do both: a
+target is by construction inside the acquisition radius, so a single number makes `stand` admissible
+the moment a target is chosen and the character never closes at all.
+
+And the plan's arrival rule — *"the character walks up to the mob and stops at its edge, because the
+only admissible candidates are outside the disc"* — does not happen. **Rule 7 REFUSES a candidate; it
+does not stop the character.** `--scenario farmerorbit` is that measurement, with `farmstop=0`: no
+frame settles, the character walks past the mob, and the mob leaves its acquisition radius
+(`1 forced release(s) over 195 closing frame(s), 0 reversal(s)`). The drift is smooth, which is why
+the first version of the check — counting heading reversals — passed on it. What the shipped rule is
+instead: `stand` is declined while the target is further than `FarmStopRadius`, and admitted once it
+is inside, so the character closes and then stands and shoots. `--scenario farmerclose`, at the
+shipped values: **15 moving frames, then 585 frames of `StandSafe`.**
+
+**(b) `FarmStopRadius` must also clear the enemy's emitter disc.** `PLAN-ENEMY-THREATS.md` gives
+every body a padded danger radius of `enemy.Radius + player.Radius + EnemyDangerPadUnits` — **1.25**
+at the shipped values — and `WeightEnemyDanger` (0.5) penalises a candidate that ends inside it. A
+stop radius *inside* that disc makes the farmer fight its own preference, and the measured result is
+a character that circles at the disc's edge and never settles: `--scenario farmer` at `farmstop=1`
+loses the mob (`262 moving frames, 338 with no target`), while `farmstop=1.5` closes in 83 frames and
+stands for 517. **The shipped 1.5 is that number plus a quarter of a unit of slack, and a deployment
+with a larger pad has to raise it.**
+
+**(c) `WeightIntent` fights the farmer, and the plan does not name it.** §4.3 names the `stand`
+early-out; the scoring layer has the mirror image. `WeightIntent` (0.4) rewards motion along the
+direction the operator's *hands* last asked for, and in a farm session those hands are idle — so with
+the goal due north and the stale intent due east, the ring heading at **60°** beat the goal's own 90°
+by 0.68 of score, and the character walked 30° off its target and missed it entirely. The intent term
+is now zeroed for the frames the farmer is still closing. `IntentSafe` is suppressed on exactly those
+frames too — one flag (`_farmClosing`), so `stand`, `IntentSafe` and the intent term cannot disagree
+about whether the farmer is closing.
+
+**(d) The planner's waypoint distance is wrong for a POINT goal.** `PathWaypointFraction` (0.75) is
+right for a ray goal, and `HANDOFF-DIRECTED-DODGE.md` §4.3 says why — with a ray goal the detour is
+near the *end* of the path. It is wrong for a point goal, where the obstruction is wherever it
+happens to be: a wall in front of the character puts the detour at the START and the 75 % waypoint on
+the far side of the wall, so `WeightPath` cannot see it and the character slides along the wall
+(`--scenario farmer` at `farmstop=1`, before this fix). A point goal now takes its waypoint at
+`PathWaypointUnits` instead.
+
+### 12.3 Two consequences the plan's §9 invariant table does not anticipate
+
+- **`BodyZoneNodes` (E3's counter) has to exempt the target's own emitter disc.** A route that ends
+  at a mob must end inside that mob's disc; `--scenario farmer` measured a non-zero count on all 162
+  frames it had a route, and a permanently red invariant is an ignored one. Every *other* body is
+  still counted, including one standing next to the target, so the property the counter exists for is
+  intact.
+- **`DodgeSolver.Configure` now also drops the heading hold.** A world change invalidates a heading
+  taken against bullets that are no longer in flight.
+
+### 12.4 The measurements §4.4 asks for, and two the plan does not
+
+Fourteen scenarios × farm mode on and off, all green. Every claim below is a harness assertion in
+`hook/tools/SolverHarness/Program.cs`, printed on every run.
+
+| # | check | result |
+|---|---|---|
+| W1 | the goal is the farmer's target and the farmer's target is the goal | PASS. The two counts are made by two different objects (the farmer's own bookkeeping and the solver's `GoalSource`), so a farmer whose output never reached the solver cannot pass it |
+| W1b | the farmer never holds a target outside its acquisition radius | PASS, 0 of 600 |
+| W1c | the stickiness rule holds through a cross and switches on a clear margin | PASS on `farmerpair`: **1 switch, 0 forced releases, 598 held frames of 600** |
+| W2 | the route to the farmer's target goes round the wall | PASS on `farmer`; `WallCrossings == 0` is the existing global PATH check, which this scenario now feeds |
+| W3 | the arrival is stable: it closes, stops, and does not oscillate | PASS on `farmerclose`: 15 moving frames, 585 settled, 0 reversals, 0 `NoAdmissible` |
+| W3b | (new) with no stop radius the farmer misses, not orbits | PASS as a **characterisation** of `farmstop=0` — see §12.2(a). It is asserted on `ForcedReleases >= 1`, which is not tautological: a held target can only leave the acquisition radius if the character walked away from it |
+| W4 | with the farmer off, nothing about the dodge changes | PASS, and measured **two ways**: every decision column of all nine pre-existing scenarios is byte-identical against `94f200d` with the switch off (T9), and byte-identical with the switch **on** and no targets in range (clock columns excluded, exactly as `PLAN-ENEMY-THREATS.md` §8.6 excludes them) |
+| W5 | the dodge and the farmer are asked at the same time and the dodge wins | PASS on `farmerdodge`, with T6 holding every emitted move on the same frames |
+| W6 | the safety invariants hold with farm mode on and off | PASS — this is T5/T6/T10 and the PATH/BODY invariants, run across the whole sweep |
+
+**What is NOT verified, and it is the same gap item 1 has**: no live run. `World.GetEnemies()` is
+exercised, `GameId` resolution is new and untested against the shipped build, and whether a farm mob
+is really at `Radius 0.25` on the live client is unverified — `PLAN-ENEMY-THREATS.md` §8.7 records
+`fallbackRadius=11985` on its own live run, so roughly a quarter of live bodies took the fallback.
+`FarmStopRadius`'s 1.5 is derived from a pad that was itself never measured in a realm.
+
+### 12.5 Row 3 (§6) is in — `68233d7`, "the world log"
+
+`WorldLog.cs` (new), `EnemyReader.SampleEnemies`, one call site in `StartupHook`.
+
+> **The plan calls it `--world-log` and there is no command line.** The hook's surface is a `DRELAY_`
+> environment variable and always has been (`PHASE1-HANDOFF.md` §4 trap 1), so it is
+> `DRELAY_WORLDLOG=1`. `DRELAY_WORLDLOG_EVERY=<frames>` moves the cadence from its 30-frame default.
+
+It writes `worlds.jsonl` into the run directory: a header naming every accessor this build could not
+resolve, a frame line every 30 frames with the map block, the world block, the player block, the
+portal list, the eight nearest enemies and the grid's dimensions, and a `transition` line on every
+world change naming which of the five signals fired (§5.1's measurement). It is evidence, it is never
+on the decision path, and it decodes no map — §6.1's rule.
+
+**It is verified offline, and the verification found two real bugs before it shipped.**
+`hook/tools/WorldLogVerify` compiles the *real* `WorldLog.cs` and the *real* `EnemyReader.cs` against
+a fake game whose field and property names are the client's own, and parses every line the writer
+emits. Both would have been invisible in the game for a whole session:
+
+1. the enemy rows were written in `World.GetEnemies()`'s own order and not nearest first, because the
+   distance sort sat inside the truncation branch — so "the 8 nearest" was "the first 8" on every
+   frame with more than eight mobs;
+2. the portal fields were resolved on the **element type** of `World.Activatables`, which is
+   `ActivatableObject`, while `Title`, `Tag`, `Called` and `locked` are declared on `Portal`. Every
+   portal row would have carried a null title and `locked: false`, with the row present and the file
+   well formed — which is a silent wrong answer about the one thing §6 exists to measure.
+
+It is now an offline check in `Test-HookOffline.ps1` (7 checks) and is built by `build.ps1`. The
+resolver sits **after** `DodgeAdapter.Resolve` in `StartupHook`, because it samples the enemy list
+through `EnemyReader` and that is resolved by the adapter.
+
+**Not run in the game.** What is unverified is the live call: that `World.Shared` is non-null at the
+frame tick, and that `Activatables` holds the portals at the moment the operator is in the lobby.
+
+### 12.6 The rows that are not built, and what each is waiting on
+
+| row (§10) | state | waiting on |
+|---|---|---|
+| 4 — the operator's collection session | **not run** | the operator, and row 3's instrument, which now exists |
+| 5 — §5 2b, the state machine and lobby navigation | **not built** | row 4: which portal to pick, the lobby's walk coordinates, and whether a realm contains portals |
+| 6 — §7 3c, the recorded route | **not built** | nothing but time; it is new-file-only and the plan says so |
+| 7 — §8.1, the full-grid mirror | **not built** | row 4's map-identity measurement |
+| 8 — §8.2–8.4, the dungeon whitelist and clear-and-advance | **not built** | rows 5, 6 and 7 |
+| 9 — §8.6, boss behaviour | **not built** | research that is not in this plan |
+
+The plan's §10.1 ordering has not been tested across worktrees: this branch did rows 2 and 3 in one
+worktree, sequentially, and touched `StartupHook.cs` only by adding two statements.
+
