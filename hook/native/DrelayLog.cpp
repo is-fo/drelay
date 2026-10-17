@@ -39,20 +39,35 @@ void Emit(int level, const char* fmt, va_list args) {
     char text[DRELAY_LOG_LINE_LEN];
     FormatLine(text, sizeof(text), level, fmt, args);
 
-    // A single writer would be enough for correctness of the ring index, but
-    // three threads can log concurrently, so the index is guarded.  An SRW lock
-    // in shared mode is cheap and, critically, is not a heap allocation.
-    AcquireSRWLockExclusive(&g_writeLock);
-    uint32_t slot = g_shared->logWrite % DRELAY_LOG_RING_LINES;
-    DrelayLogLine* line = &g_shared->log[slot];
-    // Publish the payload before the sequence number, so a reader that sees the
-    // new sequence is guaranteed to see the text that belongs to it.
+    // LOCK-FREE, AND THAT IS A CORRECTNESS REQUIREMENT RATHER THAN A SPEED ONE.
+    //
+    // `Emit` is reachable from inside `compileMethod`: the JIT detour logs when it is
+    // first entered, when it matches a target and when it probes the method-def slot.
+    // It used to take an SRW lock here, and a build that did so died with
+    //   CLR: Assert failure: pThread->HasThreadState(Thread::TS_Hijacked)
+    // (`excep.cpp`, the `STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT` path) followed by
+    // `0xC0000602` from coreclr, four to twelve seconds into startup, on runs whose
+    // compilation stream happened to produce a same-size near-miss.  The thread is in
+    // cooperative GC mode inside the runtime's `compileMethod`, and a thread that parks
+    // on a lock there is a thread the runtime's hijack cannot account for.
+    //
+    // So the ring index is reserved atomically and nothing in this function blocks.
+    // A single atomic increment already gives each writer its own slot; the only thing
+    // the lock bought was that a reader could never see a partially written line, and
+    // that is bought back below with the sequence number the line already carries.
+    const uint32_t seq = static_cast<uint32_t>(
+        InterlockedIncrement(reinterpret_cast<volatile LONG*>(&g_shared->logWrite)));
+    DrelayLogLine* line = &g_shared->log[(seq - 1) % DRELAY_LOG_RING_LINES];
+
+    // CLEARED FIRST, WRITTEN LAST.  The flusher treats a line as readable only when
+    // `line->seq` is the number it expects, so a slot whose payload is still arriving
+    // is skipped and retried on the next pass rather than printed half-written.
+    line->seq = 0;
     memcpy(line->text, text, sizeof(line->text));
     line->level = static_cast<uint32_t>(level);
     line->qpc = static_cast<uint64_t>(__rdtsc());
-    line->seq = g_shared->logWrite + 1;
-    g_shared->logWrite = g_shared->logWrite + 1;
-    ReleaseSRWLockExclusive(&g_writeLock);
+    MemoryBarrier();
+    line->seq = seq;
 }
 
 // The flusher exists so that the game's frame never touches a file handle.  It
@@ -161,6 +176,13 @@ void DrLogFlushTo(const wchar_t* path) {
     }
     for (uint32_t seq = g_readSeq + 1; seq <= written && count < 64; ++seq, ++count) {
         const DrelayLogLine* line = &g_shared->log[(seq - 1) % DRELAY_LOG_RING_LINES];
+        // NOT YET PUBLISHED: a writer reserved this slot and has not finished writing
+        // it. Stop the batch here rather than skipping, so the file stays in order --
+        // `g_readSeq` only advances for lines that were written, so this one and
+        // everything after it are retried on the next pass.  See `Emit`.
+        if (line->seq != seq) {
+            break;
+        }
         memcpy(lines[count], line->text, DRELAY_LOG_LINE_LEN);
         seqs[count] = seq;
     }
@@ -289,6 +311,10 @@ ObservedHash     g_observed[kMaxObserved] = {};
 volatile LONG    g_observedCount = 0;
 volatile LONG    g_observedDirty = 0;
 uint32_t         g_observedWritten = 0;
+// How many of the stored near-misses the flusher has already announced in `hook.log`.
+// See the note in `DrLogFlushObserved`: the announcement cannot be made from the
+// detour, because `DrLog` from inside `compileMethod` is what crashed the process.
+uint32_t         g_observedAnnounced = 0;
 
 // The size histogram.  Open-addressed by `size % kMaxHistogramEntries`, linear
 // probe, no allocation and no lock: the detour calls this on the JIT thread and the
@@ -542,6 +568,40 @@ void DrLogFlushObserved(void) {
     }
     g_observedDirty = 0;
     g_observedWritten = count;
+
+    // THE NEAR-MISS LINE IS ANNOUNCED HERE, FROM THE FLUSHER THREAD, AND NOWHERE ELSE.
+    //
+    // It used to be written by `OnCompiled`, i.e. on whichever thread the JIT happened
+    // to be running, inside `compileMethod`.  That is fatal: a run whose compilation
+    // stream produced a same-size near-miss died five runs out of five with
+    // `CLR: Assert failure: pThread->HasThreadState(Thread::TS_Hijacked)` from
+    // `excep.cpp` and then `0xC0000602` from coreclr, while a run with the very same
+    // detour and no near-miss survived.  Bisected to this one call: skipping the table
+    // write still died, skipping the log line ran clean.
+    //
+    // The detour records the hash lock-free (`DrRecordObservedHash`); the line is
+    // emitted here, once per newly stored hash, with its wording unchanged -- so
+    // `hook.log` still carries the near-miss a reader looks for, it just arrives one
+    // flush pass later and from a thread that is allowed to take the lock.
+    for (uint32_t i = g_observedAnnounced; i < stored; ++i) {
+        char name[DRELAY_TARGET_NAME_LEN] = {};
+        uint16_t ilSize = 0;
+        const uint32_t ti = g_observed[i].targetIndex;
+        if (ti < DRELAY_MAX_TARGETS && g_shared != nullptr) {
+            memcpy(name, g_shared->targets[ti].name, sizeof(name) - 1);
+            ilSize = g_shared->targets[ti].ilSizeLow;
+        }
+        DrLog(DRLOG_WARN,
+              "IL size %u matches target '%s' but the hash does not -- "
+              "a same-sized neighbour, or a changed method",
+              static_cast<unsigned>(ilSize), name);
+    }
+    if (stored > g_observedAnnounced) {
+        g_observedAnnounced = stored;
+        // Landed in this pass rather than the next one: the line is evidence about a
+        // startup, and a run can be short.
+        DrLogFlushTo(g_logPath);
+    }
 
     wchar_t path[MAX_PATH] = {};
     _snwprintf_s(path, MAX_PATH, _TRUNCATE, L"%s.observed", g_logPath);

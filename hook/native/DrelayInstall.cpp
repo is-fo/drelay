@@ -232,22 +232,104 @@ DWORD ReadCollectDelayMs() {
 // il_index.py computed over `MethodDef.Rva`'s instruction bytes, so this is a
 // plain SHA-256 over `ILCode[0..ILCodeSize)` with no header and no re-encoding
 // (known-build.json's `_recipe`).
+//
+// IT IS IMPLEMENTED HERE RATHER THAN CALLED FROM CRYPTOAPI, AND THE REASON IS THAT
+// THIS RUNS INSIDE `compileMethod`.
+//
+// The previous version was five CSP calls -- `CryptAcquireContextW`,
+// `CryptCreateHash`, `CryptHashData`, `CryptGetHashParam`, `CryptDestroyHash`,
+// `CryptReleaseContext` -- on the JIT's own thread. Acquiring a provider context can
+// load a provider DLL under the loader lock and can take CSP locks, and a thread that
+// blocks in either of those, inside the runtime's compileMethod and in cooperative GC
+// mode, is a thread the runtime's return-address hijack cannot account for. That is
+// the failure this build was dying of:
+//   CLR: Assert failure: pThread->HasThreadState(Thread::TS_Hijacked)
+// (`excep.cpp`), followed by `0xC0000602` from coreclr.
+//
+// What is below allocates nothing, takes no lock, loads nothing and cannot block. It
+// is plain SHA-256 (FIPS 180-4), so the digest is unchanged and the pinned hashes in
+// `known-build.json` still compare equal.
+
+inline uint32_t Rotr32(uint32_t value, int count) {
+    return (value >> count) | (value << (32 - count));
+}
+
+void Sha256Block(uint32_t state[8], const uint8_t* block) {
+    static const uint32_t kRound[64] = {
+        0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u, 0x3956c25bu, 0x59f111f1u,
+        0x923f82a4u, 0xab1c5ed5u, 0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
+        0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u, 0xe49b69c1u, 0xefbe4786u,
+        0x0fc19dc6u, 0x240ca1ccu, 0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
+        0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u, 0xc6e00bf3u, 0xd5a79147u,
+        0x06ca6351u, 0x14292967u, 0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
+        0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u, 0xa2bfe8a1u, 0xa81a664bu,
+        0xc24b8b70u, 0xc76c51a3u, 0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
+        0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u, 0x391c0cb3u, 0x4ed8aa4au,
+        0x5b9cca4fu, 0x682e6ff3u, 0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
+        0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u
+    };
+
+    uint32_t w[64];
+    for (int i = 0; i < 16; ++i) {
+        w[i] = (static_cast<uint32_t>(block[i * 4]) << 24) |
+               (static_cast<uint32_t>(block[i * 4 + 1]) << 16) |
+               (static_cast<uint32_t>(block[i * 4 + 2]) << 8) |
+               static_cast<uint32_t>(block[i * 4 + 3]);
+    }
+    for (int i = 16; i < 64; ++i) {
+        const uint32_t s0 = Rotr32(w[i - 15], 7) ^ Rotr32(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        const uint32_t s1 = Rotr32(w[i - 2], 17) ^ Rotr32(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+
+    uint32_t a = state[0], b = state[1], c = state[2], d = state[3];
+    uint32_t e = state[4], f = state[5], g = state[6], h = state[7];
+    for (int i = 0; i < 64; ++i) {
+        const uint32_t big1 = Rotr32(e, 6) ^ Rotr32(e, 11) ^ Rotr32(e, 25);
+        const uint32_t choose = (e & f) ^ (~e & g);
+        const uint32_t t1 = h + big1 + choose + kRound[i] + w[i];
+        const uint32_t big0 = Rotr32(a, 2) ^ Rotr32(a, 13) ^ Rotr32(a, 22);
+        const uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+        const uint32_t t2 = big0 + majority;
+        h = g; g = f; f = e; e = d + t1;
+        d = c; c = b; b = a; a = t1 + t2;
+    }
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
+    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+}
 
 bool Sha256(const uint8_t* data, size_t len, uint8_t out[32]) {
-    HCRYPTPROV prov = 0;
-    HCRYPTHASH hash = 0;
-    bool ok = false;
-    if (CryptAcquireContextW(&prov, nullptr, nullptr, PROV_RSA_AES, CRYPT_VERIFYCONTEXT)) {
-        if (CryptCreateHash(prov, CALG_SHA_256, 0, 0, &hash)) {
-            if (CryptHashData(hash, data, static_cast<DWORD>(len), 0)) {
-                DWORD digestLen = 32;
-                ok = CryptGetHashParam(hash, HP_HASHVAL, out, &digestLen, 0) != FALSE;
-            }
-            CryptDestroyHash(hash);
-        }
-        CryptReleaseContext(prov, 0);
+    uint32_t state[8] = { 0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au,
+                          0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u };
+
+    size_t offset = 0;
+    for (; offset + 64 <= len; offset += 64) {
+        Sha256Block(state, data + offset);
     }
-    return ok;
+
+    uint8_t tail[128] = {};
+    const size_t remaining = len - offset;
+    if (remaining > 0) {
+        memcpy(tail, data + offset, remaining);
+    }
+    tail[remaining] = 0x80;
+    const size_t tailLength = (remaining + 1 + 8 <= 64) ? 64 : 128;
+    const uint64_t bitLength = static_cast<uint64_t>(len) * 8;
+    for (int i = 0; i < 8; ++i) {
+        tail[tailLength - 1 - i] = static_cast<uint8_t>(bitLength >> (8 * i));
+    }
+    Sha256Block(state, tail);
+    if (tailLength == 128) {
+        Sha256Block(state, tail + 64);
+    }
+
+    for (int i = 0; i < 8; ++i) {
+        out[i * 4] = static_cast<uint8_t>(state[i] >> 24);
+        out[i * 4 + 1] = static_cast<uint8_t>(state[i] >> 16);
+        out[i * 4 + 2] = static_cast<uint8_t>(state[i] >> 8);
+        out[i * 4 + 3] = static_cast<uint8_t>(state[i]);
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -496,13 +578,32 @@ void OnCompiled(void* jitInfo, DrelayCorMethodInfo* info, uint8_t* nativeEntry, 
             // reads exactly like "the method never compiled".  That is the difference
             // between "the operator never reached gameplay" and "the target is not this
             // build's method", and it is not a difference a log line can preserve.
+            //
+            // AND THE LINE ITSELF IS NOT WRITTEN FROM HERE.  `DrLog` must not be called
+            // from inside `compileMethod`, and this is the call that proved it.
+            //
+            // MEASURED, ON THIS BUILD, FIVE RUNS OUT OF FIVE.  A run whose compilation
+            // stream contains a same-size near-miss died about five seconds in with
+            // `CLR: Assert failure: pThread->HasThreadState(Thread::TS_Hijacked)`
+            // (`excep.cpp`, the `STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT` path) and then
+            // `0xC0000602` from coreclr; a run whose stream did not contain one survived
+            // -- and `DRELAY_NO_PATCH=1` did not help, which put the fault in the detour
+            // rather than in the patch.  Bisected with a switch on the two calls below:
+            // skipping the table write still died, skipping this log line ran clean.
+            //
+            // The mechanism is the one the detour's own header names: the thread is in
+            // cooperative GC mode inside the runtime's `compileMethod`, and `DrLog`
+            // takes a lock, faults pages in the mapped block and formats a line -- work
+            // that can park the thread where the runtime's return-address hijack cannot
+            // account for it.  The logger exists so the JIT thread never touches a file;
+            // the same rule covers the ring, and it took a live crash to make it a rule.
+            //
+            // So the fact is recorded lock-free here and ANNOUNCED BY THE FLUSHER in
+            // `DrLogFlushObserved`, which already runs on its own thread for exactly
+            // this reason.  The line's text is unchanged.
             if (hashed) {
                 DrRecordObservedHash(static_cast<uint32_t>(candidate), digest);
             }
-            DrLog(DRLOG_WARN,
-                  "IL size %u matches target '%s' but the hash does not -- "
-                  "a same-sized neighbour, or a changed method",
-                  info->ILCodeSize, g_targets[candidate].name);
         }
     }
 
@@ -637,7 +738,16 @@ DrelayCorJitResult __cdecl HookCompileMethod(void* self, void* info, DrelayCorMe
         DrLog(DRLOG_INFO, "compileMethod detour ENTERED for the first time "
                           "(IL size %u, result %d) -- the vtable is the hook point",
               (methodInfo != nullptr) ? methodInfo->ILCodeSize : 0u, result.value);
-        DrLogFlushNow();
+        // THE LINE IS NOT FLUSHED HERE ANY MORE, AND THAT IS THE WHOLE POINT.
+        //
+        // `DrLogFlushNow` rewrites `hook.log` through `_wfopen_s`/`fprintf`/`fflush`.
+        // Doing that on the thread inside the runtime's `compileMethod` -- in
+        // cooperative GC mode, during the startup compilation storm -- is the same
+        // class of hazard as the lock `DrLog` used to take, and this is the one flush
+        // that ran on EVERY run.  The flusher thread wakes four times a second and
+        // writes the ring, so the worst case is a quarter of a second of delay; the
+        // ring lives in the shared block, so a process that dies inside that window
+        // still leaves the line for the next reader of `shared.block`.
     }
 
     if (result.value == DRELAY_CORJIT_OK && methodInfo != nullptr && nativeEntry != nullptr &&
