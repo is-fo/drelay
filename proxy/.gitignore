@@ -28,3 +28,6 @@
 /drelay.jar
 /drelay-*.jar
 /drelay-update.log
+
+# A stray scratch file from a launcher run; never part of the release.
+/out.tmp.txt
