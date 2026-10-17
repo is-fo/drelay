@@ -159,50 +159,64 @@ startup, naming the field — that is deliberate.
 
 **Symptom.** The game stays on the loading/login screen and eventually has to be closed. The
 hook is happy — `hook.log` ends with `phase 1 complete`, `frameTick` is found and patched —
-but `summary.txt` says `arm state : WAITING (no world has existed yet)` and the sensor's
-frame lines say `live=0 objects_live=0`. The relay console shows a `Queue` session that
-**connects, receives one packet, and then dies**.
+but `summary.txt` says `arm state : WAITING (no world has existed yet)`. The relay console
+shows a `Queue` session that **connects, receives one packet, and then dies**; the client
+never dials 6410 at all.
 
-**Diagnose it in three lines of relay log.** In `work/logs/events-<run>.jsonl`:
+**The relay's event log says which half is broken** (`work/logs/events-<run>.jsonl`):
 
 ```
-"kind":"session"  "Queue#N"  connected ...
-"kind":"packet"   "dir":"C->S"  "pkt":"Hello"  "len":8  "hex":"01065A656E697468"
-"kind":"error"    "S->C stream error: Connection reset"
+"session"  "Queue#N"  connected ...
+"packet"   "dir":"C->S"  "pkt":"Hello"  "len":8  "hex":"01065A656E697468"
+"error"    "S->C stream error: Connection reset"
 ```
 
-`packetsToServer: 1, packetsToClient: 0` on the session's close is the whole finding: the
-client's login packet went upstream and **nothing came back**. That happens ~30 s before the
-reset, and the client never dials the game server (no `Game#N` session at all).
+`packetsToServer: 1, packetsToClient: 0` on the close is the finding: the login packet went
+upstream and nothing came back. The client is waiting for the server's `QJoin`.
 
-**What it means.** The queue service is not answering. This is upstream, not local: the
-relay forwards the client's frame byte-for-byte (it re-encodes the length prefix in the order
-it *detected*, so the bytes are identical) and the client's own `QHello` is well formed. To
-confirm the machine and the proxy are fine, dial the **game** server directly from the same
-source address the relay uses — it answers with its opening Ping frames, which proves the
-network, the loopback claim and the outbound bind are all working:
+**The cause is the claimed address, not the queue service.** Verified on this machine:
+
+| setup | result |
+|---|---|
+| nothing claimed, relay running, login packet sent to `127.0.0.1:6412` | **server answers** `QJoin` (id 3, 34 bytes) — the relay forwards the frame byte-for-byte |
+| `44.242.119.50` claimed, relay started with `upstreamHost` = LAN address | session opens, hello forwarded, **nothing ever comes back** — no reset, no reply |
+| `44.242.119.50` claimed, relay started **without** `upstreamHost` | the relay's own dials are delivered back into its own listener: an **exponential cascade** (16 000+ sessions in five minutes) and the real client gets nothing |
+
+A claimed address is a **local** address, so the relay's own upstream dial to that address
+never reaches the internet — it is either delivered back into the relay's listener or its
+replies never arrive. `upstreamHost` stops the cascade (the bind keeps the relay out of its
+own listener) but it does not deliver the session: `Get-NetTCPConnection` shows the upstream
+socket correctly bound (`192.168.0.11:xxxx -> 44.242.119.50:6412`, `Established`) and still
+nothing comes back.
+
+**The relay's startup probe does not catch this.** It prints
+
+```
+[Queue] destination OK: 44.242.119.50:6412 - the dial left the host and the real server answered
+```
+
+which only proves a TCP connect succeeded — not that the connection reached the server. Read
+it as "the port is up", never as "this route works". The relay *does* refuse a bad layout at
+startup when `upstreamHost` is missing (`Refusing to start: 1 route destination(s) are
+claimed by this machine, and no upstreamHost is set`), so a relay that starts is not proof of
+anything either.
+
+**Fix.** There is no setting for this: a route whose destination is claimed locally cannot be
+proxied by dialling that same destination. Until the capture strategy changes, **do not run
+the relay** — release the claim and play direct:
 
 ```powershell
-# bind the relay's own upstream source, exactly as the relay does
-$c = New-Object System.Net.Sockets.TcpClient (New-Object System.Net.IPEndPoint ([System.Net.IPAddress]::Parse('192.168.0.11')),0)
-$c.Connect('18.145.161.25',6410)
-$buf = New-Object byte[] 64; $s = $c.GetStream()
-Start-Sleep 2; $s.Read($buf,0,64) | Out-Null
-($buf[0..13] | ForEach-Object { $_.ToString('X2') }) -join ' '   # 00 00 00 0A 5C 00 ... = the live game server
-$c.Close()
+# elevated
+.\tools\Set-AddressClaim.ps1 -Release
 ```
 
-**Fix:** nothing on this machine. Retry later, and check whether the game works on another
-network — if it does, the queue is refusing this source address; if it does not, the service
-is down. `queue.playdarzas.com` resolving to the address in `relay-routes.json` only proves
-DNS has not moved, not that the service is serving.
+Then start the game normally; it works, and the hook works with it.
 
-**Before you test the game without the proxy**, remove the address claim:
-`44.242.119.50` and `18.145.161.25` are **loopback aliases** on this machine, so with the
+**Before you test the game without the proxy**, remember the claim has to be gone:
+`44.242.119.50` and `18.145.161.25` are **loopback aliases** while claimed, so with the
 relay stopped the client dials itself and the connection is refused. That looks like a
-completely different bug. Use `tools\Restore-HostsFile.ps1` and
-`proxy\tools\Restore-DhcpAddressing.ps1`, and put the claim back with
-`tools\Set-AddressClaim.ps1` before running the relay again.
+completely different bug. `tools\Restore-HostsFile.ps1` and
+`proxy\tools\Restore-DhcpAddressing.ps1` undo the other halves of the capture.
 
 ---
 
