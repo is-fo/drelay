@@ -5,7 +5,7 @@ products that happen to share a repository, a game build, and a research history
 
 | Component | What it is | Where |
 |---|---|---|
-| **proxy** | A local TCP relay in Java. It claims the game server addresses on the loopback interface, so the client's own connection is delivered to a local listener that decodes, logs and can write packets back before forwarding the session to the real server. It is the component that ships a single `drelay.jar` and updates itself. | [`proxy/`](proxy/) |
+| **proxy** | A local TCP relay in Java. It captures the client's own connection - with a packet redirector when installed, otherwise by claiming the game server addresses on the loopback interface - so a local listener can decode, log and write packets back before forwarding the session to the real server. It ships as a Windows zip containing `drelay.jar` and the redirector, and its jar updates itself. | [`proxy/`](proxy/) |
 | **hook** | An in-process C++ / .NET hook. It is injected into the game process before `Main`, matches its detour targets by the SHA-256 of their IL bytes, and works inside the game's own frame — where the latency budget makes a decision impossible to send out to another process. | [`hook/`](hook/) |
 
 They are deliberately **not** one program. The proxy is a network tool that neither reads nor writes
@@ -71,9 +71,10 @@ cd hook
 .\tools\Test-HookOffline.ps1   # every check that does not need the game installed
 ```
 
-The downloaded relay is a single jar and updates itself; the hook is shipped as a zip that is
-unpacked next to the game. See the two READMEs for the details, including why the hook will refuse to
-install against a game build whose IL hashes do not match the ones it was built for.
+The downloaded relay is a Windows zip containing the jar and the packet redirector; extract it and
+run the jar, and the jar updates itself. The hook is shipped as a zip that is unpacked next to the
+game. See the two READMEs for the details, including why the hook will refuse to install against a
+game build whose IL hashes do not match the ones it was built for.
 
 ---
 
@@ -96,7 +97,7 @@ kept apart by their **tag namespaces** rather than by a path filter:
 
 | | Tag | Asset | Pipeline |
 |---|---|---|---|
-| proxy | `v<version>` | `drelay.jar` + `SHA256SUMS.txt` | [`.github/workflows/proxy-release.yml`](.github/workflows/proxy-release.yml) |
+| proxy | `v<version>` | `drelay-<version>-win64.zip` (jar + redirector) + `drelay.jar` + `SHA256SUMS.txt` | [`.github/workflows/proxy-release.yml`](.github/workflows/proxy-release.yml) |
 | hook | `hook-v<version>` | `drelay-hook-<version>.zip` + `SHA256SUMS.txt` | [`.github/workflows/hook-release.yml`](.github/workflows/hook-release.yml) |
 
 In both cases a release is a **version bump merged to master**: the workflow tags the commit it built
