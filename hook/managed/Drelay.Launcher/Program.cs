@@ -496,6 +496,31 @@ namespace Drelay.Launcher
             Console.WriteLine("---- evidence ----");
             Console.WriteLine("hook.log      : " + (File.Exists(logPath) ? "present" : "MISSING"));
 
+            // THE WORLD LOG, AND ITS SIZE RATHER THAN ONLY ITS EXISTENCE.
+            //
+            // A header-only `worlds.jsonl` is the instrument's failure mode (the writer runs on the
+            // sensor's frame path, so a half-switched launch still creates the file), and a
+            // "present" would read as success. The size is the check the operator is told to make,
+            // so the launcher makes it for them.
+            if (options.WorldLog)
+            {
+                string worldLogPath = Path.Combine(options.RunDirectory, "worlds.jsonl");
+                string size = "MISSING";
+                try
+                {
+                    if (File.Exists(worldLogPath))
+                    {
+                        size = new FileInfo(worldLogPath).Length.ToString(CultureInfo.InvariantCulture)
+                             + " bytes";
+                    }
+                }
+                catch (IOException)
+                {
+                    size = "unreadable";
+                }
+                Console.WriteLine("worlds.jsonl  : " + size);
+            }
+
             // THE BOOTSTRAP LINE IS IN `bootstrap.log`, NOT IN `hook.log`.
             //
             // This check looked only in `hook.log` and therefore reported
@@ -672,6 +697,21 @@ namespace Drelay.Launcher
   --trace              SPIKE 3.2: record trace.jsonl in the run directory. Sets the frame
                        replacement, the frame sensor and the recorder together, because any of
                        the three missing produces a valid, empty file.
+  --world-log          PLAN-AUTOFARM.md SECTION 6, THE OPERATOR'S COLLECTION INSTRUMENT: write
+                       worlds.jsonl in the run directory -- one line per world change, and one
+                       line every 30 frames carrying the map (name, asset, size, difficulty,
+                       solo-run), the world's flags, the player's position and health, every
+                       portal in World.Activatables (its title, tag, lock and called state), the
+                       eight nearest enemies, and whether the collision grid resolved.
+                       It is EVIDENCE: it writes a file and changes no decision. Sets the frame
+                       replacement, the frame sensor and DRELAY_WORLDLOG=1 together, because
+                       the writer runs on the sensor's frame path and the switch alone would
+                       write a header and no frames.
+                       Where it goes: <run dir>\worlds.jsonl, and the launcher prints the run
+                       directory at the top of the transcript.
+  --world-log-every N  write the periodic line every N frames rather than every 30 (N >= 1;
+                       a cadence of 0 is refused, because the hook would read it as 'not set'
+                       and use 30 while the command line said 0). This implies --world-log.
   --move-steer VALUE   PHASE 3 SPIKE 3.1: let the hook steer the player, using
                        the hook's own actuator. VALUE selects the experiment and is
                        documented in PHASE3-SCOPE.md; without this switch the

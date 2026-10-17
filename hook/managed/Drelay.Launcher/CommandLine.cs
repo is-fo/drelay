@@ -78,6 +78,23 @@ namespace Drelay.Launcher
                     case "--frame-replacement": settings.FrameReplacement = true; break;
                     case "--move-steer": settings.MoveSteer = Next(args, ref i); break;
                     case "--trace": settings.Trace = true; break;
+                    case "--world-log":
+                        // ONLY WHAT WAS TYPED. The frame replacement, the frame sensor and the
+                        // `DRELAY_WORLDLOG` name are the flag's three dependencies, and all three
+                        // are applied in `Options.ApplyImplications`/`EnvironmentBlock` -- the one
+                        // place a configuration file would go through too, if it could ask for this.
+                        settings.WorldLog = true;
+                        break;
+                    case "--world-log-every":
+                    {
+                        string raw = Next(args, ref i);
+                        if (!ParseFrameCadence("--world-log-every", raw, out int every, ref error))
+                        {
+                            return false;
+                        }
+                        settings.WorldLogEvery = every;
+                        break;
+                    }
                     case "--dodge": settings.Dodge = true; break;
                     case "--dodge-act":
                         // ONLY WHAT WAS TYPED.  `--dodge-act` implies the dodge, the movement
@@ -228,6 +245,10 @@ namespace Drelay.Launcher
                     }
                     settings.DodgeWindowSeconds = floor;
                     return true;
+                case "--world-log-every":
+                    if (!ParseFrameCadence(name, value, out int every, ref error)) { return false; }
+                    settings.WorldLogEvery = every;
+                    return true;
                 default:
                     return true;
             }
@@ -256,6 +277,7 @@ namespace Drelay.Launcher
                 case "--escape-test":
                 case "--dodge-disc":
                 case "--dodge-window":
+                case "--world-log-every":
                     return true;
                 default:
                     return false;
@@ -294,6 +316,27 @@ namespace Drelay.Launcher
             bool ok = ParseMilliseconds(flag, raw, out int parsed, ref error);
             value = ok ? parsed : (int?)null;
             return ok;
+        }
+
+        /// <summary>
+        /// A frame cadence: a whole number of frames, and at least one.
+        ///
+        /// ZERO IS REFUSED RATHER THAN READ AS "THE DEFAULT", because `WorldLog.cs` reads a
+        /// non-positive `DRELAY_WORLDLOG_EVERY` as "not set" and falls back to 30. An operator who
+        /// typed `--world-log-every 0` asked for a cadence; silently writing 30 while the command
+        /// line says 0 is the kind of disagreement this parser refuses by name everywhere else.
+        /// </summary>
+        private static bool ParseFrameCadence(string flag, string raw, out int value, ref string error)
+        {
+            value = 0;
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsed)
+                || parsed < 1)
+            {
+                error = flag + " needs a positive number of frames, got '" + raw + "'";
+                return false;
+            }
+            value = parsed;
+            return true;
         }
 
         private static string Next(string[] args, ref int i)

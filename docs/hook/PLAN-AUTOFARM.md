@@ -378,6 +378,17 @@ list (the 8 nearest is enough to name a boss later) and it does not decode the m
 the collision grid the hook already resolves**; if the whole map is needed, that is §7's full-grid
 mirror and it should be built then, not now.
 
+**The operator's surface is one flag**, because the writer is called from the managed frame
+replacement's sensor path and a switch that does not also turn those on writes a header and no
+frames:
+
+```powershell
+.\\hook\out\Drelay.Launcher.exe --world-log
+```
+
+`--world-log-every <frames>` moves the cadence from its 30-frame default and implies `--world-log`
+(§12.5 records the launcher side).
+
 ### 6.2 The operator's checklist
 
 Each line is a thing to walk to and note; the hook's log is the data and the operator's notes are the
@@ -831,9 +842,39 @@ is really at `Radius 0.25` on the live client is unverified — `PLAN-ENEMY-THRE
 
 `WorldLog.cs` (new), `EnemyReader.SampleEnemies`, one call site in `StartupHook`.
 
-> **The plan calls it `--world-log` and there is no command line.** The hook's surface is a `DRELAY_`
-> environment variable and always has been (`PHASE1-HANDOFF.md` §4 trap 1), so it is
-> `DRELAY_WORLDLOG=1`. `DRELAY_WORLDLOG_EVERY=<frames>` moves the cadence from its 30-frame default.
+> **The plan calls it `--world-log`, and that is now a launch option.** The hook's own surface is a
+> `DRELAY_` environment variable and always has been (`PHASE1-HANDOFF.md` §4 trap 1), so the writer
+> reads `DRELAY_WORLDLOG=1` and `DRELAY_WORLDLOG_EVERY=<frames>`; but the variable alone is not a
+> usable switch, because `WorldLog.OnFrame` is called from the managed frame replacement's sensor
+> path and `DRELAY_HOOK_FRAME_REPLACEMENT` is deleted from anything the launcher inherits. So
+> `Drelay.Launcher.exe --world-log` sets all three names — the frame replacement, `DRELAY_FRAME_SENSOR`
+> and `DRELAY_WORLDLOG` — and `--world-log-every <frames>` moves the cadence and implies the log. A
+> run that got only the variable would write a header and no frames, which is exactly the empty-file
+> failure `Options.Trace` records.
+
+**The launch surface is the flag** (§6.1's one-line command), and the file lands in the run
+directory the launcher names at the top of its transcript: `<run dir>\worlds.jsonl`, beside the usual
+`hook.log` and `bootstrap.log`. The three environment names still work for a hand-built launch, and
+the launcher's `--world-log` now drops an inherited `DRELAY_WORLDLOG`/`DRELAY_WORLDLOG_EVERY` when it
+writes its own, so a stale shell variable cannot change the cadence of a run that asked for none. It
+is a command-line switch and not a configuration key, for the same reason `--trace` is not one: a
+double-click must not start filling the run directory with evidence nobody asked for.
+`LauncherHarness --check c9` asserts that the flag reaches all three names, that it implies the frame
+replacement, that the cadence implies the log, and that a run without the flag publishes neither of
+the world-log names. Writing the option also closed one latent defect in the environment builder: `--autoaim` used
+to publish `DRELAY_HOOK_FRAME_REPLACEMENT` a second time through the block that also writes it for
+the implied frame replacement, so the child's block carried one name twice — the builder now collapses
+duplicates and `--check c2` asserts one entry per name.
+
+**And the launch surface exposed a second half of the same "half-switched-on" defect, in the writer
+itself.** `EnemyReader` was resolved only by `DodgeAdapter.Resolve`, which returns at its first line
+when `DRELAY_DODGE` is unset — so a collection run with the dodge turned off wrote a well-formed file
+with no enemy rows, while §6.2 item 4 asks the operator where the enemies are densest. `WorldLog.Resolve`
+now resolves the reader itself when it is not already available, and `WorldLogVerify` runs with no
+`DRELAY_DODGE` set, so the enemy-row assertions are the proof that the instrument stands alone. The
+writer also flushes per line now (`AutoFlush`): `Close` is never called, so a buffered writer would
+have ended the evidence at the last buffer boundary — and the "did the file grow" check the operator
+is told to make would have read "header only" for the first several seconds of a working log.
 
 It writes `worlds.jsonl` into the run directory: a header naming every accessor this build could not
 resolve, a frame line every 30 frames with the map block, the world block, the player block, the

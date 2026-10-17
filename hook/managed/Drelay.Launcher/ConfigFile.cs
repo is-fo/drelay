@@ -16,10 +16,11 @@
 //      game not aim.
 //   3. TEST-HARNESS FLAGS ARE NOT IN THE SCHEMA.  `--test-target`, `--frame-helper`,
 //      `--frame-replacement`, `--assembly`, `--exe`, `--off`, `--full-trace`, `--trace`,
-//      `--move-steer` and `--escape-test` stay command-line-only: a user-facing config
-//      that offers `FrameHelper` is offering a switch that allocates 64 KB per frame on
-//      purpose.  A config file that mentions one of them is refusing nothing -- the key is
-//      simply unknown, and unknown keys are ignored.
+//      `--world-log`, `--world-log-every`, `--move-steer` and `--escape-test` stay
+//      command-line-only: a user-facing config that offers `FrameHelper` is offering a switch
+//      that allocates 64 KB per frame on purpose, and one that offers `--world-log` is offering
+//      a JSON line every 30 frames in every session it starts.  A config file that mentions one
+//      of them is refusing nothing -- the key is simply unknown, and unknown keys are ignored.
 
 using System;
 using System.Collections.Generic;

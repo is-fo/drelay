@@ -62,11 +62,13 @@ namespace Drelay.Launcher
         public bool? Trace;
         public bool? Dodge;
         public bool? DodgeAct;
+        public bool? WorldLog;
 
         // Values that are not switches.
         public string AutoAim;
         public string MoveSteer;
         public string TestTargets;
+        public int? WorldLogEvery;
 
         /// <summary>Whether this source said anything at all. Used only for reporting.</summary>
         public bool IsEmpty
@@ -81,8 +83,9 @@ namespace Drelay.Launcher
                     && Off == null && Act == null && FullTrace == null && Verbose == null
                     && NoWait == null && PauseAfterRun == null && DbgDump == null
                     && FrameHelper == null && FrameReplacement == null && Trace == null
-                    && Dodge == null && DodgeAct == null
-                    && AutoAim == null && MoveSteer == null && TestTargets == null;
+                    && Dodge == null && DodgeAct == null && WorldLog == null
+                    && AutoAim == null && MoveSteer == null && TestTargets == null
+                    && WorldLogEvery == null;
             }
         }
     }
@@ -293,6 +296,34 @@ namespace Drelay.Launcher
         // file, and it cost a session.
         public bool Trace;
 
+        // PLAN-AUTOFARM.md SECTION 6'S COLLECTION INSTRUMENT, AS A LAUNCH OPTION.
+        //
+        // THE PLAN NAMED THE SWITCH `--world-log` AND BUILT IT AS AN ENVIRONMENT VARIABLE
+        // (`WorldLog.cs`: `DRELAY_WORLDLOG=1`), because the hook has no command line. The launcher
+        // does, and the instrument cannot be switched on safely with the variable alone: the writer
+        // is called from the MANAGED FRAME REPLACEMENT's sensor path, so `DRELAY_WORLDLOG=1` with
+        // the sensor off resolves, writes a header, and records no frame -- a file that looks like
+        // "nothing happened in the game" rather than "the instrument was half-switched-on". That is
+        // the empty-trace failure this project has already paid a session for (see `Options.Trace`).
+        //
+        // SO THE FLAG SETS THREE THINGS, and `ApplyImplications` (the frame replacement) plus
+        // `EnvironmentBlock` (the sensor and the log) are the only places that decide them.
+        //
+        // IT IS NOT IN THE CONFIGURATION FILE, for the reason `--trace` is not (section 5.1, rule
+        // 3): it is a diagnostic recording, not a setting a double-click should start writing. A
+        // config that turned it on would fill the run directory with a JSON line every 30 frames
+        // for every session.
+        public bool WorldLog;
+
+        // HOW MANY FRAMES BETWEEN PERIODIC LINES.  `0` means "the launcher said nothing", which
+        // leaves `WorldLog.cs`'s own 30-frame default in charge -- the same sentinel rule
+        // `DodgeDisc` follows, so a default is not written down in two assemblies.
+        //
+        // IT IMPLIES `WorldLog`: a cadence is a request for the log it is the cadence of, and the
+        // alternative -- refusing the pair when only one was typed -- makes the operator type two
+        // flags to do one thing. `ApplyImplications` applies it once, for both sources.
+        public int WorldLogEvery;
+
         // PHASE 3'S ESCALATION TEST: call `World.RequestEscape()` once, under hook control.
         //
         // WHY IT IS A SWITCH AND NOT PART OF THE DODGE.  The escape is Phase 3's floor --
@@ -454,6 +485,8 @@ namespace Drelay.Launcher
             if (from.Trace.HasValue) { Trace = from.Trace.Value; }
             if (from.Dodge.HasValue) { Dodge = from.Dodge.Value; }
             if (from.DodgeAct.HasValue) { DodgeAct = from.DodgeAct.Value; }
+            if (from.WorldLog.HasValue) { WorldLog = from.WorldLog.Value; }
+            if (from.WorldLogEvery.HasValue) { WorldLogEvery = from.WorldLogEvery.Value; }
 
             if (from.AutoAim != null) { AutoAim = from.AutoAim; }
             if (from.MoveSteer != null) { MoveSteer = from.MoveSteer; }
@@ -480,6 +513,12 @@ namespace Drelay.Launcher
             // Auto-aim must arm `Prefs.enable_aimbot` from the game's own thread before the
             // target method is ever compiled, and the frame replacement is that thread.
             if (!string.IsNullOrEmpty(AutoAim)) { FrameReplacement = true; }
+
+            // A cadence is a request for the log it times, and the log rides on the frame
+            // replacement's sensor path. Order matters: the cadence implies the log, and the log
+            // implies the frame replacement, so one `--world-log-every` produces all three.
+            if (WorldLogEvery > 0) { WorldLog = true; }
+            if (WorldLog) { FrameReplacement = true; }
 
             // `--dodge-act` puts the pilot in `dodge` mode, which is a value the actuator reads
             // by name.  Set here rather than in the parser for the same reason as the two above.

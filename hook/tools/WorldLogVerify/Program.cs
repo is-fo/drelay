@@ -67,14 +67,20 @@ internal static class Program
             .SetLocked(true);
         DarzasDominion.Darza.Game.World.Shared = world;
 
-        EnemyReader.ResolveWorld(typeof(DarzasDominion.Darza.Game.World).GetField("Shared"));
-        Check("EnemyReader resolves against the fake game",
-              EnemyReader.Resolve(typeof(DarzasDominion.Darza.Game.World).Assembly),
-              EnemyReader.UnresolvedReason);
-
+        // THE WORLD LOG RESOLVES THE ENEMY READER ITSELF, AND THIS HARNESS RELIES ON IT.
+        //
+        // In the hook `EnemyReader` is resolved by `DodgeAdapter.Resolve`, which returns at its first
+        // line when `DRELAY_DODGE` is unset -- so a collection session with the dodge off used to
+        // write a well-formed file with no enemy rows. `DRELAY_DODGE` is deliberately not set here,
+        // so the reader has to come from `WorldLog.Resolve`, which is the only module in this run
+        // that could provide it. The enemy-row assertions below are what proves it did.
         Check("WorldLog resolves against the fake game",
               WorldLog.Resolve(typeof(DarzasDominion.Darza.Game.World).Assembly, dir),
               WorldLog.UnresolvedReason);
+
+        Check("the world log resolved the enemy reader for itself, with no dodge in the run",
+              EnemyReader.Available,
+              "EnemyReader was not available after WorldLog.Resolve: " + EnemyReader.Status());
 
         // --- drive it ---------------------------------------------------------------------
         string path = Path.Combine(dir, "worlds.jsonl");

@@ -440,7 +440,7 @@ if ($doManaged) {
     # those files are still a pure function of their inputs -- a change that reaches for the
     # registry, the console or the game breaks this build rather than the live one (the registry
     # itself is behind `DiscoveryWindows.cs`, which this project deliberately does not compile).
-    # `Test-HookOffline.ps1` runs its C1..C8 invariants.
+    # `Test-HookOffline.ps1` runs its C1..C9 invariants.
     $launcherHarnessProj = Join-Path $root 'tools\LauncherHarness\LauncherHarness.csproj'
     if (Test-Path -LiteralPath $launcherHarnessProj) {
         Write-Note 'building LauncherHarness (the launcher configuration, offline)'

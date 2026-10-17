@@ -2423,11 +2423,13 @@ namespace Drelay.Bootstrap
                     }
                 }
 
-                // THE WORLD LOG IS NOT RESOLVED HERE, AND THE ORDER IS THE REASON. It samples the
-                // enemy list through `EnemyReader`, whose `Resolve`/`ResolveWorld` are called from
-                // `DodgeAdapter.Resolve` further down -- so a world log resolved at this point would
-                // write a header saying the enemy list was missing and would carry no enemy rows for
-                // a whole session, with nothing in the file to say why. It is still outside the trace
+                // THE WORLD LOG IS NOT RESOLVED HERE, AND THE ORDER IS STILL THE REASON. It samples
+                // the enemy list through `EnemyReader`, whose `Resolve`/`ResolveWorld` are called
+                // from `DodgeAdapter.Resolve` further down. `WorldLog.Resolve` can now resolve that
+                // reader for itself when it has to -- a collection run with the dodge off used to
+                // write a file with no enemy rows, because only the adapter ever resolved it -- but
+                // resolving after the adapter means the log reports the reader the dodge already
+                // uses rather than standing up a second one. It is still outside the trace
                 // recorder's `else if` chain, for the reason recorded there: this is evidence, and
                 // the decision must not gate it. See the resolve after the adapter below.
             }
@@ -2462,11 +2464,11 @@ namespace Drelay.Bootstrap
                 }
 
                 // THE WORLD LOG IS RESOLVED HERE RATHER THAN BESIDE THE TRACE RECORDER, AND THE
-                // ORDER IS THE REASON. It samples the enemy list through `EnemyReader`, and
-                // `EnemyReader.Resolve`/`ResolveWorld` are called from `DodgeAdapter.Resolve` -- so a
-                // world log resolved before the adapter would write a header saying the enemy list
-                // was missing and would carry no enemy rows for a whole session, with nothing in the
-                // file to say why. It is still outside the trace recorder's `else if` chain, for the
+                // ORDER STILL MATTERS. It samples the enemy list through `EnemyReader`, and
+                // `EnemyReader.Resolve`/`ResolveWorld` are called from `DodgeAdapter.Resolve`; the
+                // log can now provide that reader itself (see `WorldLog.Resolve`), so the order is
+                // what keeps it reporting the reader the dodge already uses instead of standing up a
+                // second one. It is still outside the trace recorder's `else if` chain, for the
                 // reason recorded there: this is evidence and the decision must not gate it.
                 if (WorldLog.Resolve(game, Environment.GetEnvironmentVariable("DRELAY_HOOK_RUNDIR")))
                 {

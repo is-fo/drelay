@@ -199,7 +199,8 @@ Invoke-Check 'route arithmetic fixture (R1-R5)' {
     & $harness --scenario peaceful --frames 60 --seed 1 --quiet
 }
 
-# The launcher's configuration: HANDOFF-LAUNCH-CONFIG.md section 13's invariants C1-C8, plus the
+# The launcher's configuration: HANDOFF-LAUNCH-CONFIG.md section 13's invariants C1-C8, C9 for
+# PLAN-AUTOFARM.md section 6's launch surface, plus the
 # boundary cases section 11 asks for. It compiles the launcher's own settings, config reader,
 # command-line parser, discovery walk and environment builder, so this check is about the shipped
 # logic rather than a copy of it -- and it needs no game, no Steam and no registry, because the
@@ -209,7 +210,7 @@ Invoke-Check 'route arithmetic fixture (R1-R5)' {
 # about a value: C5 asserts the single `Console.ReadKey` in `Program.Main` is behind
 # `FirstRun.ShouldPause`, and C8 asserts the pinned record still carries the Steam app id and the
 # OpenGL assembly size that discovery names the wrong-install case with.
-Invoke-Check 'launcher configuration (C1-C8)' {
+Invoke-Check 'launcher configuration (C1-C9)' {
     $harness = Join-Path $hookRoot 'tools\LauncherHarness\bin\Release\LauncherHarness.exe'
     if (-not (Test-Path -LiteralPath $harness)) {
         Write-Bad "missing $harness -- run build.ps1 first."

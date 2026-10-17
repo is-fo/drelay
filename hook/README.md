@@ -33,9 +33,10 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 .\\hook\tools\Test-Injection.ps1  # end-to-end, against a synthetic host (127 checks)
 .\\hook\tools\Test-HookOffline.ps1  # everything that needs NO game: the ABI self-test, the two generated tables,
                                     # both report fixtures, and the launcher's configuration
-                                    # invariants (C1-C8: the four sources, their per-field
-                                    # precedence, the discovery walk and the environment the child
-                                    # is given). The metadata reader's self-test joins them only
+                                    # invariants (C1-C9: the four sources, their per-field
+                                    # precedence, the discovery walk, the environment the child
+                                    # is given and the world log's launch surface). The metadata
+                                    # reader's self-test joins them only
                                     # when the game is installed -- it reads the game's own PE --
                                     # and is named as not run when it is not.
 ```
@@ -68,6 +69,39 @@ implies `--frame-replacement`, for the ordering reason in [`AUTOAIM.md`](../docs
 the flag has to be armed from the game's own thread before the target is ever called.
 The target is compiled only once a world exists, so the run's own log is in
 `<run dir>\bootstrap.log` — look for `auto-aim: the replacement answered its first call`.
+
+### Recording the world (`--world-log`, the farmer's collection instrument)
+
+This is [`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §6: the operator walks around and the hook
+writes everything the farmer cannot be written without — the map names, the lobby's portals and their
+titles, and which world-change signal actually fires. One switch:
+
+```powershell
+.\\hook\out\Drelay.Launcher.exe --world-log
+# the launcher prints "run directory : ..." at the top; the evidence is
+# <run dir>\worlds.jsonl   (plus hook.log and bootstrap.log beside it)
+```
+
+`--game PATH` is only needed when neither the configuration file nor discovery names the install.
+`--world-log-every 60` moves the periodic line from its 30-frame default (about twice a second at
+60 Hz), and implies `--world-log`.
+
+The file is JSON Lines: a header naming every accessor this build could not resolve, a frame line
+every N frames carrying the map block (`Name`, `AssetName`, `Width`, `Height`, `PlayerId`,
+`Difficulty`, `IsSoloRun`, `OpenedByKey`, `CanTeleport`, `Levels`), the world's flags (`SafeWorld`,
+`VaultWorld`, `Space`, `PlayerDead`), the player's position, radius and health, every object in
+`World.Activatables` with the portal's title, tag, lock and called state, the eight nearest enemies,
+and whether the collision grid resolved and how big it is; and one `transition` line per world change
+naming which signal fired (`MapInfo` reference, its name, `SafeWorld`, the grid's dimensions).
+
+It is **evidence**: it writes a file, changes no decision, and is never on the dodge's path. The one
+thing to check before trusting a session is that the file grew — `(Get-Item <run-dir>\worlds.jsonl).Length`
+of a few hundred bytes means the header and nothing else. The flag sets the managed frame replacement,
+the frame sensor and `DRELAY_WORLDLOG=1` together for exactly that reason: the writer is called from
+the sensor's frame path, so the variable on its own produces a header and no frames. The switch is
+command-line-only and not a configuration key, because a double-click should not start recording
+evidence. [`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §6.2 is the checklist of what to walk
+and note while it records.
 
 ### Starting it with no arguments (the configuration file)
 
@@ -126,7 +160,8 @@ Every key is optional, `null` means "not set", unknown keys are ignored, and a *
 (a misspelled `AutoAim`, a number where a boolean belongs) refuses at startup naming the field — a
 typo that silently resolved to "off" would cost a session spent watching the game not aim. The
 test-harness switches (`--test-target`, `--frame-helper`, `--frame-replacement`, `--off`,
-`--full-trace`, `--trace`, `--move-steer`, `--escape-test`, `--assembly`, `--exe`) are **not** in the
+`--full-trace`, `--trace`, `--world-log`, `--world-log-every`, `--move-steer`, `--escape-test`,
+`--assembly`, `--exe`) are **not** in the
 schema and not in the template; a config that offers `FrameHelper` would be offering a switch that
 allocates 64 KB per frame on purpose.
 

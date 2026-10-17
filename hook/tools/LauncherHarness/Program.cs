@@ -13,6 +13,8 @@
 //   C5  a zero-argument run with redirected input never pauses
 //   C6  the written template contains no test-harness key
 //   C7  every config field has a flag, and every user-facing flag a field
+//   C8  the pinned record carries what discovery needs
+//   C9  the world log's launch surface sets all three names, and nothing when it is off
 //
 // plus the boundary cases section 11 asks for by step.  Each check prints one line; a failure
 // prints what it expected and what it found, and the process exits 1.
@@ -110,6 +112,7 @@ namespace Drelay.LauncherHarness
                 new KeyValuePair<string, Action>("c6 the first-run template", C6),
                 new KeyValuePair<string, Action>("c7 config fields and flags, both directions", C7),
                 new KeyValuePair<string, Action>("c8 the pinned record discovery needs", C8),
+                new KeyValuePair<string, Action>("c9 the world log's launch surface", C9),
                 new KeyValuePair<string, Action>("r1 the config reader's boundaries", R1),
                 new KeyValuePair<string, Action>("r2 the command line's boundaries", R2),
             };
@@ -189,7 +192,7 @@ namespace Drelay.LauncherHarness
         private static void Usage()
         {            Console.WriteLine(@"LauncherHarness -- the launcher's configuration, offline.
 
-  --check NAME     run only the checks whose name starts with NAME (c1..c8, r1, r2)
+  --check NAME     run only the checks whose name starts with NAME (c1..c9, r1, r2)
   --source PATH    Program.cs, so C5 can assert Main's single pause is behind FirstRun.ShouldPause
   --known-build PATH  hook/known-build.json, so C8 can assert the record carries the app id and
                       the OpenGL assembly size that discovery names the variant with
@@ -343,6 +346,24 @@ namespace Drelay.LauncherHarness
         private static bool Has(List<KeyValuePair<string, string>> variables, string name)
         {
             return Get(variables, name) != null;
+        }
+
+        /// <summary>
+        /// One entry per name, which is the environment block's own documented rule.
+        ///
+        /// IT IS AN INVARIANT RATHER THAN A STYLE: a block that names one variable twice has a
+        /// meaning that depends on how the child's runtime resolves duplicates. Two code paths used
+        /// to produce exactly that (`--autoaim` wrote `DRELAY_HOOK_FRAME_REPLACEMENT` beside the
+        /// block that already wrote it for the implied `FrameReplacement`), which is why the builder
+        /// now collapses them and this check exists to keep it that way.
+        /// </summary>
+        private static void ExpectUnique(List<KeyValuePair<string, string>> variables, string what)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in variables)
+            {
+                Expect(seen.Add(pair.Key), what + ": '" + pair.Key + "' appears more than once");
+            }
         }
 
         // ------------------------------------------------------------------
@@ -507,12 +528,14 @@ namespace Drelay.LauncherHarness
                 "DRELAY_HOOK_AIM_REPLACEMENT", "DRELAY_AIM_MODE", "DRELAY_DODGE", "DRELAY_DODGE_ACT",
                 "DRELAY_HOOK_MOVE_REPLACEMENT", "DRELAY_MOVE_STEER", "DRELAY_HOOK_TEST_TARGETS",
                 "DRELAY_HOOK_FULLTRACE", "DRELAY_TRACE", "DRELAY_FRAME_SENSOR", "DRELAY_HOOK_OFF",
+                "DRELAY_WORLDLOG", "DRELAY_WORLDLOG_EVERY",
                 "DOTNET_DbgEnableMiniDump",
             };
             foreach (string name in neverWritten)
             {
                 Expect(!Has(vars, name), "a field nobody set must reach the child as NOTHING: " + name);
             }
+            ExpectUnique(vars, "the child's environment");
 
             string[] alwaysWritten =
             {
@@ -534,6 +557,7 @@ namespace Drelay.LauncherHarness
             // Every field of the schema reaches the variable it claims to.
             var full = Resolve(Config(FullConfigJson()), Empty(), new FakeEnv());
             var fullVars = Env(full);
+            ExpectUnique(fullVars, "the environment for a config that sets every field");
             foreach (var row in FieldEnv)
             {
                 if (row.Env == null) { continue; }
@@ -964,6 +988,86 @@ namespace Drelay.LauncherHarness
                        "known-build.json must record game.steamAppId: discovery reads the app manifest with it");
                 Expect(appId.GetInt32() > 0, "steamAppId must be a real app id, not 0");
             }
+        }
+
+        // ------------------------------------------------------------------
+        // C9 -- the world log's launch surface
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// PLAN-AUTOFARM.md section 6's instrument, as the launcher publishes it.
+        ///
+        /// THE FAILURE THIS EXISTS TO PREVENT IS AN EMPTY FILE THAT LOOKS LIKE A QUIET GAME. The
+        /// hook's writer is called from the managed frame replacement's sensor path, so
+        /// `DRELAY_WORLDLOG=1` on its own resolves, writes a header and records no frame. The flag
+        /// therefore has to carry all three names, and the check asserts all three rather than the
+        /// one a reader would think to look at.
+        /// </summary>
+        private static void C9()
+        {
+            // NOTHING ASKED FOR: none of the three names reaches the child.
+            var off = Env(Resolve(Empty(), Cli("--game", @"C:\g"), new FakeEnv()));
+            foreach (string name in new[] { "DRELAY_WORLDLOG", "DRELAY_WORLDLOG_EVERY" })
+            {
+                Expect(!Has(off, name), "without --world-log the child must not be told " + name);
+            }
+
+            // THE FLAG: the switch, its two dependencies, and the frame replacement it implies.
+            Options log = Resolve(Empty(), Cli("--game", @"C:\g", "--world-log"), new FakeEnv());
+            Expect(log.WorldLog, "--world-log must reach Options");
+            Expect(log.FrameReplacement,
+                   "--world-log must imply the managed frame replacement: WorldLog.OnFrame is called "
+                   + "from that path and nothing else calls it");
+            var vars = Env(log);
+            ExpectUnique(vars, "the environment for --world-log");
+            ExpectEqual("1", Get(vars, "DRELAY_WORLDLOG"), "--world-log reaches the writer's switch");
+            ExpectEqual("1", Get(vars, "DRELAY_FRAME_SENSOR"),
+                        "--world-log reaches the sensor it is sampled on; without it the log records no frame");
+            ExpectEqual("1", Get(vars, "DRELAY_HOOK_FRAME_REPLACEMENT"),
+                        "--world-log reaches the entry point it is called from");
+            Expect(!Has(vars, "DRELAY_WORLDLOG_EVERY"),
+                   "a cadence nobody asked for must be absent, so the hook's own 30-frame default decides");
+
+            // THE CADENCE IMPLIES THE LOG, so one flag is enough to do one thing.
+            Options every = Resolve(Empty(), Cli("--game", @"C:\g", "--world-log-every", "120"), new FakeEnv());
+            Expect(every.WorldLog, "--world-log-every must imply --world-log rather than write nothing");
+            Expect(every.FrameReplacement, "and therefore the frame replacement too");
+            ExpectEqual("120", Get(Env(every), "DRELAY_WORLDLOG_EVERY"), "the cadence reaches the hook");
+
+            // THE EQUALS SPELLING, because a script is the most likely caller of a collection run.
+            Settings parsed;
+            List<string> gameArguments;
+            bool help;
+            string error;
+            Expect(CommandLine.TryParse(new[] { "--game", @"C:\g", "--world-log-every=60" },
+                                        out parsed, out gameArguments, out help, out error),
+                   "--world-log-every=N must parse: " + error);
+            Expect(parsed.WorldLogEvery == 60, "--world-log-every=60 carries 60");
+
+            // A CADENCE THE HOOK WOULD READ AS "NOT SET" IS REFUSED BY NAME.
+            foreach (string bad in new[] { "0", "-1", "abc" })
+            {
+                Expect(!CommandLine.TryParse(new[] { "--world-log-every", bad },
+                                             out parsed, out gameArguments, out help, out error),
+                       "--world-log-every " + bad + " must be refused");
+                Expect(error != null && error.Contains("--world-log-every"),
+                       "and must name the flag, got: " + error);
+            }
+
+            // A STALE SHELL VARIABLE IS DROPPED WHEN THE LAUNCHER WRITES ITS OWN, and the run gets
+            // one entry per name -- the rule the rest of the block follows.
+            var inherited = Env(log, "DRELAY_WORLDLOG=0", "DRELAY_WORLDLOG_EVERY=999");
+            ExpectUnique(inherited, "the environment for --world-log beside stale inherited names");
+            ExpectEqual("1", Get(inherited, "DRELAY_WORLDLOG"),
+                        "the launcher's own switch must replace an inherited one, not sit beside it");
+            Expect(!Has(inherited, "DRELAY_WORLDLOG_EVERY"),
+                   "and an inherited cadence must not silently time a run that asked for none");
+
+            // AND THE OPPOSITE: with no flag the operator's own variable is still theirs, because
+            // plain `DRELAY_` names are passed through by design.
+            var passed = Env(Resolve(Empty(), Cli("--game", @"C:\g"), new FakeEnv()), "DRELAY_WORLDLOG=1");
+            ExpectEqual("1", Get(passed, "DRELAY_WORLDLOG"),
+                        "a run without --world-log must not strip the operator's own DRELAY_ name");
         }
 
         // ------------------------------------------------------------------

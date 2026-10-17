@@ -217,6 +217,22 @@ namespace Drelay.Bootstrap
                 _getWorld = FieldAccessor.Static(sharedField);
                 _getPlayer = playerField != null ? FieldAccessor.Reference(playerField) : null;
 
+                // THE ENEMY ROWS MUST NOT DEPEND ON THE DODGE BEING ON, AND THEY DID.
+                //
+                // `EnemyReader` is resolved today by `DodgeAdapter.Resolve`, which is the only
+                // module that has needed it -- and that method returns at its first line when
+                // `DRELAY_DODGE` is unset. The world log runs after it, so a session that collected
+                // map and portal data with the dodge turned off would have written a well-formed file
+                // with no enemy rows at all, while `PLAN-AUTOFARM.md` section 6.2 item 4 asks the
+                // operator where the enemies are densest. A reader that is already resolved is left
+                // alone (the two calls above are the adapter's); otherwise this instrument resolves
+                // it for itself, with the same two inputs the adapter hands over.
+                if (!EnemyReader.Available)
+                {
+                    EnemyReader.ResolveWorld(sharedField);
+                    EnemyReader.Resolve(game);
+                }
+
                 // THE MAP. `World.MapInfo` is a `GmMapInfo` (`World.cs:4486`), and every field this
                 // log reads is declared on that packet type -- see `PLAN-AUTOFARM.md` section 6.1's
                 // list. The type is taken FROM THE FIELD rather than by name, for the reason
@@ -325,10 +341,20 @@ namespace Drelay.Bootstrap
 
                 _writer = new StreamWriter(new FileStream(_path, FileMode.Create, FileAccess.Write),
                                            new UTF8Encoding(false));
-                _writer.AutoFlush = false;
+
+                // FLUSHED PER LINE, WHICH IS PERIODIC RATHER THAN PER FRAME.
+                //
+                // `Close` is never called: the replacement does not know when the operator closes the
+                // window, and both `TraceRecorder.Close` and this one are dead code for that reason.
+                // With a buffered writer the evidence would therefore end at whatever the last
+                // buffer boundary was -- and, worse for the session this instrument exists for, the
+                // file would not grow for the first several seconds, so the "did it record anything"
+                // check would read as "header only" while the log was working. Lines are written
+                // every `_everyFrames` frames (30 by default, about twice a second), so this is one
+                // small append per half-second on a module that is off unless the operator asks.
+                _writer.AutoFlush = true;
 
                 WriteHeader();
-                _writer.Flush();
 
                 _resolved = true;
                 _enabled = true;
