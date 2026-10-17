@@ -26,6 +26,7 @@ proxy/                    the Java relay — its own Maven project, its own rele
   src/test/java/            the offline checks (standalone main classes, no test framework)
   tools/                    operator and recovery scripts
   tools/tests/              the end-to-end checks that drive a real relay subprocess
+  redirector/               drelay-redirect.exe: the WinDivert capture used by --redirect
   work/                     the relay's runtime state: event logs, generated route tables (ignored)
 
 hook/                     the native + managed hook — its own build, its own release

@@ -11,7 +11,8 @@
 #   3. extracts or upgrades the files it ships (relay-routes.json, the claim and hosts helpers),
 #   4. refreshes the game server addresses from the game's own API and DNS,
 #   5. stops a relay left over from an earlier run, so the listen ports are free,
-#   6. claims each route's address on the loopback interface,
+#   6. claims each route's address on the loopback interface, or - with -Redirect - starts the packet
+#      redirector that hands the client's own packets to the relay instead,
 #   7. starts the relay and opens the dashboard,
 #   8. releases the claims when the relay stops.
 #
@@ -20,6 +21,7 @@
 #
 # Usage:
 #   .\drelay.ps1                     build if needed, then run
+#   .\drelay.ps1 -Redirect           run with the packet redirector instead of an address claim
 #   .\drelay.ps1 -Build              always rebuild first
 #   .\drelay.ps1 -Rebuild            clean, then build
 #   .\drelay.ps1 -Maven              build with Maven instead of javac
@@ -45,6 +47,7 @@ param(
     [switch]$Status,
     [switch]$Claim,
     [switch]$Release,
+    [switch]$Redirect,
     [switch]$CheckUpdate,
     [switch]$Update,
     [switch]$JarPath,
@@ -178,7 +181,10 @@ function Invoke-Jar {
     $all = @('-jar', $jarFile) + $Arguments
     Write-Note "  java $($all -join ' ')"
     & $javaExe @all
-    return $LASTEXITCODE
+    # NOT returned on purpose. A caller that writes `$code = Invoke-Jar ...` captures the function's
+    # whole output stream, which includes the jar's stdout - so the relay's route table, its session
+    # lines and the dashboard URL all vanish. The exit code is read from $LASTEXITCODE by the caller
+    # instead, which native commands set outside the function's own scope anyway.
 }
 
 # The claim script the jar extracts, beside the jar as well.
@@ -187,9 +193,11 @@ $claimScript = Join-Path $jarDirectory 'tools\Set-AddressClaim.ps1'
 $code = 0
 if ($Stop) {
     # The jar stops the processes and releases the claims, so this stays a one-liner.
-    $code = Invoke-Jar @('--stop')
+    Invoke-Jar @('--stop')
+    $code = $LASTEXITCODE
 } elseif ($Release) {
-    $code = Invoke-Jar @('--release-claims')
+    Invoke-Jar @('--release-claims')
+    $code = $LASTEXITCODE
 } elseif ($Claim -or $Status) {
     # Claim and status are the claim script's own jobs; the jar extracts it and starts nothing.
     Invoke-Jar @('--install') | Out-Null
@@ -199,14 +207,40 @@ if ($Stop) {
     & $claimScript @claimArgs
     $code = $LASTEXITCODE
 } elseif ($CheckUpdate) {
-    $code = Invoke-Jar @('--check-update')
+    Invoke-Jar @('--check-update')
+    $code = $LASTEXITCODE
 } elseif ($Update) {
-    $code = Invoke-Jar @('--update')
+    Invoke-Jar @('--update')
+    $code = $LASTEXITCODE
 } else {
-    Write-Ok 'the launcher will ask for administrator rights, then claim the server addresses.'
     $arguments = @()
+    if ($Redirect) {
+        # The packet redirector is a separate program, built separately - so build it here if this
+        # checkout has never built it, for the same reason the jar is built on demand: .\drelay.ps1
+        # is meant to be the one entry point, and "it is missing" is not a useful first answer.
+        $redirectorExe = Join-Path $root 'target\redirector\drelay-redirect.exe'
+        if (-not (Test-Path -LiteralPath $redirectorExe)) {
+            Write-Step 'building the packet redirector (first run with -Redirect)...'
+            $redirectorBuild = Join-Path $root 'redirector\build.ps1'
+            if (-not (Test-Path -LiteralPath $redirectorBuild)) {
+                Write-Bad "no redirector build script at $redirectorBuild"
+                exit 2
+            }
+            & $redirectorBuild
+            if ($LASTEXITCODE -ne 0) {
+                Write-Bad 'the packet redirector could not be built'
+                exit 1
+            }
+        }
+        Write-Ok 'the launcher will ask for administrator rights, then start the packet redirector.'
+        Write-Note '  no address is claimed: the client''s own packets are handed to the relay by port.'
+        $arguments += '--redirect'
+    } else {
+        Write-Ok 'the launcher will ask for administrator rights, then claim the server addresses.'
+    }
     if ($JarArg) { $arguments += $JarArg }
-    $code = Invoke-Jar $arguments
+    Invoke-Jar $arguments
+    $code = $LASTEXITCODE
 }
 
 exit $code

@@ -1,4 +1,4 @@
-﻿# drelay proxy
+# drelay proxy
 
 A local TCP relay for **Darza's Dominion** that sits between the game client and the official
 servers. Packets can be inspected, logged, decoded into structured objects, and written back.
@@ -20,9 +20,10 @@ below is about the relay alone, and every path in it is relative to this directo
 | | |
 |---|---|
 | **Java** | 25 or newer (Temurin, Microsoft OpenJDK, Oracle JDK â€” any build) |
-| **OS** | Windows 10/11. Claiming an address and the setup scripts are Windows-specific; the relay itself runs anywhere the JVM does, but without claims it only forwards a route whose destination is not a real server address |
-| **Rights** | Administrator, only to claim the server addresses (the launcher asks for it) |
+| **OS** | Windows 10/11. Claiming an address, the redirector and the setup scripts are Windows-specific; the relay itself runs anywhere the JVM does, but without a capture it only forwards a route whose destination is not a real server address |
+| **Rights** | Administrator, only to capture: to claim the server addresses, or to load the redirector's driver (the launcher asks for it) |
 | **Game** | Darza's Dominion, installed and running normally |
+| **Redirector** | Optional, and only for `--redirect`: a .NET 8 SDK to build it, plus `WinDivert.dll`/`WinDivert64.sys`, which `redirector\build.ps1` fetches |
 
 Nothing else: the released jar has no dependencies.
 
@@ -80,6 +81,7 @@ about a *previous* run rather than this one:
 
 ```powershell
 .\drelay.ps1                 # build if needed, then run
+.\drelay.ps1 -Redirect       # run with the packet redirector instead of an address claim
 .\drelay.ps1 -Rebuild        # clean build, then run
 .\drelay.ps1 -Stop           # stop a running relay, release the claims and the hosts block
 .\drelay.ps1 -Status         # what is running and what is claimed; change nothing
@@ -89,6 +91,10 @@ about a *previous* run rather than this one:
 .\drelay.ps1 -Path           # which jar would it run?
 .\drelay.ps1 -JarArg -Ddrelay.nexus.enabled=true
 ```
+
+`-Redirect` builds `proxy\redirector\` on first use and needs the .NET 8 SDK for that; the default
+claim path needs only a JDK. Nothing about the relay's configuration changes between the two. On the
+machines where the claim works, prefer it: it loads no driver and rewrites no packets.
 
 Building puts the jar in `target\`, and `drelay.ps1` moves it up beside the script before running:
 the launcher treats the jar's own directory as its working directory, so one jar in one directory
@@ -106,6 +112,8 @@ java -jar drelay.jar [options] [commands] [-Ddrelay.*=...]
 | Option | Effect |
 |---|---|
 | `--no-update` | do not check GitHub for a newer release |
+| `--redirect` | capture with the packet redirector instead of claiming an address (see [redirector/README.md](redirector/README.md)) |
+| `--no-firewall` | do not add the inbound firewall rule the redirector needs |
 | `--no-claim` | do not claim any address and do not elevate â€” nothing is captured |
 | `--no-elevate` | never re-run the jar to obtain administrator rights |
 | `--no-browser` | do not open the dashboard automatically |
@@ -115,7 +123,7 @@ java -jar drelay.jar [options] [commands] [-Ddrelay.*=...]
 |---|---|
 | `--check-update` | report whether a newer release exists |
 | `--update` | install the newest release and restart |
-| `--stop` | stop a running relay and give the claimed addresses and hosts block back |
+| `--stop` | stop a running relay and the redirector, and give the claimed addresses, the firewall rule and the hosts block back |
 | `--relay` | run the relay alone in this JVM, no update and no claim |
 | `--release-claims` | give every claimed address and the hosts block back |
 | `--install` | extract or upgrade the bundled files, then stop |
@@ -216,6 +224,24 @@ real server from a socket bound to this machine's LAN address.
 ```
 Client -> (claimed address, delivered locally) -> drelay listener -> real server
 ```
+
+That is the default, and it works on Windows 10. On some Windows 11 builds it cannot: with the
+server's address local, the relay's own upstream data is delivered back to itself and dropped, so the
+session opens and nothing ever comes back
+([HANDOFF-WINDIVERT.md](../docs/proxy/HANDOFF-WINDIVERT.md) §1). `--redirect` is the alternative
+there. A small WinDivert program, `proxy\redirector\`, captures the client's outbound packets on the
+game's ports, swaps each packet's source and destination addresses and re-injects it **inward**, so it
+arrives at the same relay listener as traffic from the game server. The server's address is never made
+local, the relay's upstream dial is an ordinary connection, and nothing in the relay changes except
+that it stops claiming a `GmReconnect` destination:
+
+```
+Client -> (packet reflected inward) -> drelay listener -> real server
+```
+
+Name-addressed routes keep the hosts capture either way. See
+[proxy/redirector/README.md](redirector/README.md) for the design, the loop guard, the counters and
+how to verify it.
 
 The relay forwards bytes verbatim and only rewrites when a rule injects; framing is
 `[4-byte length][payload]`, big-endian on the game service and little-endian on the queue. The

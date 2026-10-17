@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The packet redirector that puts the relay in the client's path without claiming the server's
+    address. It is a separate program from the jar on purpose: WinDivert.dll is a native library and
+    the JVM cannot call it, so the launcher starts this exe as a child.
+
+    This file is deliberately minimal. The output is one framework-dependent executable published by
+    build.ps1 beside the jar, with no NuGet dependency at all - the WinDivert calls are P/Invoke
+    straight into WinDivert.dll, which keeps the release free of a package feed, of a runtime download
+    on first use, and of the 200 MB a self-contained publish would add.
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>drelay-redirect</AssemblyName>
+    <RootNamespace>Drelay.Redirect</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Platforms>x64</Platforms>
+    <PlatformTarget>x64</PlatformTarget>
+    <!--
+      WinDivert ships x86 and x64 drivers only, so there is nothing to gain from AnyCPU: a 32-bit
+      host process would need WinDivert32.sys, and the launcher that starts this is 64-bit.
+    -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- Deterministic output, so two builds of the same commit produce the same bytes. -->
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+  </PropertyGroup>
+
+</Project>

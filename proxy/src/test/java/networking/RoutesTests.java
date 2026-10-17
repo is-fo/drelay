@@ -33,6 +33,7 @@ public final class RoutesTests {
 
     public static void main(String[] args) throws Exception {
         testLoopbackRefreshIsRejected();
+        testRedirectPortsAreTheHostsComplement();
 
         if (!FAILURES.isEmpty()) {
             for (String failure : FAILURES) {
@@ -78,6 +79,45 @@ public final class RoutesTests {
                     !written.contains("\"remoteHost\": \"127.0.0.1\""));
             check("the upstream source is still written",
                     written.contains("\"upstreamHost\": \"192.168.0.11\""));
+        } finally {
+            delete(dir);
+        }
+    }
+
+    /**
+     * The packet redirector and the hosts capture must divide the route table between them.
+     *
+     * <p>A route the client dials as a bare IP cannot be captured by a hosts file and has to be
+     * redirected by port; a route the client dials by NAME is the other way round. Both mechanisms
+     * read the same {@code refresh} field, so this checks the reading rather than a second list that
+     * could drift from it. The consequence of getting it wrong is silent: a route in neither set
+     * simply bypasses the proxy.
+     */
+    private static void testRedirectPortsAreTheHostsComplement() throws Exception {
+        Path dir = Files.createTempDirectory("drelay-redirect-port-test");
+        try {
+            Path config = dir.resolve("routes.json");
+            Files.writeString(config, """
+                    {
+                      "routes": [
+                        { "name": "Game", "listenPort": 6410, "remoteHost": "203.0.113.9",
+                          "remotePort": 6410, "refresh": "serverlist" },
+                        { "name": "Realm", "listenPort": 6411, "remoteHost": "203.0.113.9",
+                          "remotePort": 6411, "refresh": "serverlist" },
+                        { "name": "Queue", "listenPort": 6412, "remoteHost": "203.0.113.9",
+                          "remotePort": 6412, "refresh": "queue.example.com" },
+                        { "name": "Pinned", "listenPort": 6413, "remoteHost": "203.0.113.9",
+                          "remotePort": 6413 }
+                      ]
+                    }
+                    """, StandardCharsets.UTF_8);
+
+            List<Integer> ports = Routes.redirectPorts(config);
+            check("the game service is redirected by port", ports.contains(6410));
+            check("the realm is redirected by port", ports.contains(6411));
+            check("a route without a refresh is redirected by port", ports.contains(6413));
+            check("a name-addressed route is left to the hosts capture", !ports.contains(6412));
+            check("no port is redirected twice", ports.size() == 3);
         } finally {
             delete(dir);
         }

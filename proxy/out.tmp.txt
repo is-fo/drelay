@@ -1,0 +1,4 @@
+jar: G:\coding\javamapp\drelay\proxy\drelay.jar
+the launcher will ask for administrator rights, then start the packet redirector.
+  no address is claimed: the client's own packets are handed to the relay by port.
+  java -jar G:\coding\javamapp\drelay\proxy\drelay.jar --redirect --no-elevate,--no-update,--no-browser

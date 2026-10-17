@@ -216,6 +216,15 @@ final class PowerShell {
     }
 
     /**
+     * The processes the helper searches by default.
+     *
+     * <p>The relay is a {@code java.exe} child. The packet redirector is a separate native-image
+     * program with its own name, so the search has to be told which names to look at rather than
+     * assume the JVM; see {@link #stopProcesses(String, List)}.
+     */
+    static final List<String> JAVA_IMAGES = List.of("java.exe", "javaw.exe");
+
+    /**
      * The PID of a running process whose command line contains {@code needle}, or -1.
      *
      * <p>Asked through {@code Win32_Process} rather than guessed, because the point of the question is
@@ -226,13 +235,18 @@ final class PowerShell {
      * former travels through the redirected standard output this method reads.
      */
     static int findProcess(String needle) {
+        return findProcess(needle, JAVA_IMAGES);
+    }
+
+    /** As {@link #findProcess(String)}, restricted to processes whose image name is in {@code images}. */
+    static int findProcess(String needle, List<String> images) {
         if (!isWindows()) {
             return -1;
         }
         // No double quotes around the needle: single-quoted PowerShell literals survive the
         // command-line round trip that {@link #inline} documents the pitfalls of.
         String source = selfExclusion()
-                + "$p = Get-CimInstance Win32_Process -Filter 'Name=''java.exe'' or Name=''javaw.exe'''"
+                + "$p = Get-CimInstance Win32_Process -Filter " + nameFilter(images)
                 + " -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine -like "
                 + quote("*" + needle + "*") + " -and ($exclude -notcontains $_.ProcessId) }"
                 + " | Select-Object -First 1;"
@@ -257,13 +271,18 @@ final class PowerShell {
      * earlier version of this code did exactly that.
      */
     static int stopProcesses(String needle) {
+        return stopProcesses(needle, JAVA_IMAGES);
+    }
+
+    /** As {@link #stopProcesses(String)}, restricted to processes whose image name is in {@code images}. */
+    static int stopProcesses(String needle, List<String> images) {
         if (!isWindows()) {
             return 0;
         }
         String source = selfExclusion()
                 + "$needle = " + quote(needle) + ";"
                 + "$n = 0;"
-                + "Get-CimInstance Win32_Process -Filter 'Name=''java.exe'' or Name=''javaw.exe''' -ErrorAction SilentlyContinue"
+                + "Get-CimInstance Win32_Process -Filter " + nameFilter(images) + " -ErrorAction SilentlyContinue"
                 + " | Where-Object { $_.CommandLine -and $_.CommandLine -like ('*' + $needle + '*')"
                 + " -and ($exclude -notcontains $_.ProcessId) }"
                 + " | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; $n++ } catch { } };"
@@ -277,6 +296,23 @@ final class PowerShell {
             }
         }
         return 0;
+    }
+
+    /**
+     * The WQL predicate that selects the given image names.
+     *
+     * <p>Single-quoted PowerShell literals only, and the doubled quote is PowerShell's escape - the
+     * {@link #inline} note about the command-line round trip applies here as much as anywhere.
+     */
+    private static String nameFilter(List<String> images) {
+        var filter = new StringBuilder("'");
+        for (int i = 0; i < images.size(); i++) {
+            if (i > 0) {
+                filter.append(" or ");
+            }
+            filter.append("Name=''").append(images.get(i)).append("''");
+        }
+        return filter.append("'").toString();
     }
 
     /** Writes a {@code .ps1} file next to the helper that needs it. */

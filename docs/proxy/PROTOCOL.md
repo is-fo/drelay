@@ -239,7 +239,7 @@ the file alone, and while the relay is stopped that name resolves to a local add
 listening on, so the client's queue connection is refused and it drops back to the start menu instead
 of reaching the real queue server. That stale entry was exactly the symptom observed on 2026-10-01.
 
-### Superseded: the WinDivert packet redirect
+### Superseded: the WinDivert destination rewrite
 
 An earlier version of drelay carried a packet-level redirector (a .NET program using WinDivert) that
 rewrote the client's outbound `:6410/:6411/:6412` packets to a local address. Its code is no longer
@@ -262,6 +262,40 @@ they are why the claim is the design it is.
 
 The decisive measurement is that the relay must be listening on **the same address the client
 dials**, which is what claiming that address achieves.
+
+### Brought back differently: the reflection redirect
+
+The claim has since failed on Windows 11 for a different reason - the relay's own upstream data is
+delivered to the local stack and dropped once the destination is local
+([HANDOFF-WINDIVERT.md](HANDOFF-WINDIVERT.md) §1) - so a packet redirector is in the tree again, in
+`proxy/redirector/`, and it is **not** the design recorded above.
+
+The first bullet above still holds and is still the hard part: the filter matches the relay's own
+dials. The answer changed from "pin one source port and exclude it" to "ask Windows which process owns
+the socket" (the IPv4 TCP table, `netstat -o`), which needs no pinning, does not serialise upstream
+dials, and separates the client from the relay by identity rather than by a port the OS hands out at
+random. A packet whose owner cannot be determined is passed through rather than reflected, and a rate
+fuse covers the case where that answer is wrong anyway.
+
+The second bullet is what the new design does differently, and it is a correction rather than a
+repeat. An outbound packet has already been routed when WinDivert sees it, so changing its destination
+and re-injecting it *outward* cannot reach a local listener - which is the measured failure above. The
+replacement swaps the packet's source and destination addresses, clears the outbound flag and
+re-injects it *inward*, so it re-enters the receive path and delivery follows from the destination
+address being local. WinDivert's own `streamdump` sample diverts a stream into a local proxy this way.
+The ports are never touched, so the relay's answer comes back through the same swap and the client
+never learns it was redirected.
+
+Two consequences worth recording here:
+
+* The relay must stop claiming a `GmReconnect` destination while the redirector runs, because claiming
+  is precisely what makes the destination local again. It still learns the destination; the listener
+  forwards to it. See `Relay.onRetarget` and `-Ddrelay.redirect=true`.
+* The relay's listener is now an **inbound** endpoint as far as Windows Firewall is concerned: the
+  reflected packet arrives from the game server's public address. The launcher adds one named inbound
+  rule for the redirected ports while it runs and removes it on the way out (`--no-firewall` skips
+  it), because the default inbound policy would drop the handshake with exactly the symptom this
+  work exists to cure.
 
 ### A hosts-file trap worth knowing
 
@@ -399,17 +433,22 @@ Configuration consequences:
 * `proxy/tools/Set-AddressClaim.ps1 -Status` reports what is claimed right now, and every runtime claim is
   recorded in `proxy/work/learned-claims.txt` so one that was killed can still be released.
 
-### Why the packet redirect was abandoned
+### Why the packet redirect was abandoned once, and what brought it back
 
-The redirector is gone from this repository; the address claim is the interception path. Its
-diagnostics were what identified the failures recorded above, and the same questions apply to any
-future attempt at a packet-level redirect:
+The address claim replaced the redirector for two years and it remains the default. The redirector
+came back for one reason only - the claim cannot forward on this Windows 11 build
+([HANDOFF-WINDIVERT.md](HANDOFF-WINDIVERT.md) §1) - and it came back as a **reflection**, not as the
+destination rewrite described above. `proxy/redirector/` is the implementation; the same diagnostics
+apply, with two counters added:
 
 | Observation | Meaning |
 |---|---|
-| the redirect counters rise, the relay shows no session | the rewrite happens but the packet never reaches a listener (a re-injection problem) |
+| the redirect counters rise, the relay shows no session | the packet is reflected but not delivered to a listener - check that `reflected` and `returned` both move, then the checksum |
 | the counters stay at zero | the filter is not matching; check the port list and `DstPort` |
-| a `notTcp` counter rises while `redirected` stays 0 | non-TCP/IPv4 traffic is matching; the client may be dialling over IPv6 |
+| a `notTcp` counter rises while `reflected` stays 0 | non-TCP/IPv4 traffic is matching; the client may be dialling over IPv6 |
+| `selfMatch` rises on every dial | the loop guard is (correctly) refusing the relay's own upstream connection - it names a process, so check `--exclude-image` |
+| `unknownOwner` rises | Windows would not name the owning process, so the packet was passed through and that connection is not proxied |
+| `fuseTripped` rises | a burst of new connections exceeded the fuse and was passed through; that is a fault signal, not load |
 | the relay logs `destination UNREACHABLE` | the route table address is stale |
 
 ## 6. Packet layer
@@ -581,9 +620,11 @@ useful for inspection but cannot retarget the client.
 | `proxy/tools/tests/test_relay_live.py` | the relay in front of the real server |
 | `proxy/tools/decode_settings.py` | `settings.dat` codec |
 
-Earlier versions of this project also used a WinDivert packet redirector, a Frida-based in-process
-hook, and ConnectEx interception. All three are recorded above as failures, their code is not part of
-the repository, and `tools/` no longer ships any of it: the address claim replaced them.
+Earlier versions of this project also used a Frida-based in-process hook and ConnectEx
+interception. Both are recorded above as failures and neither is part of the repository. The WinDivert
+redirector is back in `proxy/redirector/`, but as the reflection described above, not as the
+destination rewrite whose failures are recorded here: a rewrite of the destination address cannot
+reach a local listener, and that is the measurement those sections rest on.
 
 ## 9. Still unknown
 

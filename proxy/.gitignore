@@ -7,6 +7,14 @@
 /target/
 /dist/
 
+### The redirector's own build output ###
+# Its bin/obj trees and the WinDivert zip it caches. WinDivert itself is third-party and the
+# repository ignores *.dll and *.exe at the root, so redirector\build.ps1 stages those files into
+# target\redirector instead of committing them.
+/redirector/bin/
+/redirector/obj/
+/redirector/.cache/
+
 ### Local runtime state ###
 # The relay's own working directory: per-run event logs, the generated route table, the install
 # manifest, the dashboard's port hint and the claims a running relay learned. All regenerable.

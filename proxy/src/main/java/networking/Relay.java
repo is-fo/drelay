@@ -155,6 +155,18 @@ public final class Relay {
          */
         int upstreamBindPort = 0;
 
+        /**
+         * Whether a packet redirector owns the capture, so this relay must not claim anything.
+         *
+         * <p>Set by the launcher as {@code -Ddrelay.redirect=true} when it started
+         * {@code drelay-redirect.exe}. The redirector delivers the client's packets to this relay's
+         * listener by port, so the destination address must stay a real, routable address: claiming
+         * the address a {@code GmReconnect} names would make it local and break the very upstream
+         * dial the redirector exists to keep ordinary. The learned destination is still recorded -
+         * that is what makes the follow-up dial on port 6411 forward to the realm the server named.
+         */
+        boolean redirect = false;
+
         // --- observability -----------------------------------------------------------------
         //
         // All of this is optional and none of it can break a session: the dashboard is loopback-only
@@ -446,6 +458,9 @@ public final class Relay {
         if (upstreamOverride != null && !upstreamOverride.isBlank()) {
             cfg.upstreamHost = upstreamOverride.trim();
         }
+        // A packet redirector changes what "captured" means for this process: see Config.redirect.
+        cfg.redirect = Boolean.parseBoolean(System.getProperty("drelay.redirect"))
+                || obj.bool("redirect", false);
         Json routes = obj.get("routes");
         if (routes instanceof JArr arr) {
             for (Json r : arr.values()) {
@@ -550,6 +565,12 @@ public final class Relay {
                 cfg.upstreamBindPort == 0 ? "ephemeral port" : "pinned port " + cfg.upstreamBindPort));
         for (Route r : cfg.routes) {
             IO.println("  route %-10s listen :%d -> %s:%d".formatted(r.name(), r.listenPort(), r.remoteHost(), r.remotePort()));
+        }
+        if (cfg.redirect) {
+            // Said once, at startup, because the absence of every "claimed ..." line later is the
+            // question a reader of this log will have.
+            IO.println("  capture: packet redirector (drelay-redirect.exe); no address is claimed,"
+                    + " and a retarget learns its destination without claiming it");
         }
 
         // Observability comes up before any listener: if a session misbehaves in its first second,
@@ -1326,27 +1347,36 @@ public final class Relay {
             return;
         }
 
-        boolean claimed = ensureClaimed(reconnect.host, tag);
+        // UNDER A REDIRECTOR, DO NOT CLAIM - AND THAT IS THE WHOLE POINT OF THE REDIRECTOR.
+        //
+        // A claim is what makes the client's dial to the realm address arrive here, and it is also
+        // what breaks the relay's own dial to that address on the machines this redirector exists for
+        // (docs/proxy/HANDOFF-WINDIVERT.md §1). The redirector captures the PORT instead, so the
+        // address stays real and routable and the follow-up dial on 6411 arrives without any claim.
+        // The learned destination is still recorded: that is what the listener forwards to.
+        boolean captured = cfg.redirect || ensureClaimed(reconnect.host, tag);
         cfg.learned.put(reconnect.port, reconnect.host + ":" + reconnect.port);
+        String suffix = cfg.redirect
+                ? " (captured by the packet redirector by port, so no claim is made)"
+                : captured ? "" : " (its address is NOT claimed, so that dial will not arrive here)";
         // Both lines are intentional. The first is the format the operator and the existing offline
         // suite read; the second is the one that actually matters for correctness, because "learned
         // the destination" is what makes the client's follow-up dial arrive here instead of escaping.
         registry.log().writeTextLine("[%s]   RETARGET -> %s:%d  characterId=%d  toBeyond=%s".formatted(
                 tag, reconnect.host, reconnect.port, reconnect.characterId, reconnect.toBeyond));
         registry.log().writeTextLine("[%s]   port %d now forwards to %s:%d%s".formatted(
-                tag, reconnect.port, reconnect.host, reconnect.port,
-                claimed ? "" : " (its address is NOT claimed, so that dial will not arrive here)"));
+                tag, reconnect.port, reconnect.host, reconnect.port, suffix));
         registry.log().emit(Event.builder(Event.KIND_WORLD)
                 .session(tag)
                 .pkt("Reconnect")
                 .pktId(GmPacketType.RECONNECT)
-                .note("RETARGET -> %s:%d%s".formatted(reconnect.host, reconnect.port,
-                        claimed ? "" : " (address NOT claimed, so that dial will not arrive here)"))
+                .note("RETARGET -> %s:%d%s".formatted(reconnect.host, reconnect.port, suffix))
                 .put("host", reconnect.host)
                 .put("port", reconnect.port)
                 .put("characterId", reconnect.characterId)
                 .put("toBeyond", reconnect.toBeyond)
-                .put("claimed", claimed));
+                .put("claimed", captured)
+                .put("redirected", cfg.redirect));
     }
 
     /** A message even for the exceptions that carry none, such as {@code EOFException}. */

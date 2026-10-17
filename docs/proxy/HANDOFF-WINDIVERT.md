@@ -1,12 +1,19 @@
 # HANDOFF: a redirect that does not claim the address (WinDivert)
 
-**Status:** the claim-based capture cannot forward traffic on this Windows 11 machine. The redirector
-work is not in this repository - the previous one was removed (see §7 of
-[PROTOCOL.md](../../docs/proxy/PROTOCOL.md)). This document is the starting point for bringing it
-back, and it records why it is needed now.
+**Status (2026-10-17): implemented.** The redirector is back, in `proxy/redirector/`, and the launcher
+owns its lifetime via `--redirect`. It is **not** a reimplementation of the program this document's
+§3 describes: the design there - rewrite `ip.DstAddr` and re-inject - is the one that already failed
+here (§1's evidence table and `PROTOCOL.md` §5), and it failed because an outbound packet has already
+been routed when WinDivert sees it. The working mechanism is a **reflection** (§3 below). §1, the
+finding that made this necessary, is unchanged and is still the reason the work was done.
 
-**Where the old redirector lives:** the author keeps it **gitignored on the Windows 10 machine**. It
-is not in `src/`, so it has to be recovered from there before this can be built.
+What is verified, and what is not, is in §7.
+
+**Where the old redirector lived:** the author kept it gitignored on the Windows 10 machine. It was
+never in `src/` and never in the repository's history (checked: no path matching `redirect` was ever
+added or deleted), so it was **not** recoverable. It was rewritten from the measurements recorded here
+plus the WinDivert API. Its `WindivertDotnet` package and the WinDivert 2.2 binaries it downloaded
+were still on this machine, which is what `redirector\build.ps1` now uses as a source.
 
 ---
 
@@ -109,73 +116,106 @@ guarded:
 
 ---
 
-## 3. Redirect design (WinDivert 2.x)
+## 3. Redirect design (WinDivert 2.x), as built
 
-WinDivert is a WFP callout driver plus a user-mode library; it is what the previous redirector used.
-It needs administrator rights (the launcher already elevates) and ships `WinDivert.dll` +
-`WinDivert64.sys` beside the jar.
+WinDivert is a WFP callout driver plus a user-mode library. It needs administrator rights (the
+launcher already elevates) and needs `WinDivert.dll` + `WinDivert64.sys` beside the executable.
+Implementation: `proxy/redirector/` (C#, .NET 8, direct P/Invoke, no NuGet dependency).
 
-**Filter.** Match only what the game sends to the game service:
+**Filter.** Match the two game ports in both directions, and never an address:
 
 ```
 outbound and ip and tcp
-  and (tcp.DstPort == 6410 or tcp.DstPort == 6411)
-  and not ip.DstAddr == 127.0.0.1
+  and (tcp.DstPort == 6410 or tcp.SrcPort == 6410
+       or tcp.DstPort == 6411 or tcp.SrcPort == 6411)
+  and not loopback
 ```
 
-`6411` must be matched **without** pinning the destination: the realm address is invented by the
-server per transition (`GmReconnect`), so a filter that names `18.145.161.25` will lose the session at
-the first realm change. Port-based matching plus a process check is the right shape.
+`6411` is matched **without** pinning the destination: the realm address is invented by the server per
+transition (`GmReconnect`), so a filter that names `18.145.161.25` loses the session at the first realm
+change. The source-port clauses are how the relay's answer finds the client. `not loopback` leaves the
+hosts-captured queue route alone, since those packets are already going to a local listener.
 
-**Rewrite.** Set `ip.DstAddr = 127.0.0.1`, keep the destination port, recompute the checksums
-(`WinDivertHelperCalcChecksums`), and re-inject with `WinDivertSend`. The relay's listener on
-`0.0.0.0:6410/6411` accepts it and `handleSession` forwards to the route's / learned destination -
-unchanged code.
+**Reflection, not a destination rewrite.** THE ONE PLACE THIS DOCUMENT WAS WRONG. An outbound packet
+has already been routed when WinDivert sees it, so rewriting `ip.DstAddr` and re-injecting it outward
+cannot reach a local listener - that is the `seen=21 redirected=21` measurement above, not a checksum
+problem. What works is the transformation WinDivert's own `streamdump` sample uses for exactly this
+purpose:
+
+1. swap `ip.SrcAddr` and `ip.DstAddr`;
+2. clear the address's `Outbound` flag, so the packet re-enters the **receive** path;
+3. recompute the IPv4 and TCP checksums (the TCP one covers the pseudo header, so it cannot be done
+   incrementally);
+4. `WinDivertSend` it back, reusing the captured `IfIdx`.
+
+The ports are never changed, so the relay's reply is reflected by the same swap and the client sees a
+reply from the server's address. Delivery then follows from the destination address being local, which
+for the relay's `0.0.0.0:6410/6411` listener it is. `handleSession` forwards to the route's / learned
+destination - unchanged code.
+
+Two consequences, both handled:
+
+* the relay's listener is now an **inbound** endpoint to Windows Firewall (the reflected packet comes
+  from a public address), so the launcher adds one named inbound rule for the redirected ports while
+  it runs and removes it on the way out;
+* the relay must stop claiming a `GmReconnect` destination (`-Ddrelay.redirect=true`), because a claim
+  is what makes that destination local again. The learned destination is still recorded.
 
 **Loop prevention - the part that must not be skipped.** The relay's own upstream dials are also
 outbound TCP to port 6410/6411. If the filter matches them, the relay dials itself and the cascade
-described in `PROTOCOL.md` §5 returns (16 000 sessions in five minutes). Options:
+described in `PROTOCOL.md` §5 returns (16 000 sessions in five minutes). Built: the owning process is
+read from the IPv4 TCP table (`GetExtendedTcpTable`, i.e. `netstat -o`) the first time a connection is
+seen and cached; packets owned by this process, by `--exclude-pid`, or by an executable named
+`--exclude-image` (default `java.exe`, `javaw.exe` - the relay and the launcher) are re-injected
+untouched. **Not** the pinned source port: Windows allows one connection per local port, so
+`upstreamBindPort` serialised upstream dials and broke as soon as the queue and game overlapped. An
+unattributable packet is passed through rather than reflected (fail closed), and a rate fuse (20 new
+reflected connections/s) covers the case where that attribution is wrong.
 
-* match by **process**: `WinDivertOpen` at `WINDIVERT_LAYER_FLOW` reports the flow's process id
-  (`WINDIVERT_FLOW_DATA.processId`); keep a set of the game's pids and redirect only those, or
-  conversely never redirect a pid that belongs to the relay/launcher (java.exe).
-* or exclude the relay's source port range / use `WinDivertOpen` with a filter that excludes
-  `ip.SrcAddr == <LAN address> and tcp.SrcPort in <the relay's ephemeral range>` - weaker, because
-  the range is not fixed.
+Counters, as requested: `seen`, `reflected`, `returned`, `notTcp`, `fragmented`, `malformed`,
+`reinjectFailed`, `selfMatch`, `unknownOwner`, `noMatch`, `passThrough`, `fuseTripped`, `recvError`.
 
-The previous redirector's counters are worth reproducing verbatim: they are what identified its
-failures (`PROTOCOL.md` §5, "Why the packet redirect was abandoned"). At minimum:
-`seen`, `redirected`, `notTcp`, `reinjectFailed`, and a `selfMatch` counter for the loop guard.
+**Where it runs.** In the launcher, started before the relay and stopped by the same disposal path as
+the hosts block and the claims - `Launcher.startWithCapture` and `releaseCapture`
+(`startWithClaims` before this change). A redirector left running after the relay exits points the
+client at a dead listener, which is the same class of failure the hosts block caused; a launcher that
+finds one from an earlier run stops it first (`Launcher.stopLeftoverRedirector`), and `--stop` does
+the same. The launcher also watches it: if the redirector dies mid-session it says so, because with no
+redirector in the path the game keeps working and only the proxying stops.
 
-**Where to run it.** In the launcher, before the relay starts, as a thread/child with a clean
-shutdown, and make its lifecycle part of the same disposal path as the hosts block today (the
-launcher already has a shutdown hook for that - see `Launcher.startWithClaims` and
-`releaseCapture`). A redirector left running after the relay exits would point the client at a dead
-listener, which is the same class of failure the hosts block caused.
+**Packaging.** `drelay-redirect.exe` (framework-dependent, single file, ~180 KB) is published beside
+the jar into `proxy\target\redirector\` by `redirector\build.ps1`, together with the two WinDivert
+files and a NOTICE. It is deliberately **not** inside the jar: the JVM cannot call `WinDivert.dll`,
+and the binaries are third-party (`*.dll`/`*.exe` are ignored repository-wide). The launcher searches
+`-Ddrelay.redirector`, `redirector\`, `target\redirector\` and `work\redirector\` beside the jar.
 
-**Packaging.** The jar is dependency-free by design (`build.ps1` uses `javac` + `jar` only), so the
-redirector is either:
-
-* a small native helper (`windivert-redirect.exe`) written in C/C++, shipped beside the jar and
-  started by the launcher, or
-* a JNI/JNA-free Java implementation is not realistic: `WinDivert.dll` needs a native call layer.
-
-The first is the pragmatic choice and matches how the previous redirector worked.
+> **Release packaging is still a gap.** `proxy-release.yml` uploads `drelay.jar` only, so a downloaded
+> release has no `redirector\` directory and `--redirect` stops with "the packet redirector is not
+> installed" plus the build command. Building it in CI needs `actions/setup-dotnet` and a second asset
+> (or a zip); that was not attempted here because it cannot be verified from this machine.
 
 ---
 
 ## 4. Test plan
 
-Everything below runs without the game, and the first three already exist.
+Everything below runs without the game, and all but the last two run without elevation.
 
 1. **OS probe (must fail on the laptop):**
    `powershell -ExecutionPolicy Bypass -File proxy\tools\Test-ClaimDataPath.ps1`
    Expect `FAIL ... only keepalive Pings` on Windows 11, `PASS ... parsed the Hello` on Windows 10.
 2. **Relay forwarded a frame as one segment:** `python proxy\tools\tests\test_frame_chunking.py`
-   (added this session; asserts 135 and 608 byte frames arrive upstream as one read each).
+   (asserts 135 and 608 byte frames arrive upstream as one read each).
 3. **Relay byte-exactness and framing:** `test_relay.py`, `test_relay_little_endian.py`,
    `test_relay_stress.py`.
-4. **Admission through the relay, no game.** This is the check that proves the redirector end to end:
+4. **The redirector's own delivery property** (new, elevated, ~15 s, no game and no server):
+   `powershell -ExecutionPolicy Bypass -File proxy\tools\Test-RedirectDataPath.ps1`
+   It listens on 16410, points the redirector at that port, dials `192.0.2.1:16410` and requires the
+   listener to accept a connection from that address and a byte to survive in both directions. This
+   is the half that cannot be unit-tested, so run it before trusting a session.
+5. **Redirector offline logic:** `proxy\target\redirector\drelay-redirect.exe --selftest` (49 checks:
+   the transform, both checksums incl. odd lengths and TCP options, the filter, the TCP-table
+   ownership lookup against a live socket, the image-name lookup, the fuse, the command line).
+6. **Admission through the relay, no game.** The end-to-end check:
    * mint a token: connect to `127.0.0.1:6412`, send the queue Hello
      `01 06 "Zenith"` framed little-endian (`struct.pack("<i", 8)`), read `0x03 Join` and take its
      32-byte token;
@@ -184,18 +224,19 @@ Everything below runs without the game, and the first three already exist.
    * the server answers `GmDailyGold` (`0x33`, 698 B), `GmMapInfo` (`0x05`, "The Tavern"),
      `GmHealthUpdate` (`0x46`).
 
-   With a redirector in place and no claim, run the same flow against the **real destination**
+   With the redirector running and no claim, run the same flow against the **real destination**
    instead of `127.0.0.1:6410`: the redirector should divert it, and the same admission should come
    back through the relay.
-5. **No self-redirect:** after a run, the relay's session list must show exactly one session per
-   client connection, and the dashboard's counters must not be growing on their own.
-6. **Live game:** the winner is `[Game#2 S->C] ... id=0x33 DailyGold` in
+7. **No self-redirect:** after a run, the relay's session list must show exactly one session per
+   client connection, and `selfMatch` in the redirector's stats must be non-zero while `reflected`
+   tracks only real client dials.
+8. **Live game:** the winner is `[Game#2 S->C] ... id=0x33 DailyGold` in
    `work/logs/relay-console.out` and `[Client] Reconnecting to <realm>:6411...` in
    `%LOCALAPPDATA%\RippleStudio\Darza\logs\darza.log`.
 
 ---
 
-## 5. Things this session already changed (do not redo)
+## 5. Things earlier sessions changed (do not redo)
 
 * `Launcher.java`: captures are released in a `finally` **and** by a shutdown hook (`drelay-release`),
   once, via `releaseCapture`; the claim-refused path releases too; `--release-claims` clears the hosts
@@ -210,18 +251,57 @@ Everything below runs without the game, and the first three already exist.
 * `Set-HostsEntry.ps1`: `-Status`/`-Release` no longer need a route table.
 * `Test-ClaimDataPath.ps1`: the OS probe above.
 
-None of these are wasted by the redirector work: the disposal path, the framing and the hosts
+None of these were wasted by the redirector work: the disposal path, the framing and the hosts
 handling stay exactly as they are.
 
 ---
 
-## 6. Open questions for the next session
+## 6. Open questions
 
 1. Does `Test-ClaimDataPath.ps1` pass on the Windows 10 machine? (Confirms the OS difference and that
-   the desktop does not need the redirector.)
+   the desktop does not need the redirector. Still unanswered - this session ran on the laptop.)
 2. Which lifecycle wins: redirector in the launcher (one process tree, one cleanup) or a standalone
-   service? The launcher's shutdown hook is the natural owner.
-3. Is the old filter process-aware already, or does it rely on port-only matching? If port-only, the
-   loop guard has to be designed before it is trusted.
-4. Does the client ever dial the game address over IPv6? (The address is an IPv4 literal, so no, but
-   the redirector should log any non-matching TCP it sees for a minute before it is trusted.)
+   service? **Answered: the launcher.** It is started before the relay and stopped by `releaseCapture`,
+   which is the same idempotent path the claims and the hosts block use.
+3. Is the old filter process-aware already, or does it rely on port-only matching? **Answered: it was
+   port-only plus `upstreamBindPort`.** The new one is process-aware via `GetExtendedTcpTable`; the
+   pinned port is gone.
+4. Does the client ever dial the game address over IPv6? The filter is IPv4-only and logs nothing for
+   IPv6; the address is an IPv4 literal, and `notTcp` plus `malformed` cover the rest. Still worth a
+   `--dry-run` minute on a live client before trusting it.
+
+---
+
+## 7. What this session verified, and what it did not
+
+Verified on the Windows 11 laptop, unelevated:
+
+* `drelay-redirect.exe --selftest` - 49 checks, including the TCP-table ownership lookup, which is the
+  loop guard's whole basis, and the `QueryFullProcessImageNameW` lookup.
+* `proxy\build.ps1` - compiles, packages, and runs all the offline checks (`RoutesTests` gained the
+  claim/hosts port-division test).
+* `proxy\tools\Test-RedirectDataPath.ps1` parses and refuses to run unelevated, as intended.
+
+Verified on the same machine, in an elevated run that happened during this session with the **old**
+build (it crashed on `QueryFullProcessImageName`, since fixed):
+
+* WinDivert 2.2 installed and loaded: the banner printed `winDivert: 2.2` and the filter was accepted.
+* The filter matched real traffic: `seen=1` on the first packet, which was the relay's own preflight
+  dial - i.e. exactly the packet the loop guard exists for.
+* The launcher started the redirector before the relay, read its verdict from `work\redirector.ready`,
+  and started the relay only after the driver was open.
+
+**Not verified, and the reason this is still a handoff:** the reflected packet actually arriving at the
+relay's listener, and a live game session through it. Both need the elevated probe (§4.4) and a game
+run (§4.8); neither was done here because this session could not elevate without a prompt. The
+mechanism is WinDivert's own documented `streamdump` technique rather than an invention, but "documented
+elsewhere" is not the same as "measured here", and the previous design was also believed to work.
+
+Two bugs were found by running it rather than by reading it, and are the argument for running §4.4
+before a game session:
+
+* `QueryFullProcessImageName` has no entry point - it is `...W` - so the redirector crashed on the
+  first packet it had to attribute. The selftest now calls that lookup directly.
+* `drelay.ps1` swallowed everything the jar printed, because `$code = Invoke-Jar ...` captures the
+  function's whole output stream. Fixed; the redirector's log and the relay's console now reach the
+  terminal through `drelay.ps1`.

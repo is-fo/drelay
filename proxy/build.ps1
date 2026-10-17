@@ -118,10 +118,11 @@ if ($testSources.Count -gt 0) {
 $toolSource = Join-Path $root 'tools'
 $resources = Join-Path $root 'src\main\resources'
 $toolPackaged = Join-Path $resources 'tools'
-# The three helpers the launcher actually runs, matching Resources.INSTALLED. The rest of tools\
+# The helpers the launcher actually runs, matching Resources.INSTALLED. The rest of tools\
 # (Bump-Version, Restore-DhcpAddressing, Test-AddressClaim) are developer/recovery scripts and are
 # deliberately not in the jar.
-foreach ($name in 'Restore-HostsFile.ps1', 'Set-AddressClaim.ps1', 'Set-HostsEntry.ps1') {
+foreach ($name in 'Restore-HostsFile.ps1', 'Set-AddressClaim.ps1', 'Set-HostsEntry.ps1',
+                  'Test-ClaimDataPath.ps1', 'Test-RedirectDataPath.ps1') {
     $source = Join-Path $toolSource $name
     $packaged = Join-Path $toolPackaged $name
     if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $packaged)) {

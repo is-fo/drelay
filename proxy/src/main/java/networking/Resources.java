@@ -32,7 +32,8 @@ final class Resources {
             "tools/Set-AddressClaim.ps1",
             "tools/Set-HostsEntry.ps1",
             "tools/Restore-HostsFile.ps1",
-            "tools/Test-ClaimDataPath.ps1");
+            "tools/Test-ClaimDataPath.ps1",
+            "tools/Test-RedirectDataPath.ps1");
 
     static {
         var properties = new Properties();

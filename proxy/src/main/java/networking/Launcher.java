@@ -47,6 +47,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Every step is skippable from the command line, which is what makes the launcher testable
  * without touching the machine's networking. {@code java -jar drelay.jar --help} lists them.
+ *
+ * <p>{@code --redirect} replaces the address claim with the packet redirector
+ * ({@code drelay-redirect.exe}, built from {@code proxy/redirector}). The claim assigns the game
+ * server's address to the loopback interface, and on some Windows 11 builds the relay's own dial from
+ * that address is delivered back to itself and dropped - the handoff in
+ * {@code docs/proxy/HANDOFF-WINDIVERT.md} records the measurement. The redirector instead hands the
+ * client's own packets to the relay's listener as though the server had sent them, so the server's
+ * address is never made local and the relay's upstream dial is an ordinary connection. It is started
+ * and stopped with the relay, by the same disposal path, because a redirector left running after the
+ * relay exits points the client at a dead listener.
  */
 public final class Launcher {
 
@@ -62,9 +72,24 @@ public final class Launcher {
      */
     private static final String RELAY_MARKER = "-Ddrelay.relay=true";
 
+    /** The redirector's image name, which is also how a leftover one is found and stopped. */
+    private static final String REDIRECTOR_IMAGE = "drelay-redirect.exe";
+
+    /**
+     * One firewall rule owns the inbound allowance, so adding it twice cannot stack up rules.
+     *
+     * <p>The underscore is deliberate: the name is passed to {@code netsh} as a bare token, and a
+     * space would split it into an option.
+     */
+    private static final String FIREWALL_RULE = "drelay_redirect";
+
+    /** The property the relay reads to know a redirector owns the capture. */
+    private static final String REDIRECT_PROPERTY = "drelay.redirect";
+
     /** Flags this launcher owns; anything else on the command line belongs to the relay. */
     private static final List<String> OWN_FLAGS = List.of(
             "--no-update", "--no-claim", "--no-elevate", "--no-browser", "--config",
+            "--redirect", "--no-firewall",
             "--relay", "--elevate", "--update", "update", "--check-update", "check-update",
             "--release-claims", "--stop", "--install", "--help", "-h", "--version");
 
@@ -73,6 +98,8 @@ public final class Launcher {
     private final boolean update;
     private final boolean elevate;
     private final boolean claim;
+    private final boolean redirect;
+    private final boolean firewall;
     private final boolean browser;
     private final String configName;
 
@@ -87,6 +114,14 @@ public final class Launcher {
      * while the first is mid-write is, so the work is claimed once and the other caller does nothing.
      */
     private final AtomicBoolean released = new AtomicBoolean();
+
+    /**
+     * The packet redirector child, when this run started one.
+     *
+     * <p>Static because {@link #releaseCapture} - which runs from a shutdown hook - must be able to
+     * stop it without being handed it, exactly as the relay child is handled.
+     */
+    private static volatile Process redirector;
 
     /** Everything a run can be asked to do. */
     private enum Command {
@@ -114,8 +149,30 @@ public final class Launcher {
         this.update = !flag("--no-update");
         this.elevate = !flag("--no-elevate");
         this.claim = !flag("--no-claim");
+        this.redirect = flag("--redirect") || Boolean.parseBoolean(System.getProperty(REDIRECT_PROPERTY));
+        this.firewall = !flag("--no-firewall");
         this.browser = !flag("--no-browser");
         this.configName = value("--config").orElse("work/relay-routes.json");
+        if (redirect) {
+            // The relay may run in this JVM (--relay, or a class directory); the child gets the same
+            // answer as a -D property on its own command line.
+            System.setProperty(REDIRECT_PROPERTY, "true");
+        }
+    }
+
+    /** Whether this run captures with the packet redirector rather than by claiming addresses. */
+    private boolean capturesByRedirect() {
+        return redirect && claim;
+    }
+
+    /**
+     * Whether this run claims addresses on the loopback interface.
+     *
+     * <p>Never both: claiming the game server's address is exactly what the redirector exists to
+     * avoid, so {@code --redirect} turns the claim off rather than running two captures on one route.
+     */
+    private boolean claimsAddresses() {
+        return claim && !redirect;
     }
 
     public static void main(String[] args) throws Exception {
@@ -158,17 +215,18 @@ public final class Launcher {
                 yield 0;
             }
             case STOP -> stopEverything();
-            case ELEVATE -> startWithClaims(relayArguments());
+            case ELEVATE -> startWithCapture(relayArguments());
             case RUN -> runAsUser(relayArguments());
         };
     }
 
     /**
-     * The unelevated half: hand over to an elevated copy of this jar when claiming needs it,
+     * The unelevated half: hand over to an elevated copy of this jar when the capture needs it,
      * otherwise carry on here.
      */
     private int runAsUser(List<String> relayArguments) throws Exception {
-        boolean needsElevation = claim && PowerShell.isWindows();
+        boolean needsCapture = claimsAddresses() || capturesByRedirect();
+        boolean needsElevation = needsCapture && PowerShell.isWindows();
         if (needsElevation && elevate && !PowerShell.isElevated()) {
             return relaunchElevated(relayArguments);
         }
@@ -176,30 +234,37 @@ public final class Launcher {
         // proceeds: a leftover holds the listen ports, and the second relay would fail to bind them -
         // presenting as a claim problem or a client problem rather than the process that caused it.
         stopLeftoverRelays();
-        if (!claim) {
-            // No claim means no capture, but a hosts block from an earlier run still points the
-            // client at this machine. Clearing it is the difference between "started with
-            // --no-claim" and "started with --no-claim and the game cannot log in".
+        // A redirector left behind by a killed run is the same class of problem and worse: it points
+        // the client's connections at a listener that is not there.
+        stopLeftoverRedirector();
+        if (!needsCapture) {
+            // No capture, but a hosts block from an earlier run still points the client at this
+            // machine. Clearing it is the difference between "started with --no-claim" and
+            // "started with --no-claim and the game cannot log in".
             releaseHosts(configPath());
             syncAndRefreshRoutes();
             IO.println("--no-claim: nothing is claimed, so the client reaches the real server directly.");
             return runRelay(relayArguments);
         }
-        return startWithClaims(relayArguments);
+        return startWithCapture(relayArguments);
     }
 
     /**
-     * The elevated half: update, refresh, claim, run, release.
+     * The elevated half: update, refresh, capture, run, release.
      *
      * <p>Ordering matters here and is not arbitrary. The update comes second because replacing the jar
      * means this process exits, and exiting releases the captures - so an update must happen while
-     * nothing is claimed. The captures are released in a {@code finally} and by a shutdown hook
-     * because an unclaimed address left behind leaves the game unable to reach its own server, which
-     * is much worse than a log line.
+     * nothing is captured. The captures are released in a {@code finally} and by a shutdown hook
+     * because an unclaimed address or a running redirector left behind leaves the game unable to reach
+     * its own server, which is much worse than a log line.
+     *
+     * <p>{@code --redirect} and a claim are mutually exclusive by construction: this method runs the
+     * packet redirector instead of {@code Set-AddressClaim.ps1}, and the hosts capture still runs
+     * first because a name-addressed route is captured by neither of them otherwise.
      */
-    private int startWithClaims(List<String> relayArguments) throws Exception {
+    private int startWithCapture(List<String> relayArguments) throws Exception {
         // A leftover relay was already stopped by runAsUser, before it chose this branch, so the
-        // listen ports are free by the time a claim is worth making.
+        // listen ports are free by the time a capture is worth making.
         //
         // THE HOSTS BLOCK GOES FIRST, BEFORE THE ADDRESSES ARE REFRESHED, AND THAT ORDER IS THE
         // WHOLE POINT. The block points a name-addressed route at 127.0.0.1; refreshing before it
@@ -219,23 +284,23 @@ public final class Launcher {
             }
         }
 
-        if (!claim) {
+        if (!claimsAddresses() && !capturesByRedirect()) {
             return runRelay(relayArguments);
         }
         if (!PowerShell.isWindows()) {
-            IO.println("Address claims are a Windows feature. On " + System.getProperty("os.name")
+            IO.println("Address capture is a Windows feature. On " + System.getProperty("os.name")
                     + " the relay can still forward a route whose destination is not a real server address.");
             return runRelay(relayArguments);
         }
 
         // Names first: a route the client reaches by name is captured here and is skipped by
-        // the claim below, so no route is ever both claimed and hosts-captured.
+        // both the claim and the redirector below, so no route is ever captured twice.
         captureByHosts(configPath());
 
-        // THE DISPOSAL IS ARMED BEFORE THE CLAIM IS MADE, NOT AROUND THE RUN ALONE.
+        // THE DISPOSAL IS ARMED BEFORE THE CAPTURE IS MADE, NOT AROUND THE RUN ALONE.
         //
-        // A claim and a hosts block are machine-wide side effects that outlive this process when it
-        // dies badly, and an unclaimed address left behind breaks the game until someone works out
+        // A claim, a hosts block and a redirector are machine-wide side effects that outlive this
+        // process when it dies badly, and one left behind breaks the game until someone works out
         // what happened. The `finally` below covers a normal exit and an exception; it does NOT
         // reliably cover Ctrl+C, a closed console window, a logoff or a crash, because on those paths
         // the JVM starts its shutdown sequence while this thread is still blocked in waitFor and the
@@ -244,6 +309,13 @@ public final class Launcher {
         Thread disposal = new Thread(() -> releaseCapture(configPath()), "drelay-release");
         Runtime.getRuntime().addShutdownHook(disposal);
         try {
+            if (capturesByRedirect()) {
+                int started = startRedirector(configPath());
+                if (started != 0) {
+                    return started;
+                }
+                return runRelay(relayArguments);
+            }
             PowerShell.Result claimed = claimAddresses(configPath());
             if (claimed.exitCode() == 3) {
                 // The script refused: a route address belongs to a real interface. Claiming it would take
@@ -271,10 +343,12 @@ public final class Launcher {
     }
 
     /**
-     * Gives back everything this run put on the machine: the hosts block and the loopback claims.
+     * Gives back everything this run put on the machine: the redirector, its firewall rule, the hosts
+     * block and the loopback claims.
      *
      * <p>Idempotent and safe from any thread, because it is the {@code finally} of the run and the
-     * JVM's shutdown hook at once. It releases the hosts block first: an address claim with no relay
+     * JVM's shutdown hook at once. The redirector goes first: it must stop handing packets to a
+     * listener that is about to disappear. Then the hosts block: an address claim with no relay
      * behind it already breaks the client, while a stale name capture is the one that makes the game
      * fail to enter, which is the harder failure to recognise.
      */
@@ -283,8 +357,20 @@ public final class Launcher {
             return;
         }
         IO.println();
-        IO.println("Releasing the claimed addresses...");
+        IO.println("Releasing the captures...");
+        stopRedirector();
+        closeFirewall();
         releaseHosts(config);
+        if (!claimsAddresses()) {
+            // Nothing this run did needs releasing. A claim left behind by an older release is not
+            // cleared here - it takes an elevated prompt and is what --release-claims is for - so
+            // trying would only print a failure on a machine that has nothing claimed.
+            IO.println("  no address was claimed by this run; the client reaches the real server once the"
+                    + " redirector has stopped");
+            IO.println("  a claim left by an earlier run is cleared with: java -jar \"" + jarOrSelf()
+                    + "\" --release-claims");
+            return;
+        }
         // Never let a failure here escape: this runs from a shutdown hook, where an exception has
         // nowhere to go and would only hide that the release did not happen.
         try {
@@ -368,6 +454,11 @@ public final class Launcher {
         command.add(jar.toAbsolutePath().toString());
         command.add("--relay");
         command.add(RELAY_MARKER);
+        if (capturesByRedirect()) {
+            // The relay must not claim the address named by a GmReconnect: under a redirector that
+            // is precisely what breaks the data path. It still learns the destination.
+            command.add("-D" + REDIRECT_PROPERTY + "=true");
+        }
         command.addAll(relayArguments);
         // The run config is named explicitly, and it is the generated copy under work/ - never the
         // bare template beside the jar. The two differ in exactly the keys the launcher computes:
@@ -395,8 +486,9 @@ public final class Launcher {
 
         // Ctrl+C at the console reaches the whole process group, so the relay sees it directly; this
         // hook covers a launcher that is stopped some other way, so the child does not outlive it.
-        // The machine-wide side effects (claims and the hosts block) have their own hook, registered
-        // by startWithClaims around the capture - this one only owns the child process.
+        // The machine-wide side effects (the redirector, its firewall rule, the claims and the hosts
+        // block) have their own hook, registered by startWithCapture around the capture - this one
+        // only owns the child process.
         var stopper = new Thread(() -> stop(relay), "relay-stop");
         Runtime.getRuntime().addShutdownHook(stopper);
         int exit = relay.waitFor();
@@ -490,6 +582,298 @@ public final class Launcher {
         return stopped > 0;
     }
 
+    // ---------------------------------------------------------------------------------------
+    // The packet redirector
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Starts {@code drelay-redirect.exe} and waits for it to report that the driver is open.
+     *
+     * <p>The redirector is a child process, not a thread, for the same reason the relay is: it is a
+     * different runtime, and its lifetime has to be tied to this one. It is stopped by
+     * {@link #releaseCapture}, which runs from the {@code finally} and from the shutdown hook, so
+     * Ctrl+C, a closed console and a killed launcher all end it.
+     *
+     * <p>It gets the ports from the <em>generated</em> route table, computed the same way
+     * {@code Set-HostsEntry.ps1} decides what it captures: a package-level redirect exists for exactly
+     * the routes a hosts file cannot capture. Handing it a stale or hand-written port list is how the
+     * proxy would end up listening for traffic nothing sends it.
+     *
+     * @return 0 when the redirector is running, or an exit code for the launcher
+     */
+    private int startRedirector(Path config) throws Exception {
+        Optional<Path> exe = redirectorPath();
+        if (exe.isEmpty()) {
+            IO.println();
+            IO.println("--redirect needs the packet redirector, and it is not installed.");
+            IO.println("  looked for:");
+            for (Path candidate : redirectorCandidates()) {
+                IO.println("    " + candidate.toAbsolutePath());
+            }
+            IO.println("  build it with: proxy\\redirector\\build.ps1");
+            IO.println("  or point at one with: -Ddrelay.redirector=<path to drelay-redirect.exe>");
+            return 4;
+        }
+
+        List<Integer> ports = Routes.redirectPorts(config);
+        if (ports.isEmpty()) {
+            IO.println("--redirect: every route in " + config.getFileName()
+                    + " is captured by the hosts file, so a packet redirector has nothing to do.");
+            return 0;
+        }
+
+        openFirewall(ports);
+
+        Path ready = root.resolve("work").resolve("redirector.ready");
+        Files.createDirectories(ready.getParent());
+        Files.deleteIfExists(ready);
+
+        var command = new ArrayList<String>();
+        command.add(exe.get().toAbsolutePath().toString());
+        command.add("--ports");
+        command.add(joinPorts(ports));
+        command.add("--ready");
+        command.add(ready.toAbsolutePath().toString());
+        command.add("--stats-interval");
+        command.add("5");
+
+        IO.println("Starting the packet redirector for port(s) " + joinPorts(ports) + "...");
+        IO.println("  it hands the client's own packets to this relay's listener as inbound traffic, so the");
+        IO.println("  server's address is never made local and the relay's upstream dial stays ordinary");
+        Process process = new ProcessBuilder(command)
+                .directory(root.toFile())
+                .redirectErrorStream(true)
+                .start();
+        redirector = process;
+        Path log = root.resolve("work").resolve("logs").resolve("redirector-console.out");
+        pump(process.getInputStream(), log);
+
+        String verdict = awaitRedirector(ready);
+        if (verdict.startsWith("failed")) {
+            String reason = verdict.substring("failed:".length()).trim();
+            stopRedirector();
+            IO.println();
+            IO.println("The packet redirector did not start: " + reason);
+            IO.println("  no traffic is being redirected, so the relay is not started either - it would be");
+            IO.println("  listening for connections that never arrive.");
+            IO.println("  its output is also in " + log.toAbsolutePath());
+            return 4;
+        }
+        if (verdict.isBlank()) {
+            IO.println("  the redirector has not reported yet; it is starting anyway. Its output is in");
+            IO.println("    " + log.toAbsolutePath());
+        }
+        watchRedirector(process, log);
+        return 0;
+    }
+
+    /**
+     * Says so, loudly, if the redirector dies while the relay is still running.
+     *
+     * <p>The failure is silent otherwise: with no redirector in the path the client's dial simply
+     * goes to the real server, so the game keeps working and only the proxy stops. That is easy to
+     * mistake for "the proxy is idle", which is why it is not left to a log file nobody opens.
+     */
+    private void watchRedirector(Process process, Path log) {
+        Thread.startVirtualThread(() -> {
+            try {
+                process.waitFor();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            // A redirector this run stopped on purpose is not news: stopRedirector clears the field
+            // before it kills the child.
+            if (redirector != process || released.get()) {
+                return;
+            }
+            IO.println();
+            IO.println("!! the packet redirector stopped while the relay is still running.");
+            IO.println("!! the client now reaches the real server directly, unproxied.");
+            IO.println("!! its output is in " + log.toAbsolutePath());
+        });
+    }
+
+    /**
+     * Waits for the redirector's verdict file, or for the process to die.
+     *
+     * <p>The file is the same "write the fact where the other process can read it" arrangement the
+     * relay uses for its dashboard URL. Ten seconds is generous: opening the handle installs a driver
+     * on the first run, and a driver that has not come up in ten seconds is not going to.
+     *
+     * @return the file's first line, empty when it never appeared, or a "failed: ..." line
+     */
+    private String awaitRedirector(Path ready) {
+        for (int attempt = 0; attempt < 100; attempt++) {
+            try {
+                if (Files.isRegularFile(ready)) {
+                    String text = Files.readString(ready).trim();
+                    if (!text.isEmpty()) {
+                        IO.println("  " + text);
+                        return text;
+                    }
+                }
+            } catch (IOException ignored) {
+                // Being written right now; try again on the next turn.
+            }
+            Process process = redirector;
+            if (process != null && !process.isAlive()) {
+                return "failed: the redirector exited with code " + process.exitValue()
+                        + " before opening the driver";
+            }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return "";
+            }
+        }
+        return "";
+    }
+
+    /** Stops the redirector child, if this run started one. Safe to call more than once. */
+    private void stopRedirector() {
+        try {
+            Files.deleteIfExists(root.resolve("work").resolve("redirector.ready"));
+        } catch (IOException ignored) {
+            // A stale verdict file only makes the next start print an old line for a moment.
+        }
+        Process process = redirector;
+        redirector = null;
+        if (process == null || !process.isAlive()) {
+            return;
+        }
+        IO.println("Stopping the packet redirector...");
+        process.destroy();
+        try {
+            if (!process.waitFor(5, TimeUnit.SECONDS)) {
+                process.destroyForcibly();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Stops a redirector left behind by an earlier launcher.
+     *
+     * <p>Worse than a leftover relay: a redirector with no relay behind it sends the client's
+     * connections to a closed port, so the game fails to connect and nothing explains why. It is
+     * found by image name, which only this program carries.
+     */
+    private boolean stopLeftoverRedirector() {
+        if (!PowerShell.isWindows()) {
+            return false;
+        }
+        List<String> image = List.of(REDIRECTOR_IMAGE);
+        int pid = PowerShell.findProcess(REDIRECTOR_IMAGE, image);
+        if (pid < 0) {
+            return false;
+        }
+        IO.println("A packet redirector from an earlier run is still running (pid " + pid + "); stopping it first.");
+        IO.println("  it would send the client's connections to a relay that is not running.");
+        int stopped = PowerShell.stopProcesses(REDIRECTOR_IMAGE, image);
+        IO.println("  stopped " + stopped + " redirector process(es).");
+        return stopped > 0;
+    }
+
+    /**
+     * Where the redirector's exe is looked for, in order.
+     *
+     * <p>Two of these are the same directory in a release (the jar and {@code redirector\} together)
+     * and two are the same in a checkout ({@code proxy\target\redirector}). Both layouts are covered
+     * because both are used: the release by a user, the checkout by {@code drelay.ps1}.
+     */
+    private List<Path> redirectorCandidates() {
+        var candidates = new ArrayList<Path>();
+        String explicit = System.getProperty("drelay.redirector");
+        if (explicit != null && !explicit.isBlank()) {
+            candidates.add(Path.of(explicit.trim()));
+        }
+        candidates.add(root.resolve("redirector").resolve(REDIRECTOR_IMAGE));
+        candidates.add(root.resolve("target").resolve("redirector").resolve(REDIRECTOR_IMAGE));
+        candidates.add(root.resolve("work").resolve("redirector").resolve(REDIRECTOR_IMAGE));
+        Updater.runningJar()
+                .map(Path::toAbsolutePath)
+                .map(Path::getParent)
+                .ifPresent(directory -> candidates.add(directory.resolve("redirector").resolve(REDIRECTOR_IMAGE)));
+        return candidates;
+    }
+
+    private Optional<Path> redirectorPath() {
+        for (Path candidate : redirectorCandidates()) {
+            if (Files.isRegularFile(candidate)) {
+                return Optional.of(candidate);
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * Allows the redirected connections through Windows Firewall.
+     *
+     * <p>THIS IS NOT OPTIONAL HOUSEKEEPING. Before the redirector, the client's connection was
+     * loopback traffic to a claimed address, and Windows Firewall does not stand between two local
+     * sockets. A reflected packet arrives as traffic from the game server's public address, so the
+     * relay's listener is an <em>inbound</em> endpoint as far as the firewall is concerned, and the
+     * default inbound policy would drop the handshake - with exactly the symptom this whole exercise
+     * is meant to cure: a session that opens on one side and hears nothing back.
+     *
+     * <p>The rule is scoped to the ports and has one fixed name, so adding it twice cannot stack up
+     * rules; {@link #closeFirewall} removes it and {@code --stop} removes a stale one.
+     */
+    private void openFirewall(List<Integer> ports) {
+        if (!firewall) {
+            IO.println("  --no-firewall: no inbound rule is added. If the game cannot connect, this is why.");
+            return;
+        }
+        String list = joinPorts(ports);
+        String source = "netsh advfirewall firewall delete rule name=" + FIREWALL_RULE
+                + " | Out-Null; "
+                + "netsh advfirewall firewall add rule name=" + FIREWALL_RULE
+                + " dir=in action=allow protocol=TCP localport=" + list + " profile=any";
+        PowerShell.Result result = PowerShell.inline(source, false);
+        if (result.ok()) {
+            IO.println("  allowed inbound TCP " + list + " through Windows Firewall (rule " + FIREWALL_RULE
+                    + ", removed when this run ends)");
+        } else {
+            // netsh prints its whole help text on a syntax or privilege failure, so the last line is
+            // not the reason; the exit code is the reliable part.
+            IO.println("  could not add the firewall rule for TCP " + list + " (exit " + result.exitCode() + ").");
+            IO.println("  an unelevated run cannot, and the redirected handshake will then be dropped:");
+            IO.println("  add it by hand with:");
+            IO.println("    netsh advfirewall firewall add rule name=" + FIREWALL_RULE
+                    + " dir=in action=allow protocol=TCP localport=" + list + " profile=any");
+        }
+    }
+
+    private void closeFirewall() {
+        if (!firewall || !PowerShell.isWindows()) {
+            return;
+        }
+        try {
+            PowerShell.inline("netsh advfirewall firewall delete rule name=" + FIREWALL_RULE, false);
+        } catch (RuntimeException e) {
+            IO.println("  the firewall rule could not be removed: " + e.getMessage());
+            IO.println("  remove it with: netsh advfirewall firewall delete rule name=" + FIREWALL_RULE);
+        }
+    }
+
+    private static String joinPorts(List<Integer> ports) {
+        var text = new StringBuilder();
+        for (int i = 0; i < ports.size(); i++) {
+            if (i > 0) {
+                text.append(',');
+            }
+            text.append(ports.get(i));
+        }
+        return text.toString();
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Claims
+    // ---------------------------------------------------------------------------------------
+
     /**
      * Claims every route address, letting the claim script print its own progress.
      *
@@ -574,24 +958,35 @@ public final class Launcher {
      * Re-runs this jar from an elevated PowerShell and returns its exit code.
      *
      * <p>Elevation cannot be requested from inside a running process, so this spawns a new one and
-     * waits for it. Only the claim needs the token - which is why {@code --no-claim} exists, and why
-     * a run that does not claim is never elevated.
+     * waits for it. Both captures need the token - the claim to assign an address, the redirector to
+     * load the WinDivert driver - which is why a run that does neither is never elevated.
      */
     private int relaunchElevated(List<String> relayArguments) throws IOException {
         Path jar = Updater.runningJar().orElse(null);
         if (jar == null) {
             IO.println("Not running from a jar, so elevation cannot be requested automatically.");
-            IO.println("Claim from an elevated prompt instead:");
-            IO.println("  tools\\Set-AddressClaim.ps1 -Config " + configPath().toAbsolutePath());
+            if (capturesByRedirect()) {
+                IO.println("Start it from an elevated prompt instead:");
+                IO.println("  " + redirectorPath().map(Path::toString).orElse("drelay-redirect.exe")
+                        + " --ports " + joinPorts(Routes.redirectPorts(configPath())));
+            } else {
+                IO.println("Claim from an elevated prompt instead:");
+                IO.println("  tools\\Set-AddressClaim.ps1 -Config " + configPath().toAbsolutePath());
+            }
             IO.println("  then start the relay with --no-claim --no-elevate");
             return 2;
         }
-        IO.println("Administrator rights are needed to claim the server addresses, so Windows will ask");
-        IO.println("for them now. Declining is safe: rerun with --no-claim to skip the claim entirely.");
+        IO.println(capturesByRedirect()
+                ? "Administrator rights are needed to load the WinDivert driver, so Windows will ask"
+                : "Administrator rights are needed to claim the server addresses, so Windows will ask");
+        IO.println("for them now. Declining is safe: rerun with --no-claim to skip the capture entirely.");
 
         var forwarded = new ArrayList<String>();
         forwarded.add("--elevate");
         forwarded.add("--no-elevate");
+        // The launcher's own capture flags have to cross the elevation boundary too: the elevated
+        // copy is a fresh command line, and it must capture the same way this one was asked to.
+        forwarded.addAll(captureFlags());
         forwarded.addAll(relayArguments);
 
         String argumentList = "'-jar', " + PowerShell.quote(jar.toAbsolutePath().toString()) + ", "
@@ -601,6 +996,24 @@ public final class Launcher {
                 + " -WorkingDirectory " + PowerShell.quote(root.toAbsolutePath().toString())
                 + " -Verb RunAs -Wait -PassThru; exit $p.ExitCode";
         return PowerShell.inline(source, false).exitCode();
+    }
+
+    /**
+     * The launcher flags a restarted copy must carry, and why they are not just command-line noise.
+     *
+     * <p>An update and an elevation both replace this process's command line. {@code --redirect} and
+     * {@code --no-firewall} are the two flags that decide <em>which capture runs</em>, so losing them
+     * on a restart would silently switch an update from the redirector back to the claim.
+     */
+    private List<String> captureFlags() {
+        var flags = new ArrayList<String>();
+        if (redirect) {
+            flags.add("--redirect");
+        }
+        if (!firewall) {
+            flags.add("--no-firewall");
+        }
+        return flags;
     }
 
     // ---------------------------------------------------------------------------------------
@@ -646,6 +1059,7 @@ public final class Launcher {
         var relaunch = new ArrayList<String>();
         relaunch.add("--no-elevate");
         relaunch.add("--elevate");
+        relaunch.addAll(captureFlags());
         relaunch.addAll(relayArguments);
         Updater.scheduleInstall(jar.toAbsolutePath(), downloaded, relaunch);
 
@@ -672,6 +1086,11 @@ public final class Launcher {
         IO.println(stopped == 0
                 ? "No running relay was found."
                 : "Stopped " + stopped + " relay process(es).");
+        // The redirector and its firewall rule are part of the same net: a redirector with no relay
+        // behind it sends the client's connections to a closed port, and an orphaned allow rule is a
+        // hole nobody remembers opening.
+        stopLeftoverRedirector();
+        closeFirewall();
         IO.println();
         IO.println("Releasing the claimed addresses...");
         // The hosts capture is part of the same net: a stop that leaves the client resolving the
@@ -913,18 +1332,25 @@ public final class Launcher {
                 Usage:
                   java -jar drelay.jar [options]
 
-                The launcher asks for the administrator rights that claiming an address needs, updates
-                itself, refreshes the server addresses, claims them, starts the relay and releases the
-                claims when it stops. The relay's own options are passed through, so -Ddrelay.* works:
+                By default the launcher asks for the administrator rights that claiming an address
+                needs, updates itself, refreshes the server addresses, claims them, starts the relay
+                and releases the claims when it stops. --redirect replaces the claim with a packet
+                redirector, for the machines where claiming an address breaks the relay's own upstream
+                dial (see docs/proxy/HANDOFF-WINDIVERT.md). The relay's own options are passed
+                through, so -Ddrelay.* works:
 
                   java -jar drelay.jar -Ddrelay.web.port=0
+                  java -jar drelay.jar --redirect
                   java -jar drelay.jar --no-claim --no-update
 
                 Options:
+                  --redirect          capture with the packet redirector instead of claiming an
+                                      address; needs drelay-redirect.exe beside the jar
+                                      (build it with proxy\\redirector\\build.ps1)
+                  --no-firewall       do not add the inbound firewall rule the redirector needs
                   --no-update         do not check GitHub for a newer release
-                  --no-claim          do not claim any address and do not ask for elevation; nothing
-                                      is captured, which only helps when a route's destination is a
-                                      local peer
+                  --no-claim          do not capture anything and do not ask for elevation; only
+                                      useful when a route's destination is a local peer
                   --no-elevate        never re-run this jar to obtain administrator rights
                   --no-browser        do not open the dashboard in a browser
                   --config <path>     route table to use (default: work/relay-routes.json)
@@ -932,9 +1358,9 @@ public final class Launcher {
                 Commands:
                   --check-update      report whether a newer release exists; change nothing
                   --update            install the newest release and restart
-                  --stop              stop a running relay and give the claimed addresses and the
-                                      hosts block back
-                  --relay             run the relay alone in this JVM (no update, no claim)
+                  --stop              stop a running relay and the redirector, and give the claimed
+                                      addresses, the firewall rule and the hosts block back
+                  --relay             run the relay alone in this JVM (no update, no capture)
                   --release-claims    give every claimed address and the hosts block back
                   --install           extract or upgrade the bundled files, then stop
                   --version           print the version

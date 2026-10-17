@@ -160,6 +160,44 @@ final class Routes {
     }
 
     /**
+     * The listen ports a packet redirector has to capture, read from the generated route table.
+     *
+     * <p>The complement of the hosts capture, and deliberately computed from the same field.
+     * {@code Set-HostsEntry.ps1} captures a route only when the client dials a <em>name</em>
+     * ({@code refresh} is a DNS name); a route the client dials as a bare IP cannot be captured that
+     * way and needs the packet-level redirect instead. Deriving both from {@code refresh} is what
+     * keeps the two mechanisms from claiming the same route and from leaving one uncovered.
+     *
+     * @return the listen ports, in route order; empty when every route is name-addressed
+     */
+    static List<Integer> redirectPorts(Path config) throws IOException {
+        var ports = new ArrayList<Integer>();
+        if (!Files.isRegularFile(config)) {
+            return ports;
+        }
+        Document document = parse(Files.readString(config, StandardCharsets.UTF_8));
+        for (Route route : document.routes) {
+            if (route.listenPort > 0 && !isNameAddressed(route.refresh)) {
+                ports.add(route.listenPort);
+            }
+        }
+        return ports;
+    }
+
+    /**
+     * Whether the client reaches this route by name, and so whether the hosts file can capture it.
+     *
+     * <p>Matches the rule in {@code Set-HostsEntry.ps1}: a DNS name is resolvable and can be pointed
+     * at this machine; {@code serverlist} means the client dials a bare IP out of the game's own list,
+     * and a literal address is not something a hosts file has any say over.
+     */
+    private static boolean isNameAddressed(String refresh) {
+        return refresh != null && !refresh.isBlank()
+                && !refresh.equalsIgnoreCase(SERVER_LIST_KEY)
+                && !refresh.matches("^[0-9.]+$");
+    }
+
+    /**
      * Is this a literal address that can only mean "this machine"?
      *
      * <p>Used to tell a real DNS answer from the launcher's own hosts capture. Only literal
