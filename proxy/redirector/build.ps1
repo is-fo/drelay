@@ -50,11 +50,21 @@ function Write-Ok   { param([string]$Text) Write-Host $Text -ForegroundColor Gre
 function Write-Bad  { param([string]$Text) Write-Host $Text -ForegroundColor Red }
 function Write-Note { param([string]$Text) Write-Host $Text -ForegroundColor DarkGray }
 
-$WindivertVersion = '2.2'
+$WindivertVersion = '2.2.2'
+# The release is published under basil00/WinDivert, not basil00/Divert (that name is the old
+# project and has no v2.2 asset), and the tag carries the patch version. Both mistakes were in
+# the first version of this script: reqrypt.org did not resolve and the GitHub URL was a 404,
+# so a clean checkout could not build a redirector at all.
 $WindivertSources = @(
-    'https://reqrypt.org/download/WinDivert-2.2-A.zip',
-    'https://github.com/basil00/Divert/releases/download/v2.2/WinDivert-2.2-A.zip'
+    'https://github.com/basil00/WinDivert/releases/download/v2.2.2/WinDivert-2.2.2-A.zip',
+    'https://reqrypt.org/download/WinDivert-2.2.2-A.zip'
 )
+# Pinned so the NuGet fallback below can be checked against the official release, and so a
+# substituted or corrupted pair is refused rather than staged beside the driver loader.
+$WindivertHashes = @{
+    'WinDivert.dll'   = 'C1E060EE19444A259B2162F8AF0F3FE8C4428A1C6F694DCE20DE194AC8D7D9A2'
+    'WinDivert64.sys' = '8DA085332782708D8767BCACE5327A6EC7283C17CFB85E40B03CD2323A90DDC2'
+}
 
 if ($Clean -and (Test-Path -LiteralPath $OutputDir)) {
     Write-Step "clean: removing $OutputDir"
@@ -126,35 +136,79 @@ function Find-WindivertDirectory {
     }
 
     New-Item -ItemType Directory -Force -Path $cache | Out-Null
-    $zip = Join-Path $cache 'WinDivert-2.2-A.zip'
-    $extracted = Join-Path $cache 'WinDivert-2.2-A'
+    $zip = Join-Path $cache "WinDivert-$WindivertVersion-A.zip"
+    $extracted = Join-Path $cache "WinDivert-$WindivertVersion-A"
     $wanted = Join-Path $extracted 'x64\WinDivert.dll'
     if (Test-Path -LiteralPath $wanted) {
         Write-Note "  using the cached WinDivert download: $extracted"
         return (Join-Path $extracted 'x64')
     }
 
+    $downloaded = $false
     foreach ($url in $WindivertSources) {
         Write-Step "downloading WinDivert $WindivertVersion from $url"
         try {
             Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 60
-            break
+            if ((Test-Path -LiteralPath $zip) -and (Get-Item -LiteralPath $zip).Length -gt 0) {
+                $downloaded = $true
+                break
+            }
         } catch {
             Write-Note "  failed: $($_.Exception.Message)"
         }
     }
-    if (-not (Test-Path -LiteralPath $zip) -or (Get-Item -LiteralPath $zip).Length -eq 0) {
-        Write-Bad 'WinDivert could not be downloaded, and it is not beside the exe either.'
-        Write-Note '  download the official 2.2 A release and point this script at its x64 folder:'
-        Write-Note '    .\build.ps1 -WinDivertDir C:\path\to\WinDivert-2.2-A\x64'
-        exit 1
+
+    if ($downloaded) {
+        try {
+            Expand-Archive -LiteralPath $zip -DestinationPath $cache -Force
+            if (Test-Path -LiteralPath $wanted) {
+                return (Join-Path $extracted 'x64')
+            }
+            Write-Note "  the archive did not contain x64\WinDivert.dll"
+        } catch {
+            # Windows Defender flags the official A archive because it also contains the sample
+            # executables (netdump.exe and friends). The two files this script needs are inert on
+            # their own, so fall through to the binary-only package instead of failing the build.
+            Write-Note "  could not extract the archive: $($_.Exception.Message)"
+            Write-Note '  falling back to the binary-only WinDivert package'
+        }
     }
-    Expand-Archive -LiteralPath $zip -DestinationPath $cache -Force
-    if (-not (Test-Path -LiteralPath $wanted)) {
-        Write-Bad "the downloaded archive does not contain x64\WinDivert.dll"
-        exit 1
+
+    # Fallback: the Native.WinDivert NuGet package carries exactly the same two x64 files and
+    # nothing else. It is used only when the official zip cannot be opened, and its hashes are
+    # checked against the official release above before anything is staged.
+    $package = Join-Path $cache "Native.WinDivert.$WindivertVersion.nupkg"
+    $packageZip = Join-Path $cache "Native.WinDivert.$WindivertVersion.zip"
+    $packageDir = Join-Path $cache "Native.WinDivert.$WindivertVersion"
+    try {
+        Write-Step "downloading the binary-only WinDivert $WindivertVersion package"
+        Invoke-WebRequest -Uri "https://api.nuget.org/v3-flatcontainer/native.windivert/$WindivertVersion/native.windivert.$WindivertVersion.nupkg" `
+            -OutFile $package -UseBasicParsing -TimeoutSec 60
+        Copy-Item -LiteralPath $package -Destination $packageZip -Force
+        Expand-Archive -LiteralPath $packageZip -DestinationPath $packageDir -Force
+        $native = Join-Path $packageDir 'runtimes\win-x64\native'
+        if ((Test-Path -LiteralPath (Join-Path $native 'WinDivert.dll')) -and
+            (Test-Path -LiteralPath (Join-Path $native 'WinDivert64.sys'))) {
+            foreach ($name in $WindivertHashes.Keys) {
+                $actual = (Get-FileHash -LiteralPath (Join-Path $native $name) -Algorithm SHA256).Hash
+                if ($actual -ne $WindivertHashes[$name]) {
+                    Write-Bad "$name from the fallback package is not the official WinDivert $WindivertVersion binary"
+                    Write-Note "  expected $($WindivertHashes[$name])"
+                    Write-Note "  got      $actual"
+                    exit 1
+                }
+            }
+            Write-Note '  the fallback binaries match the official release'
+            return $native
+        }
+    } catch {
+        Write-Note "  the fallback package failed: $($_.Exception.Message)"
     }
-    return (Join-Path $extracted 'x64')
+
+    Write-Bad 'WinDivert could not be downloaded, and it is not beside the exe either.'
+    Write-Note '  download the official 2.2.2 A release and point this script at its x64 folder:'
+    Write-Note '    .\build.ps1 -WinDivertDir C:\path\to\WinDivert-2.2.2-A\x64'
+    exit 1
 }
 
 $windivert = Find-WindivertDirectory -Hint $WinDivertDir
@@ -169,7 +223,13 @@ foreach ($name in 'WinDivert.dll', 'WinDivert64.sys') {
 Write-Ok "staged WinDivert $WindivertVersion (x64) beside the exe"
 
 # The licence travels with the binaries: LGPLv3 requires the notice to be distributed with them.
-$licenseFrom = Join-Path (Split-Path -Parent $windivert) 'LICENSE'
+# The official zip keeps LICENSE beside x64\; the binary-only package keeps it at its root, one
+# level above runtimes\win-x64\native. Either is fine; the notice names the source regardless.
+$licenseFrom = @(
+    (Join-Path (Split-Path -Parent $windivert) 'LICENSE'),
+    (Join-Path $cache "WinDivert-$WindivertVersion-A\LICENSE"),
+    (Join-Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $windivert))) 'LICENSE')
+) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $notice = @(
     "drelay-redirect.exe, beside this file, uses WinDivert $WindivertVersion (x64).",
     '',
@@ -177,14 +237,14 @@ $notice = @(
     'Public License version 3 and the GNU General Public License version 2. It is distributed here',
     'unmodified, as WinDivert.dll and WinDivert64.sys, because WinDivert is dynamically linked.',
     '',
-    'Source and licence: https://github.com/basil00/Divert  and  https://reqrypt.org/windivert.html',
+    'Source and licence: https://github.com/basil00/WinDivert  and  https://reqrypt.org/windivert.html',
     '',
     'The WinDivert driver is installed on demand by WinDivertOpen() and can be removed with:',
     '  sc stop WinDivert && sc delete WinDivert'
 ) -join "`r`n"
 [System.IO.File]::WriteAllText((Join-Path $OutputDir 'NOTICE.txt'), $notice + "`r`n",
     [System.Text.UTF8Encoding]::new($false))
-if (Test-Path -LiteralPath $licenseFrom) {
+if ($licenseFrom -and (Test-Path -LiteralPath $licenseFrom)) {
     Copy-Item -LiteralPath $licenseFrom -Destination (Join-Path $OutputDir 'WinDivert-LICENSE.txt') -Force
 } else {
     Write-Note '  note: the WinDivert licence text was not beside the binaries; NOTICE.txt names its source'

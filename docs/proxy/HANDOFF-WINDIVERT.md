@@ -189,10 +189,10 @@ files and a NOTICE. It is deliberately **not** inside the jar: the JVM cannot ca
 and the binaries are third-party (`*.dll`/`*.exe` are ignored repository-wide). The launcher searches
 `-Ddrelay.redirector`, `redirector\`, `target\redirector\` and `work\redirector\` beside the jar.
 
-> **Release packaging is still a gap.** `proxy-release.yml` uploads `drelay.jar` only, so a downloaded
-> release has no `redirector\` directory and `--redirect` stops with "the packet redirector is not
-> installed" plus the build command. Building it in CI needs `actions/setup-dotnet` and a second asset
-> (or a zip); that was not attempted here because it cannot be verified from this machine.
+> **Release packaging.** `proxy-release.yml` now builds the redirector on a Windows runner and
+> publishes `drelay-<version>-win64.zip` with `drelay.jar` and `redirector\` together, so a normal
+> start uses the redirector without a flag or a build. The bare `drelay.jar` stays on the release for
+> the updater, which replaces one file and cannot consume a zip.
 
 ---
 

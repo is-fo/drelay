@@ -4,9 +4,9 @@ A local TCP relay for **Darza's Dominion** that sits between the game client and
 servers. Packets can be inspected, logged, decoded into structured objects, and written back.
 
 It is a research tool, not a game client. It changes nothing on disk in the game's installation and
-does not modify the game binary: it claims the server addresses on the loopback interface so the
-client's own connection is delivered into the local stack, then forwards each session to the real
-server.
+does not modify the game binary: it captures the client's own connection - with the packet
+redirector when that is installed, otherwise by claiming the server addresses on the loopback
+interface - then forwards each session to the real server.
 
 This is the `proxy/` half of the repository. The other half is `hook/`, an in-process C++/.NET hook
 that runs inside the game; the two are separate products with separate releases and separate
@@ -23,9 +23,9 @@ below is about the relay alone, and every path in it is relative to this directo
 | **OS** | Windows 10/11. Claiming an address, the redirector and the setup scripts are Windows-specific; the relay itself runs anywhere the JVM does, but without a capture it only forwards a route whose destination is not a real server address |
 | **Rights** | Administrator, only to capture: to claim the server addresses, or to load the redirector's driver (the launcher asks for it) |
 | **Game** | Darza's Dominion, installed and running normally |
-| **Redirector** | Optional, and only for `--redirect`: a .NET 8 SDK to build it, plus `WinDivert.dll`/`WinDivert64.sys`, which `redirector\build.ps1` fetches |
+| **Redirector** | Included in the Windows release zip. Building it from source needs the .NET 8 SDK; `redirector\build.ps1` fetches `WinDivert.dll`/`WinDivert64.sys` automatically |
 
-Nothing else: the released jar has no dependencies.
+Nothing else: the release zip has no dependencies beyond Java.
 
 ---
 
@@ -33,9 +33,10 @@ Nothing else: the released jar has no dependencies.
 
 ### From a release (no build required)
 
-1. Download **`drelay.jar`** from the [latest release](https://github.com/is-fo/drelay/releases/latest).
-2. Put it in a directory of its own, for example `C:\drelay`.
-3. Double-click it, or run:
+1. Download **`drelay-<version>-win64.zip`** from the [latest release](https://github.com/is-fo/drelay/releases/latest).
+2. Extract it to a directory of its own, for example `C:\drelay`. Keep `drelay.jar` and
+   `redirector\` together.
+3. Double-click `drelay.jar`, or run:
 
    ```powershell
    java -jar drelay.jar
@@ -43,9 +44,11 @@ Nothing else: the released jar has no dependencies.
 
 4. Accept the Windows prompt for administrator rights, then start Darza's Dominion.
 
-On the first run the launcher writes the files it ships (a `relay-routes.json` and two PowerShell
-helpers in `tools\`) next to the jar, refreshes the game server addresses, claims them, starts the
-relay and opens the dashboard at <http://127.0.0.1:8765/>.
+The zip carries the packet redirector and WinDivert, so a normal start uses them automatically. On
+the first run the launcher writes the files it ships (a `relay-routes.json` and the PowerShell
+helpers in `tools\`) next to the jar, refreshes the game server addresses, starts the redirector and
+the relay, and opens the dashboard at <http://127.0.0.1:8765/>. No flag and no separate download is
+required; `--claim` selects the older address-claim capture instead.
 
 Press **Ctrl+C** in the console window to stop: the claims and the hosts block are released
 automatically. A forced kill can still leave them behind, and a leftover hosts entry stops the game
@@ -80,8 +83,8 @@ none) and then does exactly what double-clicking the jar does. It can also do th
 about a *previous* run rather than this one:
 
 ```powershell
-.\drelay.ps1                 # build if needed, then run
-.\drelay.ps1 -Redirect       # run with the packet redirector instead of an address claim
+.\drelay.ps1                 # build if needed, then run (redirector if installed, else claim)
+.\drelay.ps1 -Redirect       # build the redirector if needed, then run with it
 .\drelay.ps1 -Rebuild        # clean build, then run
 .\drelay.ps1 -Stop           # stop a running relay, release the claims and the hosts block
 .\drelay.ps1 -Status         # what is running and what is claimed; change nothing
@@ -92,9 +95,10 @@ about a *previous* run rather than this one:
 .\drelay.ps1 -JarArg -Ddrelay.nexus.enabled=true
 ```
 
-`-Redirect` builds `proxy\redirector\` on first use and needs the .NET 8 SDK for that; the default
-claim path needs only a JDK. Nothing about the relay's configuration changes between the two. On the
-machines where the claim works, prefer it: it loads no driver and rewrites no packets.
+`-Redirect` builds `proxy\redirector\` on first use and needs the .NET 8 SDK for that; the claim
+path needs only a JDK. Nothing about the relay's configuration changes between the two. Once the
+redirector and `WinDivert.dll` are installed beside the jar, a plain `java -jar drelay.jar` uses them
+automatically; pass `--claim` to keep the address claim instead.
 
 Building puts the jar in `target\`, and `drelay.ps1` moves it up beside the script before running:
 the launcher treats the jar's own directory as its working directory, so one jar in one directory
@@ -112,7 +116,8 @@ java -jar drelay.jar [options] [commands] [-Ddrelay.*=...]
 | Option | Effect |
 |---|---|
 | `--no-update` | do not check GitHub for a newer release |
-| `--redirect` | capture with the packet redirector instead of claiming an address (see [redirector/README.md](redirector/README.md)) |
+| `--redirect` | force the packet redirector instead of an address claim; it is used automatically when installed (see [redirector/README.md](redirector/README.md)) |
+| `--claim` | force an address claim even when a packet redirector is installed |
 | `--no-firewall` | do not add the inbound firewall rule the redirector needs |
 | `--no-claim` | do not claim any address and do not elevate â€” nothing is captured |
 | `--no-elevate` | never re-run the jar to obtain administrator rights |

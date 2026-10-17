@@ -89,7 +89,7 @@ public final class Launcher {
     /** Flags this launcher owns; anything else on the command line belongs to the relay. */
     private static final List<String> OWN_FLAGS = List.of(
             "--no-update", "--no-claim", "--no-elevate", "--no-browser", "--config",
-            "--redirect", "--no-firewall",
+            "--redirect", "--claim", "--no-firewall",
             "--relay", "--elevate", "--update", "update", "--check-update", "check-update",
             "--release-claims", "--stop", "--install", "--help", "-h", "--version");
 
@@ -149,7 +149,15 @@ public final class Launcher {
         this.update = !flag("--no-update");
         this.elevate = !flag("--no-elevate");
         this.claim = !flag("--no-claim");
-        this.redirect = flag("--redirect") || Boolean.parseBoolean(System.getProperty(REDIRECT_PROPERTY));
+        // --redirect forces the packet redirector; --claim forces an address claim. With neither,
+        // prefer the redirector when it is actually installed - a claim is the capture that fails
+        // on the machines this redirector exists for, and the same jar is started by double-click
+        // or by `java -jar drelay.jar`, where nobody is going to add a flag. A release that ships
+        // no redirector keeps the old default: claim, and say so if the claim path is impossible.
+        boolean forcedRedirect = flag("--redirect")
+                || Boolean.parseBoolean(System.getProperty(REDIRECT_PROPERTY));
+        boolean forcedClaim = flag("--claim");
+        this.redirect = forcedRedirect || (!forcedClaim && redirectorInstalled());
         this.firewall = !flag("--no-firewall");
         this.browser = !flag("--no-browser");
         this.configName = value("--config").orElse("work/relay-routes.json");
@@ -158,6 +166,23 @@ public final class Launcher {
             // answer as a -D property on its own command line.
             System.setProperty(REDIRECT_PROPERTY, "true");
         }
+    }
+
+    /**
+     * Whether a usable packet redirector sits in one of the expected places.
+     *
+     * <p>The exe alone is not enough: WinDivert.dll must be beside it, or the first run would lift
+     * the launcher only to fail at the driver. Treating that as "not installed" lets the claim path
+     * run instead of turning a missing sidecar into a failure to start at all.
+     */
+    private boolean redirectorInstalled() {
+        for (Path candidate : redirectorCandidates()) {
+            if (Files.isRegularFile(candidate)
+                    && Files.isRegularFile(candidate.resolveSibling("WinDivert.dll"))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** Whether this run captures with the packet redirector rather than by claiming addresses. */
@@ -1009,6 +1034,10 @@ public final class Launcher {
         var flags = new ArrayList<String>();
         if (redirect) {
             flags.add("--redirect");
+        } else if (flag("--claim")) {
+            // The elevated/updated copy is a fresh command line. Without this, an explicit --claim
+            // would be re-decided by auto-detection and silently switch to the redirector.
+            flags.add("--claim");
         }
         if (!firewall) {
             flags.add("--no-firewall");
@@ -1332,21 +1361,25 @@ public final class Launcher {
                 Usage:
                   java -jar drelay.jar [options]
 
-                By default the launcher asks for the administrator rights that claiming an address
-                needs, updates itself, refreshes the server addresses, claims them, starts the relay
-                and releases the claims when it stops. --redirect replaces the claim with a packet
-                redirector, for the machines where claiming an address breaks the relay's own upstream
-                dial (see docs/proxy/HANDOFF-WINDIVERT.md). The relay's own options are passed
-                through, so -Ddrelay.* works:
+                By default the launcher asks for the administrator rights the capture needs, updates
+                itself, refreshes the server addresses, captures them, starts the relay and releases
+                the capture when it stops. A packet redirector beside the jar is used automatically;
+                without one it falls back to claiming the server addresses on the loopback
+                interface. --claim forces the address claim and --redirect forces the redirector
+                (see docs/proxy/HANDOFF-WINDIVERT.md). The relay's own options are passed through,
+                so -Ddrelay.* works:
 
                   java -jar drelay.jar -Ddrelay.web.port=0
+                  java -jar drelay.jar --claim
                   java -jar drelay.jar --redirect
                   java -jar drelay.jar --no-claim --no-update
 
                 Options:
                   --redirect          capture with the packet redirector instead of claiming an
-                                      address; needs drelay-redirect.exe beside the jar
-                                      (build it with proxy\\redirector\\build.ps1)
+                                      address; needs drelay-redirect.exe and WinDivert.dll beside
+                                      the jar (build it with proxy\\redirector\\build.ps1)
+                  --claim             capture by claiming the server addresses on the loopback
+                                      interface, even when a redirector is installed
                   --no-firewall       do not add the inbound firewall rule the redirector needs
                   --no-update         do not check GitHub for a newer release
                   --no-claim          do not capture anything and do not ask for elevation; only

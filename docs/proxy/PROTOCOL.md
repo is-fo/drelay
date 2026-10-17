@@ -435,10 +435,10 @@ Configuration consequences:
 
 ### Why the packet redirect was abandoned once, and what brought it back
 
-The address claim replaced the redirector for two years and it remains the default. The redirector
-came back for one reason only - the claim cannot forward on this Windows 11 build
-([HANDOFF-WINDIVERT.md](HANDOFF-WINDIVERT.md) §1) - and it came back as a **reflection**, not as the
-destination rewrite described above. `proxy/redirector/` is the implementation; the same diagnostics
+The address claim replaced the redirector for two years. The redirector came back for one reason
+only - the claim cannot forward on this Windows 11 build ([HANDOFF-WINDIVERT.md](HANDOFF-WINDIVERT.md)
+§1) - and it came back as a **reflection**, not as the destination rewrite described above. It is now
+preferred automatically when it is installed beside the jar; `--claim` restores the address claim. `proxy/redirector/` is the implementation; the same diagnostics
 apply, with two counters added:
 
 | Observation | Meaning |

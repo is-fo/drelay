@@ -227,10 +227,6 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           cp target/drelay.jar dist/drelay.jar
-          cd dist
-          # The same format the launcher parses, and the same file name it fetches from the release.
-          sha256sum drelay.jar > SHA256SUMS.txt
-          cat SHA256SUMS.txt
 
       - name: Attest the build provenance
         uses: actions/attest-build-provenance@v4
@@ -241,12 +237,51 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: proxy-release-files
+          path: proxy/dist/drelay.jar
+          if-no-files-found: error
+
+  redirector:
+    name: build the redirector
+    needs: version
+    if: needs.version.outputs.build == 'true'
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: proxy
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
+      # This also fetches WinDivert 2.2.2 and stages WinDivert.dll/WinDivert64.sys beside the exe.
+      # The script falls back to the hash-checked binary-only package if Defender rejects the
+      # official archive, so a hosted runner and a user's machine take the same path.
+      - name: Build and self-test
+        shell: pwsh
+        run: .\redirector\build.ps1
+
+      - name: Collect the redirector files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target\redirector\* dist -Recurse -Force
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Upload the redirector files
+        uses: actions/upload-artifact@v7
+        with:
+          name: proxy-redirector-files
           path: proxy/dist/*
           if-no-files-found: error
 
   publish:
     name: publish the release
-    needs: [version, build]
+    needs: [version, build, redirector]
     if: needs.version.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -271,30 +306,59 @@ jobs:
             echo "created tag ${TAG} at ${SHA}"
           fi
 
-      - name: Download the release files
+      - name: Download the jar
         uses: actions/download-artifact@v8
         with:
           name: proxy-release-files
           path: proxy/dist
 
+      - name: Download the redirector
+        uses: actions/download-artifact@v8
+        with:
+          name: proxy-redirector-files
+          path: proxy/dist/redirector
+
+      # ONE DOWNLOAD, ONE EXTRACT, ONE DOUBLE-CLICK. The jar alone falls back to the address claim,
+      # which is the path that fails on the machines this release exists for, so the "easiest" asset
+      # has to carry the redirector too. The bare jar stays published because the updater replaces
+      # exactly one file and must not be handed a zip.
+      - name: Assemble the Windows archive
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd proxy/dist
+          zip -r "drelay-${VERSION}-win64.zip" drelay.jar redirector
+          sha256sum drelay.jar "drelay-${VERSION}-win64.zip" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          unzip -l "drelay-${VERSION}-win64.zip"
+
+      - name: Attest the Windows archive
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: proxy/dist/drelay-*-win64.zip
+
       - name: Write the release notes
         env:
           REPOSITORY: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           # Written with printf rather than a heredoc: YAML indents the whole block, and stripping that
           # indentation afterwards would also strip the indentation inside the fenced code examples.
           {
-            printf '**Download `drelay.jar` and run it.** It needs Java 25 or newer and nothing else:\n\n'
+            printf '**Download `drelay-%s-win64.zip`, extract it, and run `drelay.jar`.** It needs Java 25\n' "${VERSION}"
+            printf 'or newer and nothing else:\n\n'
             printf '```powershell\njava -jar drelay.jar\n```\n\n'
-            printf 'Windows will ask for administrator rights, because claiming the game server addresses\n'
-            printf 'on the loopback interface needs them. The launcher then extracts the files it ships,\n'
-            printf 'refreshes the server addresses, claims them, starts the relay and opens the dashboard at\n'
-            printf '<http://127.0.0.1:8765/>. Ctrl+C in that window stops it and gives the claims back.\n\n'
-            printf 'Already running an older version? It updates itself on the next start, checking the\n'
-            printf 'download against `SHA256SUMS.txt` before it replaces anything.\n\n'
+            printf 'The zip carries the packet redirector and WinDivert beside the jar, so no flag, no\n'
+            printf 'build and no separate download is needed. Windows asks for administrator rights, then\n'
+            printf 'the launcher starts the redirector, refreshes the server addresses, starts the relay and\n'
+            printf 'opens the dashboard at <http://127.0.0.1:8765/>. Ctrl+C stops it and releases everything.\n\n'
+            printf '`drelay.jar` on its own is still published for the automatic updater. If you put it next\n'
+            printf 'to an extracted `redirector\\` directory, a normal start uses that redirector; without\n'
+            printf 'one it falls back to the older address claim.\n\n'
             printf 'This release is also signed with a build provenance attestation:\n\n'
-            printf '```powershell\ngh attestation verify drelay.jar --repo %s\n```\n\n' "${REPOSITORY}"
+            printf '```powershell\ngh attestation verify drelay-%s-win64.zip --repo %s\n```\n\n' "${VERSION}" "${REPOSITORY}"
             printf 'This repository also publishes the `hook` component, whose releases are tagged\n'
             printf '`hook-v<version>` and are listed alongside this one. The updater tells the two apart by\n'
             printf 'the tag, so a hook release is never offered to an installed relay.\n'
@@ -314,6 +378,7 @@ jobs:
           name: drelay ${{ needs.version.outputs.version }}
           body_path: notes.md
           files: |
+            proxy/dist/drelay-*-win64.zip
             proxy/dist/drelay.jar
             proxy/dist/SHA256SUMS.txt
           fail_on_unmatched_files: true

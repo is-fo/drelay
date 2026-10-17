@@ -21,7 +21,7 @@
 #
 # Usage:
 #   .\drelay.ps1                     build if needed, then run
-#   .\drelay.ps1 -Redirect           run with the packet redirector instead of an address claim
+#   .\drelay.ps1 -Redirect           build the packet redirector if needed, then run with it
 #   .\drelay.ps1 -Build              always rebuild first
 #   .\drelay.ps1 -Rebuild            clean, then build
 #   .\drelay.ps1 -Maven              build with Maven instead of javac
@@ -219,8 +219,14 @@ if ($Stop) {
         # checkout has never built it, for the same reason the jar is built on demand: .\drelay.ps1
         # is meant to be the one entry point, and "it is missing" is not a useful first answer.
         $redirectorExe = Join-Path $root 'target\redirector\drelay-redirect.exe'
-        if (-not (Test-Path -LiteralPath $redirectorExe)) {
-            Write-Step 'building the packet redirector (first run with -Redirect)...'
+        # The exe alone is not a working redirector: WinDivert.dll (and its driver) are staged by
+        # the same build, and a run that finds only the exe would otherwise skip the download and
+        # fail at WinDivertOpen. Check the sidecar too, so -Redirect really is the one step that
+        # installs everything.
+        $redirectorDll = Join-Path (Split-Path -Parent $redirectorExe) 'WinDivert.dll'
+        if (-not (Test-Path -LiteralPath $redirectorExe) -or
+            -not (Test-Path -LiteralPath $redirectorDll)) {
+            Write-Step 'building the packet redirector (first run with -Redirect, or WinDivert missing)...'
             $redirectorBuild = Join-Path $root 'redirector\build.ps1'
             if (-not (Test-Path -LiteralPath $redirectorBuild)) {
                 Write-Bad "no redirector build script at $redirectorBuild"
@@ -236,7 +242,8 @@ if ($Stop) {
         Write-Note '  no address is claimed: the client''s own packets are handed to the relay by port.'
         $arguments += '--redirect'
     } else {
-        Write-Ok 'the launcher will ask for administrator rights, then claim the server addresses.'
+        Write-Ok 'the launcher will ask for administrator rights, then capture the client''s connections.'
+        Write-Note '  it uses the packet redirector when one is installed, otherwise an address claim.'
     }
     if ($JarArg) { $arguments += $JarArg }
     Invoke-Jar $arguments
