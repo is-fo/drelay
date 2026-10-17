@@ -194,6 +194,10 @@ public final class Launcher {
             return runRelay(relayArguments);
         }
 
+        // Names first: a route the client reaches by name is captured here and is skipped by
+        // the claim below, so no route is ever both claimed and hosts-captured.
+        captureByHosts(configPath());
+
         PowerShell.Result claimed = claimAddresses(configPath());
         if (claimed.exitCode() == 3) {
             // The script refused: a route address belongs to a real interface. Claiming it would take
@@ -212,6 +216,7 @@ public final class Launcher {
         } finally {
             IO.println();
             IO.println("Releasing the claimed addresses...");
+            releaseHosts(configPath());
             PowerShell.Result released = releaseClaims(configPath());
             if (!released.ok()) {
                 IO.println("  not every claim was released. Finish with:");
@@ -426,6 +431,55 @@ public final class Launcher {
         }
         return PowerShell.run(script, List.of("-Config", config.toAbsolutePath().toString(), "-Release"),
                 root, true);
+    }
+
+    /**
+     * Points the game's name-addressed services at this machine through the hosts file.
+     *
+     * <p>THE OTHER HALF OF PUTTING THE RELAY IN THE CLIENT'S PATH, AND THE HALF THAT WORKS.
+     * A route the client reaches by <em>name</em> cannot be captured by claiming its address:
+     * the claim assigns the server's own address to loopback, and then the relay's own
+     * upstream dial to that address is a dial to a local address, so the session opens and
+     * nothing ever comes back. A hosts entry has no such conflict - the client resolves the
+     * name to a local address and the relay dials the real one from the route table.
+     * {@code Set-AddressClaim.ps1} skips exactly the routes this covers, so the two cannot
+     * fight over a route.
+     *
+     * <p>Non-fatal on purpose: a failure here costs the queue capture, not the run.
+     */
+    private void captureByHosts(Path config) {
+        Path script = root.resolve("tools").resolve("Set-HostsEntry.ps1");
+        if (!Files.exists(script)) {
+            IO.println("  no hosts helper found; name-addressed routes will bypass the relay");
+            return;
+        }
+        try {
+            PowerShell.Result result = PowerShell.run(script,
+                    List.of("-Config", config.toAbsolutePath().toString()), root, true);
+            if (!result.ok()) {
+                IO.println("  the hosts entry could not be written (exit " + result.exitCode() + ").");
+                IO.println("  the relay still starts; name-addressed routes may bypass it.");
+            }
+        } catch (RuntimeException e) {
+            IO.println("  the hosts helper could not be run: " + e.getMessage());
+        }
+    }
+
+    private void releaseHosts(Path config) {
+        Path script = root.resolve("tools").resolve("Set-HostsEntry.ps1");
+        if (!Files.exists(script)) {
+            return;
+        }
+        try {
+            PowerShell.Result result = PowerShell.run(script,
+                    List.of("-Config", config.toAbsolutePath().toString(), "-Release"), root, true);
+            if (!result.ok()) {
+                IO.println("  the hosts entry could not be removed (exit " + result.exitCode() + ").");
+                IO.println("  remove it with: tools\\Set-HostsEntry.ps1 -Release");
+            }
+        } catch (RuntimeException e) {
+            IO.println("  the hosts helper could not be run to release: " + e.getMessage());
+        }
     }
 
     // ---------------------------------------------------------------------------------------

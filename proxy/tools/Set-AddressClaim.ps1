@@ -185,6 +185,20 @@ foreach ($r in @($doc.routes)) {
     if (-not $r) { continue }
     if ($Route -and ($r.name -ne $Route)) { continue }
     if (-not $r.remoteHost) { continue }
+
+    # A ROUTE THE CLIENT REACHES BY NAME IS NOT CLAIMED.  It is captured by a hosts entry
+    # instead (tools\Set-HostsEntry.ps1), and claiming it as well would assign the server's
+    # own address to loopback - after which the relay's own upstream dial to that address is
+    # a dial to a local address and never reaches the server.  Measured with the queue: the
+    # client's login packet went upstream and nothing ever came back, and without an upstream
+    # bind the relay instead accepted its own dials in an exponential cascade.  `refresh`
+    # says which kind a route is: a DNS name is resolvable by the client and can be
+    # redirected; "serverlist" means the client dials a bare IP out of the game's server list.
+    $refresh = [string]$r.refresh
+    if ($refresh -and $refresh -ne 'serverlist' -and -not (Test-IPv4Literal $refresh)) {
+        Write-Note "route $($r.name): reached by name '$refresh' - captured by the hosts entry, not claimed"
+        continue
+    }
     $remote = [string]$r.remoteHost
     $port = if ($r.remotePort) { [int]$r.remotePort } else { [int]$r.listenPort }
     $ip = $null

@@ -201,22 +201,37 @@ startup when `upstreamHost` is missing (`Refusing to start: 1 route destination(
 claimed by this machine, and no upstreamHost is set`), so a relay that starts is not proof of
 anything either.
 
-**Fix.** There is no setting for this: a route whose destination is claimed locally cannot be
-proxied by dialling that same destination. Until the capture strategy changes, **do not run
-the relay** — release the claim and play direct:
+**Fix — capture the name, not the address.** A route the client reaches by a *name* can be
+redirected without touching the server's address, which is the conflict above. The launcher
+now does that on start and undoes it on stop; the tool on its own is:
 
 ```powershell
-# elevated
-.\tools\Set-AddressClaim.ps1 -Release
+# elevated (it writes the hosts file); -Status and -WhatIfOnly need no elevation
+.\tools\Set-HostsEntry.ps1 -Config .\relay-routes.json     # write the block
+.\tools\Set-HostsEntry.ps1 -Status                          # what is captured now
+.\tools\Set-HostsEntry.ps1 -Release                         # give it back
 ```
 
-Then start the game normally; it works, and the hook works with it.
+It writes ONE marked block (`# >>> drelay (hosts capture) >>>`) mapping
+`queue.playdarzas.com` to `127.0.0.1`, keeps a `<hosts>.drelay-backup`, replaces the file
+atomically, and reads it back to verify. `tools\Restore-HostsFile.ps1` removes the same block
+if anything goes wrong.
 
-**Before you test the game without the proxy**, remember the claim has to be gone:
-`44.242.119.50` and `18.145.161.25` are **loopback aliases** while claimed, so with the
-relay stopped the client dials itself and the connection is refused. That looks like a
-completely different bug. `tools\Restore-HostsFile.ps1` and
-`proxy\tools\Restore-DhcpAddressing.ps1` undo the other halves of the capture.
+`Set-AddressClaim.ps1` now **skips every route the hosts block covers** — the two mechanisms
+cannot fight over a route. A route the client reaches by a bare IP (`refresh: "serverlist"`,
+which is `Game` and `Game_Slave`) cannot be captured this way at all: a hosts file cannot
+redirect an IP. Those routes still take the claim, and the claim still has the conflict
+above, so **expect game traffic to bypass the relay** until a capture that does not shadow
+the destination exists. The login path — which is what stopped the game entering — is fixed
+by the hosts block alone.
+
+**If the game still does not enter**, check the two things in order: `Set-HostsEntry.ps1
+-Status` shows the block, and the relay's event log shows a `Queue` session with
+`packetsToClient: 1` (the server's `QJoin`) instead of `0`.
+
+**Before you test the game without the proxy**, remember to release the block: with the name
+pointed at `127.0.0.1` and no relay listening, the client is refused. That looks like a
+completely different bug.
 
 ---
 
