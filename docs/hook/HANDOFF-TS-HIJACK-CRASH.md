@@ -8,6 +8,27 @@ does not re-run the twelve experiments this one ran, and does not misread `crash
 
 ---
 
+## RESOLVED — 2026-10-17, hook 0.1.2
+
+The crash was **the hook's own crash reporter**, not the managed bootstrap and not the
+runtime. `DrelayCrash.cpp`'s vectored handler recorded `STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT`
+(`0x80000033`), the exception the runtime raises on a thread it has just hijacked for a GC. That
+handler ran a stack walk and up to four file writes *inside the hijack window*, on the thread the
+GC was waiting for. The runtime then hit its own `HasThreadState(TS_Hijacked)` assertion and
+fail-fasted. The recorded `crash.txt` was the provocation, which is why §2's "do not read
+`crash.txt`" advice was right about the evidence and wrong about the cause.
+
+The fix is one case in the handler: `0x80000033` returns `EXCEPTION_CONTINUE_SEARCH` with no work.
+Measured on this machine, default configuration: **5/5 launches survived 60 s**, where the
+pre-fix build died in 1 of 5 at 30 s and 2 of 6 before that (and 1/5 with the frame replacement
+off, 1/5 with `--cores 4`, 1/5 with no JIT detour — the bisection below is still valid history).
+
+The E1/E2 experiment was therefore **not** needed: the startup hook's work is not implicated. The
+sections below are kept as the record of what was measured and why the obvious suspects were not
+it. §7's "bump it to 0.1.2" is done; `TROUBLESHOOTING.md` §1 is rewritten around the real fix.
+
+---
+
 ## 0. The brief
 
 The 0.1.1 release runs on the developer's machine and **not on this one**. Here the game is

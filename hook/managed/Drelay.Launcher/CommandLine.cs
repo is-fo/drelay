@@ -66,6 +66,18 @@ namespace Drelay.Launcher
                         if (!ParseMilliseconds(args, ref i, "--live-seconds", out int live, out error)) { return false; }
                         settings.LiveSeconds = live;
                         break;
+                    case "--cores":
+                    {
+                        string raw = Next(args, ref i);
+                        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture,
+                                          out int cores) || cores <= 0)
+                        {
+                            error = "--cores needs a positive number of processors, got '" + raw + "'";
+                            return false;
+                        }
+                        settings.Cores = cores;
+                        break;
+                    }
                     case "--off": settings.Off = true; break;
                     case "--act": settings.Act = true; break;
                     case "--full-trace": settings.FullTrace = true; break;
@@ -192,6 +204,15 @@ namespace Drelay.Launcher
                 case "--discovery-ms": return ParseMilliseconds(name, value, out settings.DiscoveryWindowMs, ref error);
                 case "--resolve-delay": return ParseMilliseconds(name, value, out settings.ResolveDelayMs, ref error);
                 case "--live-seconds": return ParseMilliseconds(name, value, out settings.LiveSeconds, ref error);
+                case "--cores":
+                    if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture,
+                                      out int cores) || cores <= 0)
+                    {
+                        error = "--cores needs a positive number of processors, got '" + value + "'";
+                        return false;
+                    }
+                    settings.Cores = cores;
+                    return true;
                 case "--autoaim":
                     if (!Options.TryParseAutoAim(value, out string autoAim, out string why))
                     {

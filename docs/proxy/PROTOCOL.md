@@ -184,6 +184,29 @@ Details worth keeping:
   `> 1_000_000 → reverseBytes` heuristic. It happened to read correctly, but re-encoding to LE
   would desync every response. `networking.Relay` uses big-endian on both sides.
 
+### One frame must leave as one write
+
+A frame is written in a single call, `[4-byte length][payload]` together, and both sockets run
+with `TCP_NODELAY`. This is not an optimisation — getting it wrong is a live failure that is
+nearly invisible:
+
+* The client writes a frame with one `send`, so the server sees one segment and its reader (which
+  takes one `read()` per frame) stays aligned.
+* Writing the length and the payload as two calls puts them in two segments. The game server then
+  reads the 4-byte length as a **zero-length packet**, and the following payload as the *next*
+  frame's header — `37 00 41 …` is a length of ~920 million, so it waits for that payload forever.
+* The socket stays open and the server keeps sending `GmPing`, so the relay log shows a flawless
+  `Hello` and then a healthy, idle session: the client sits on the loading screen and is dropped
+  after ~20 s, and nothing anywhere reports an error.
+* The queue is immune, because its reader loops, so the lobby handshake succeeds and only the game
+  stalls — which reads as "the server rejected the client", not as a framing bug.
+
+Measured with `proxy/tools/tests/test_frame_chunking.py`, which asserts one upstream `read()` per
+frame (135 and 608 bytes), and `work/segprobe.py` during the diagnosis, which showed two reads
+(4 bytes, then 131) before the fix. This is the reason the proxy "worked on one machine and not
+another": it is a TCP segmentation race, so the same code can coalesce two writes into one segment
+on one host and split them on the next.
+
 ## 5. Interception designs (no binary modification)
 
 ### Current: claim the server address on the loopback interface

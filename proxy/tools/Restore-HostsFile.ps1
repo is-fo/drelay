@@ -1,8 +1,8 @@
 # ============================================================================
 #  Restore-HostsFile.ps1
 # ============================================================================
-# Puts the hosts file back from the backup drelay.ps1 made
-# (<hosts>.drelay-backup), minus the drelay lines.
+# Puts the hosts file back from the backup drelay made
+# (<hosts>.drelay-backup), minus the drelay lines and the marked capture block.
 #
 # WHY THIS EXISTS
 #   A run of the old launcher script left the hosts file TRUNCATED TO 0 BYTES.
@@ -10,8 +10,8 @@
 #   writing - which zeroes it - and only then failed, so 966 lines of configuration that
 #   have nothing to do with this project were lost: a large Adobe block list, Docker
 #   Desktop's host.docker.internal entries, and Tailscale's MagicDNS section.
-#   The claim design means drelay needs no hosts entry at all, so this restores everything
-#   except the drelay lines. No current script writes the hosts file at all: drelay does not need a hosts entry.
+#   The address claims need no hosts entry at all, but a name-addressed route is captured
+#   through one (tools\Set-HostsEntry.ps1), so this restores everything except that block.
 #
 # BYTE ACCURACY
 #   The file is read and written as ISO-8859-1, which maps every byte to exactly one
@@ -25,10 +25,19 @@
 #   keeps its ACL - so a failure can never truncate the file again. The result is then read
 #   back and compared line by line before anything is called done.
 #
+# WHY THE REPLACE IS FUSSIER THAN IT LOOKS
+#   File.Replace takes an optional backup path as its third argument, and passing $null for
+#   it does not work from PowerShell: a bare $null binds to "" for the [string] parameter,
+#   and an empty path is rejected with "the path is not of a legal form". That message reads
+#   like a bad target path but is not one, so the restore refused to run on a perfectly
+#   writable hosts file while Set-HostsEntry.ps1 - which passes [NullString]::Value - kept
+#   working. See the comment at the replace below.
+#
 # Usage (elevated for the write; -WhatIfOnly runs unelevated):
 #   .\tools\Restore-HostsFile.ps1 -WhatIfOnly          # show the diff, touch nothing
 #   .\tools\Restore-HostsFile.ps1                      # restore from <hosts>.drelay-backup
 #   .\tools\Restore-HostsFile.ps1 -From D:\hosts.bak   # restore from another backup
+#   .\tools\Restore-HostsFile.ps1 -HostsPath C:\temp\hosts -From D:\hosts.bak   # test, no elevation
 #
 # Exit codes: 0 = restored and verified, 1 = restore failed, 2 = usage/configuration problem.
 # ============================================================================
@@ -36,7 +45,8 @@
 [CmdletBinding()]
 param(
     [string]$From,
-    [switch]$WhatIfOnly
+    [switch]$WhatIfOnly,
+    [string]$HostsPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -50,7 +60,8 @@ function Write-Note { param([string]$Text) Write-Host $Text -ForegroundColor Dar
 # ISO-8859-1: one character per byte in both directions, so nothing is transcoded.
 $enc = [System.Text.Encoding]::GetEncoding(28591)
 
-$hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$defaultHostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$hostsPath = if ($HostsPath) { $HostsPath } else { $defaultHostsPath }
 if (-not $From) { $From = "$hostsPath.drelay-backup" }
 
 Write-Step "hosts file : $hostsPath"
@@ -91,7 +102,16 @@ try {
 # --- what the restored file will contain ------------------------------------------------
 $kept = New-Object System.Collections.ArrayList
 $dropped = New-Object System.Collections.ArrayList
+# The whole marked block goes, including its explanatory comment lines. Matching only on "drelay"
+# and "queue.playdarzas.com" left the block's third comment line behind as an orphan (it mentions
+# neither), which is exactly the kind of debris that makes the next diagnosis harder.
+$blockStart = '# >>> drelay (hosts capture) >>>'
+$blockEnd   = '# <<< drelay <<<'
+$inBlock = $false
 foreach ($line in $backupLines) {
+    if ($line -eq $blockStart) { $inBlock = $true; [void]$dropped.Add($line); continue }
+    if ($line -eq $blockEnd)   { $inBlock = $false; [void]$dropped.Add($line); continue }
+    if ($inBlock) { [void]$dropped.Add($line); continue }
     if ($line -match 'queue\.playdarzas\.com' -or $line -match 'drelay') {
         [void]$dropped.Add($line)
         continue
@@ -133,7 +153,8 @@ if ($WhatIfOnly) {
 
 # --- elevation -------------------------------------------------------------------------
 $identity = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
-if (-not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+$isDefaultPath = ($hostsPath -eq $defaultHostsPath)
+if ($isDefaultPath -and -not $identity.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Bad 'Run this from an elevated prompt: writing the hosts file needs it.'
     exit 2
 }
@@ -153,15 +174,44 @@ try {
     exit 1
 }
 
+# File.Replace's third argument is the optional backup file, and the obvious way to skip it - passing
+# $null - does NOT work from PowerShell: a bare $null binds to "" for the [string] parameter, and
+# File.Replace rejects an empty backup path with "the path is not of a legal form" (Swedish:
+# "SÃ¶kvÃ¤gen har inte ett giltigt format"). That message reads exactly like a bad TARGET path and is
+# not one, which is why this failed on a machine where the hosts file was perfectly writable while
+# Set-HostsEntry.ps1 - which already passes [NullString]::Value - kept working.
+# [NullString]::Value is the real null. If a build still refuses it, the retry uses a real backup file
+# beside the target: the swap keeps the target's ACL either way, and the pre-restore content survives
+# until the read-back below has verified the result.
+$backupOfPrevious = Join-Path $dir ('.drelay-hosts-{0}.bak' -f [guid]::NewGuid().ToString('N').Substring(0, 8))
+$replaced = $false
+$firstError = $null
 try {
-    if (Test-Path -LiteralPath $hostsPath) {
-        [System.IO.File]::Replace($tmp, $hostsPath, $null)
-    } else {
+    if (-not (Test-Path -LiteralPath $hostsPath)) {
         [System.IO.File]::Move($tmp, $hostsPath)
+        $replaced = $true
+    } else {
+        try {
+            [System.IO.File]::Replace($tmp, $hostsPath, [System.Management.Automation.Language.NullString]::Value)
+            $replaced = $true
+        } catch {
+            $firstError = $_.Exception.Message
+            try {
+                [System.IO.File]::Replace($tmp, $hostsPath, $backupOfPrevious)
+                $replaced = $true
+            } catch {
+                $firstError = "$firstError | with a backup path: $($_.Exception.Message)"
+            }
+        }
     }
 } catch {
+    $firstError = $_.Exception.Message
+}
+
+if (-not $replaced) {
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
-    Write-Bad "could not replace the hosts file: $($_.Exception.Message)"
+    Remove-Item -LiteralPath $backupOfPrevious -Force -ErrorAction SilentlyContinue
+    Write-Bad "could not replace the hosts file: $firstError"
     Write-Bad 'The hosts file itself was NOT modified - only the temp file existed.'
     Write-Warn2 'If another process holds the file open, close it or reboot, then re-run this script.'
     Write-Warn2 'Tailscale keeps its MagicDNS section in this file and is the usual holder:'
@@ -193,8 +243,13 @@ if ($problems.Count -gt 0) {
     Write-Bad 'the restored file did not verify:'
     $problems | ForEach-Object { Write-Bad "  - $_" }
     Write-Note "backup is still here: $From"
+    if (Test-Path -LiteralPath $backupOfPrevious) {
+        Write-Note "the content that was there before this restore is still here: $backupOfPrevious"
+    }
     exit 1
 }
+
+Remove-Item -LiteralPath $backupOfPrevious -Force -ErrorAction SilentlyContinue
 
 & ipconfig /flushdns | Out-Null
 

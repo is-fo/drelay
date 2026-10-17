@@ -24,10 +24,10 @@
 #   .\drelay.ps1 -Rebuild            clean, then build
 #   .\drelay.ps1 -Maven              build with Maven instead of javac
 #   .\drelay.ps1 -NoBuild            fail instead of building when the jar is missing
-#   .\drelay.ps1 -Stop               stop the relay and give the claimed addresses back
+#   .\drelay.ps1 -Stop               stop the relay and give the claimed addresses and hosts block back
 #   .\drelay.ps1 -Status             what is running and what is claimed; change nothing
 #   .\drelay.ps1 -Claim              (re)claim the addresses without starting a relay
-#   .\drelay.ps1 -Release            give the claimed addresses back, leave the relay alone
+#   .\drelay.ps1 -Release            give the claimed addresses and hosts block back, leave the relay alone
 #   .\drelay.ps1 -CheckUpdate        is there a newer release?
 #   .\drelay.ps1 -Update             install the newest release and restart
 #   .\drelay.ps1 -JarPath            print the full path of the jar it would run

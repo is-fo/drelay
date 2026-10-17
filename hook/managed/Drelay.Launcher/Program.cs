@@ -639,6 +639,12 @@ namespace Drelay.Launcher
                        that window ends, so an endurance run is
                        `--live-seconds 3600`. The frame read STAYS OPEN when the
                        window closes -- it is the sensor the dodge runs on.
+  --cores N            tell the game's runtime it has N processors
+                       (DOTNET_PROCESSOR_COUNT). The game's startup data load runs
+                       a Parallel.For, and the CLR's thread-suspension race gets
+                       worse the more threads it has; a machine where the hook dies
+                       during loading can cap this without changing the game. Not set
+                       by default, so the runtime's own count wins.
   --pause-after-run    stop reading the world when the evidence window closes,
                        which is what the hook used to do by default
                        (DRELAY_KEEP_READING=0).

@@ -750,6 +750,15 @@ namespace Drelay.Bootstrap
             bool fullTrace = Environment.GetEnvironmentVariable(EnvFullTrace) == "1";
 
             AppendLog("INFO", "bootstrap: environment read, opening the shared block");
+            // RECORDED BECAUSE IT IS THE ONE RUNTIME FACT A CRASH REPORT CANNOT RECOVER.
+            //
+            // The `TS_Hijacked` failure is a thread-suspension race and the game's startup
+            // `Parallel.For` is its stage, so "how many processors did this process think it
+            // had" decides how many threads are in the race. `--cores` is the lever; this line
+            // is how a run proves the lever arrived, because the launcher's environment filter
+            // would otherwise make a silently-dropped variable look identical to one that worked.
+            AppendLog("INFO", Fmt("bootstrap: processor count {0}, runtime {1}",
+                                  Environment.ProcessorCount, Environment.Version));
             FlushLog();
             OpenSharedBlock();
             AppendLog("INFO", Fmt(

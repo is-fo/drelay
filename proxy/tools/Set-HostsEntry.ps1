@@ -73,9 +73,22 @@ $BlockStart = '# >>> drelay (hosts capture) >>>'
 $BlockEnd   = '# <<< drelay <<<'
 
 # --- which names the route table needs ---------------------------------------------------
+# -Status AND -RELEASE MUST NOT NEED A ROUTE TABLE. The block is self-describing: removing it is a
+# pure hosts-file edit, and it is the repair you reach for when a run leaked a capture. Making it
+# depend on the config meant that running -Release from a directory with no relay-routes.json (for
+# example src\proxy after the launcher had already moved on) exited 2 with "route table not found"
+# and left the block in place - i.e. the game kept resolving the queue to a dead 127.0.0.1.
 $names = New-Object System.Collections.ArrayList
+$table = $null
 if (Test-Path -LiteralPath $Config) {
-    $table = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
+    try {
+        $table = Get-Content -LiteralPath $Config -Raw | ConvertFrom-Json
+    } catch {
+        Write-Bad "cannot parse $($Config): $($_.Exception.Message)"
+        exit 2
+    }
+}
+if ($table) {
     foreach ($route in $table.routes) {
         $refresh = [string]$route.refresh
         # A DNS name is resolvable by the client and therefore redirectable.
@@ -84,19 +97,23 @@ if (Test-Path -LiteralPath $Config) {
             [void]$names.Add($refresh)
         }
     }
-} else {
+} elseif (-not ($Release -or $Status)) {
     Write-Bad "route table not found: $Config"
     exit 2
+} else {
+    Write-Warn2 "route table not found: $Config - working from the hosts block markers alone"
 }
 
 Write-Step "hosts file : $HostsPath"
 Write-Step "route table: $Config"
-if ($names.Count -eq 0) {
-    Write-Warn2 'no name-addressed route in this table, so there is nothing to capture this way.'
-    Write-Note '  routes addressed by a bare IP (refresh: "serverlist") cannot be captured by hosts.'
-    exit 0
+if (-not $Release -and -not $Status) {
+    if ($names.Count -eq 0) {
+        Write-Warn2 'no name-addressed route in this table, so there is nothing to capture this way.'
+        Write-Note '  routes addressed by a bare IP (refresh: "serverlist") cannot be captured by hosts.'
+        exit 0
+    }
+    Write-Step ("names to capture: " + ($names -join ', '))
 }
-Write-Step ("names to capture: " + ($names -join ', '))
 
 $wanted = @($names | ForEach-Object { "$Address $_" })
 
@@ -137,6 +154,18 @@ if ($Status) {
         $stale | ForEach-Object { Write-Note "  $_" }
     }
     exit 0
+}
+
+# -Release IS CALLED AT THE START OF EVERY RUN, so when there is nothing to remove it must do
+# nothing at all - not rewrite the file, not repackage it, not print a line that reads as if it
+# changed something.  A no-op release that still rewrote the hosts file would touch its timestamp
+# on every launch and make "did the last run leak a capture?" impossible to answer from the file.
+if ($Release -and -not ($lines -contains $BlockStart) -and -not ($lines -contains $BlockEnd)) {
+    $staleBare = @($lines | Where-Object { $_ -match 'queue\.playdarzas\.com' -and $_ -notmatch '^\s*#' })
+    if ($staleBare.Count -eq 0) {
+        Write-Ok 'released: nothing to remove - no drelay block and no stale drelay entry.'
+        exit 0
+    }
 }
 
 # --- what the file should contain --------------------------------------------------------

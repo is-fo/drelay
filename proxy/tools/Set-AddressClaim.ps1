@@ -91,6 +91,22 @@ function Test-IPv4Literal([string]$Value) {
            $parsed.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork
 }
 
+# Is the launcher's hosts capture actually in the file right now? Reported by -Status and by the
+# "this route is captured by name, not claimed" line: saying a route IS captured when the block is
+# absent is how "the proxy is running, why does the game not enter" gets misread - the name resolves
+# to the real server and the route bypasses the relay silently.
+function Get-HostsCaptureState {
+    $file = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+    if (-not (Test-Path -LiteralPath $file)) { return 'unknown' }
+    try {
+        $text = [System.IO.File]::ReadAllText($file, [System.Text.Encoding]::GetEncoding(28591))
+    } catch {
+        return 'unknown'
+    }
+    if ($text -match '(?m)^# >>> drelay \(hosts capture\) >>>') { return 'present' }
+    return 'absent'
+}
+
 function Wait-Preferred([string]$Ip, [int]$Seconds) {
     $deadline = (Get-Date).AddSeconds($Seconds)
     $state = 'absent'
@@ -126,6 +142,14 @@ function Add-Claim([string]$Ip, [string]$Alias, [int]$Index, [bool]$SessionOnly)
 }
 
 function Remove-Claim([string]$Ip, [string]$Alias, [int]$Index) {
+    # BOTH STORES, BECAUSE ONE IS NOT ENOUGH.  A default claim lives in ActiveStore *and*
+    # PersistentStore; Remove-NetIPAddress without -PolicyStore removes only the active copy, so
+    # the address comes back at the next reboot - the "I released it and it is still there"
+    # report this exists to end.  PersistentStore is removed first: the active copy is the one the
+    # stack is using, and deleting the durable one first means an interrupted release cannot leave
+    # the address surviving a restart.
+    Remove-NetIPAddress -IPAddress $Ip -InterfaceIndex $Index -PolicyStore PersistentStore -Confirm:$false -ErrorAction SilentlyContinue
+    Remove-NetIPAddress -IPAddress $Ip -InterfaceIndex $Index -PolicyStore ActiveStore -Confirm:$false -ErrorAction SilentlyContinue
     Remove-NetIPAddress -IPAddress $Ip -InterfaceIndex $Index -Confirm:$false -ErrorAction SilentlyContinue
     if (Get-Assigned $Ip) {
         & netsh interface ipv4 delete address "name=$Alias" "address=$Ip" 2>&1 | Out-Null
@@ -196,7 +220,12 @@ foreach ($r in @($doc.routes)) {
     # redirected; "serverlist" means the client dials a bare IP out of the game's server list.
     $refresh = [string]$r.refresh
     if ($refresh -and $refresh -ne 'serverlist' -and -not (Test-IPv4Literal $refresh)) {
-        Write-Note "route $($r.name): reached by name '$refresh' - captured by the hosts entry, not claimed"
+        if ((Get-HostsCaptureState) -eq 'present') {
+            Write-Note "route $($r.name): reached by name '$refresh' - captured by the hosts block, not claimed"
+        } else {
+            Write-Warn2 "route $($r.name): reached by name '$refresh' - NOT captured right now (no hosts block);"
+            Write-Warn2 '  the launcher writes that block on every start, and removes it on stop.'
+        }
         continue
     }
     $remote = [string]$r.remoteHost

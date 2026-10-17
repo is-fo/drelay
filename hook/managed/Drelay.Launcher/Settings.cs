@@ -45,6 +45,7 @@ namespace Drelay.Launcher
         public int? DiscoveryWindowMs;
         public int? ResolveDelayMs;
         public int? LiveSeconds;
+        public int? Cores;
         public double? DodgeDisc;
         public double? DodgeWindowSeconds;
         public double? EscapeTestSeconds;
@@ -76,7 +77,7 @@ namespace Drelay.Launcher
                 return GamePath == null && ExecutablePath == null && AssemblyPath == null
                     && HookDll == null && BootstrapDll == null && RunRoot == null
                     && TimeoutMs == null && CollectDelayMs == null && DiscoveryWindowMs == null
-                    && ResolveDelayMs == null && LiveSeconds == null && DodgeDisc == null
+                    && ResolveDelayMs == null && LiveSeconds == null && Cores == null && DodgeDisc == null
                     && DodgeWindowSeconds == null && EscapeTestSeconds == null
                     && Off == null && Act == null && FullTrace == null && Verbose == null
                     && NoWait == null && PauseAfterRun == null && DbgDump == null
@@ -123,6 +124,22 @@ namespace Drelay.Launcher
         public bool SetDiscoveryWindowMs;
         public bool SetResolveDelayMs;
         public bool SetLiveSeconds;
+
+        // HOW MANY PROCESSORS THE GAME'S RUNTIME IS TOLD IT HAS, OR 0 FOR "LET IT DECIDE".
+        //
+        // Passed to the child as `DOTNET_PROCESSOR_COUNT`, which .NET reads before `Main` and
+        // which changes `Environment.ProcessorCount` and the thread pool's worker count. It is
+        // the only lever found so far that changes how many threads the game's own startup
+        // `Parallel.For` (DataManager.ParseCachedXmls) runs at once, and that matters because
+        // the runtime's `TS_Hijacked` assertion is a thread-suspension race: fewer threads in
+        // cooperative mode while the GC asks them to stop is less of a race, on the same game
+        // and the same runtime.
+        //
+        // 0 means "not set" rather than "one core", and the launcher only writes the variable
+        // when it was asked for - so a machine whose runtime gets this right keeps its own
+        // default.
+        public int Cores;
+        public bool SetCores;
 
         // Whether the child is asked to write a crash dump of its own.
         //
@@ -437,6 +454,7 @@ namespace Drelay.Launcher
             if (from.DiscoveryWindowMs.HasValue) { DiscoveryWindowMs = from.DiscoveryWindowMs.Value; SetDiscoveryWindowMs = true; }
             if (from.ResolveDelayMs.HasValue) { ResolveDelayMs = from.ResolveDelayMs.Value; SetResolveDelayMs = true; }
             if (from.LiveSeconds.HasValue) { LiveSeconds = from.LiveSeconds.Value; SetLiveSeconds = true; }
+            if (from.Cores.HasValue) { Cores = from.Cores.Value; SetCores = true; }
 
             if (from.DodgeDisc.HasValue) { DodgeDisc = from.DodgeDisc.Value; }
             if (from.DodgeWindowSeconds.HasValue) { DodgeWindowSeconds = from.DodgeWindowSeconds.Value; }

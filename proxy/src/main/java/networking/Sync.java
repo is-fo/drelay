@@ -28,7 +28,10 @@ import java.util.TreeSet;
  * file is compared against the recorded content hash:
  *
  * <ul>
- *   <li>equal - nobody edited it, so a newer template is written and the manifest updated;</li>
+ *   <li>identical to the bundled copy - it is not an edit, so it is recorded as ours and may be
+ *       upgraded later, whatever an older manifest said about it;</li>
+ *   <li>equal to the hash we recorded - nobody edited it, so a newer template is written and the
+ *       manifest updated;</li>
  *   <li>different - the user has an edit, so the file is left exactly as it is and the skipped
  *       upgrade is reported in the run's output;</li>
  *   <li>absent - the file was deliberately deleted, so the template is written again.</li>
@@ -96,6 +99,18 @@ final class Sync {
                 continue;
             }
 
+            // A FILE THAT IS BYTE-IDENTICAL TO THE BUNDLED COPY IS NOT A USER EDIT. Adopt it,
+            // whatever an older manifest says. Without this rule a file an older jar did not ship -
+            // or shipped in an older revision - is discovered "already here" on the next run and
+            // frozen as the user's, so a later fix to it is never delivered. That is exactly how a
+            // stale Set-HostsEntry.ps1 (and a stale Set-AddressClaim.ps1 before it) survived every
+            // upgrade on a machine that had once run an older jar. It cannot destroy an edit: an
+            // edited file does not equal the template, so it takes the branches below instead.
+            if (templateHash.equals(currentHash)) {
+                next.put(resource, new Entry(resource, relative, templateHash, templateHash, OURS));
+                continue;
+            }
+
             if (before == null || USER.equals(before.owner())) {
                 // The file has never been installed by us, or was handed to the user by an earlier
                 // version of this launcher: it is theirs, and it stays exactly as it is. The hash we
@@ -107,15 +122,12 @@ final class Sync {
                 continue;
             }
 
-            // Ours, and untouched since we wrote it: it may be upgraded.
+            // Ours, and untouched since we wrote it: it may be upgraded. (The template differs from
+            // the installed content here, because the identical case returned above.)
             if (currentHash.equals(before.installedHash())) {
-                if (!templateHash.equals(before.templateHash())) {
-                    notes.add("updated " + relative);
-                }
+                notes.add("updated " + relative);
                 next.put(resource, new Entry(resource, relative, templateHash, templateHash, OURS));
-                if (!currentHash.equals(templateHash)) {
-                    write(target, template);
-                }
+                write(target, template);
                 continue;
             }
 

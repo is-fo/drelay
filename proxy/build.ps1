@@ -107,10 +107,38 @@ if ($testSources.Count -gt 0) {
 }
 
 # --- stage the resources, in the layout the jar must have ------------------------------
+# THE HELPERS UNDER tools\ AND THE PACKAGED COPIES MUST BE THE SAME BYTES.
+#
+# `tools\*.ps1` is the editable copy; `src\main\resources\tools\` is what the jar actually ships,
+# and a release runs *that*. They drifted once: Set-HostsEntry.ps1 existed only in tools\, so the
+# launcher in the jar found no hosts helper, silently skipped the name capture, and the queue
+# route stayed broken on every machine that installed the release. The check below is cheaper
+# than re-learning that from a release. It runs before staging, so a release cannot be built
+# from a tree where the two disagree.
+$toolSource = Join-Path $root 'tools'
+$resources = Join-Path $root 'src\main\resources'
+$toolPackaged = Join-Path $resources 'tools'
+# The three helpers the launcher actually runs, matching Resources.INSTALLED. The rest of tools\
+# (Bump-Version, Restore-DhcpAddressing, Test-AddressClaim) are developer/recovery scripts and are
+# deliberately not in the jar.
+foreach ($name in 'Restore-HostsFile.ps1', 'Set-AddressClaim.ps1', 'Set-HostsEntry.ps1') {
+    $source = Join-Path $toolSource $name
+    $packaged = Join-Path $toolPackaged $name
+    if (-not (Test-Path -LiteralPath $source) -or -not (Test-Path -LiteralPath $packaged)) {
+        Write-Bad "tools\$name and src\main\resources\tools\$name must both exist - the jar runs the packaged copy"
+        exit 1
+    }
+    $a = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
+    $b = (Get-FileHash -LiteralPath $packaged -Algorithm SHA256).Hash
+    if ($a -ne $b) {
+        Write-Bad "tools\$name and its packaged copy differ - copy one over the other before releasing"
+        exit 1
+    }
+}
+
 # Resource files are copied with .NET rather than Copy-Item so the bytes are exactly the bytes
 # in the source tree: a PowerShell copy can rewrite line endings and add a BOM, and both would
 # change the hash the launcher records in its install manifest.
-$resources = Join-Path $root 'src\main\resources'
 Get-ChildItem $resources -Recurse -File | ForEach-Object {
     $relative = $_.FullName.Substring($resources.Length).TrimStart('\')
     $destination = Join-Path $classes $relative
@@ -148,7 +176,7 @@ if (-not $SkipTests) {
         foreach ($main in 'networking.PrimitiveTests', 'networking.FrameTests',
                           'networking.ClientPacketsTests', 'networking.InjectionTests',
                           'networking.UpdateScanTests', 'networking.SettingsTests',
-                          'networking.UpdaterTests') {
+                          'networking.RoutesTests', 'networking.UpdaterTests') {
             & java -cp $testClasspath $main
             if ($LASTEXITCODE -ne 0) { Write-Bad "$main failed"; exit 1 }
         }

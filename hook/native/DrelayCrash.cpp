@@ -298,6 +298,16 @@ LONG CALLBACK VehHandler(EXCEPTION_POINTERS* pointers) {
         case EXCEPTION_BREAKPOINT:
         case EXCEPTION_SINGLE_STEP:
         case 0xE0434352u:            // a managed exception being thrown normally
+        // 0x80000033 IS THE RUNTIME'S OWN RETURN-ADDRESS HIJACK SIGNAL, AND IT IS THE ONE
+        // EXCEPTION THIS HANDLER MUST NOT TOUCH.  It is raised on a *suspended-for-GC*
+        // thread when the hijacked return executes; the runtime's own vectored handler
+        // then resumes it at a safe point. Recording it used to mean a stack walk and up to
+        // four file writes inside that window, on the very thread the GC is waiting for -
+        // which is exactly the kind of delay a thread-suspension race does not tolerate.
+        // The report was also misleading (TROUBLESHOOTING.md section 2: it is not the
+        // death), so the only thing that recording it ever bought was a wider window for
+        // the real `TS_Hijacked` assertion.  Hand it straight back.
+        case 0x80000033u:
             return EXCEPTION_CONTINUE_SEARCH;
         default:
             break;

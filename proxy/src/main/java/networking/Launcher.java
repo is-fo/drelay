@@ -17,6 +17,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * What runs when the released jar is started by double-click or by {@code java -jar drelay.jar}.
@@ -38,8 +39,10 @@ import java.util.concurrent.TimeUnit;
  *   <li><strong>Start the relay as a child process.</strong> It must be a child, not this JVM: the
  *       next auto-update replaces the jar this process runs from, and on Windows that only works
  *       once the process holding it has exited.</li>
- *   <li><strong>Release the claims on the way out.</strong> A claim that outlives the relay breaks
- *       the game until it is released.</li>
+ *   <li><strong>Release the captures on the way out.</strong> A claim or a hosts block that outlives
+ *       the relay breaks the game until it is released, so both are given back in a {@code finally}
+ *       <em>and</em> from a shutdown hook - Ctrl+C, a closed console and a logoff reach only the
+ *       hook, and that is the path that used to leave them behind.</li>
  * </ol>
  *
  * <p>Every step is skippable from the command line, which is what makes the launcher testable
@@ -72,6 +75,18 @@ public final class Launcher {
     private final boolean claim;
     private final boolean browser;
     private final String configName;
+
+    /**
+     * Whether this run's machine-wide side effects - the loopback claims and the hosts block - have
+     * already been given back.
+     *
+     * <p>One flag, shared by the normal exit path and the shutdown hook, so exactly one of them does
+     * the work. Both can run, and on Ctrl+C they usually race: the relay child dies, its {@code
+     * waitFor} returns, the main thread reaches its {@code finally}, and the JVM's shutdown sequence
+     * is running the hook at the same time. Releasing twice is not harmful, but a second release
+     * while the first is mid-write is, so the work is claimed once and the other caller does nothing.
+     */
+    private final AtomicBoolean released = new AtomicBoolean();
 
     /** Everything a run can be asked to do. */
     private enum Command {
@@ -128,7 +143,13 @@ public final class Launcher {
                 // than the generated copy, because releasing a claim must not depend on a run having
                 // happened: the template is there as soon as the jar is.
                 Sync.install(root);
-                yield releaseClaims(root.resolve("relay-routes.json")).exitCode();
+                Path template = root.resolve("relay-routes.json");
+                // The hosts block is part of the same capture and is the reason "released the
+                // addresses and the game still would not enter" happened: the claim was gone but the
+                // queue name still resolved to a local address with nothing behind it. Giving both
+                // back here is what makes this command the one-stop repair it is documented to be.
+                releaseHosts(template);
+                yield releaseClaims(template).exitCode();
             }
             case INSTALL -> {
                 // Extract and upgrade only: no address is resolved, so this works offline and is
@@ -151,13 +172,16 @@ public final class Launcher {
         if (needsElevation && elevate && !PowerShell.isElevated()) {
             return relaunchElevated(relayArguments);
         }
-        syncAndRefreshRoutes();
         // Clear a relay from an earlier run before starting a new one, whichever way this run
         // proceeds: a leftover holds the listen ports, and the second relay would fail to bind them -
         // presenting as a claim problem or a client problem rather than the process that caused it.
-        // This is deliberately before the branches below, because --no-claim needs the ports too.
         stopLeftoverRelays();
         if (!claim) {
+            // No claim means no capture, but a hosts block from an earlier run still points the
+            // client at this machine. Clearing it is the difference between "started with
+            // --no-claim" and "started with --no-claim and the game cannot log in".
+            releaseHosts(configPath());
+            syncAndRefreshRoutes();
             IO.println("--no-claim: nothing is claimed, so the client reaches the real server directly.");
             return runRelay(relayArguments);
         }
@@ -168,13 +192,23 @@ public final class Launcher {
      * The elevated half: update, refresh, claim, run, release.
      *
      * <p>Ordering matters here and is not arbitrary. The update comes second because replacing the jar
-     * means this process exits, and exiting releases the claims - so an update must happen while
-     * nothing is claimed. The claims are released in a {@code finally} because an unclaimed address
-     * leaves the game unable to reach its own server, which is much worse than a log line.
+     * means this process exits, and exiting releases the captures - so an update must happen while
+     * nothing is claimed. The captures are released in a {@code finally} and by a shutdown hook
+     * because an unclaimed address left behind leaves the game unable to reach its own server, which
+     * is much worse than a log line.
      */
     private int startWithClaims(List<String> relayArguments) throws Exception {
         // A leftover relay was already stopped by runAsUser, before it chose this branch, so the
         // listen ports are free by the time a claim is worth making.
+        //
+        // THE HOSTS BLOCK GOES FIRST, BEFORE THE ADDRESSES ARE REFRESHED, AND THAT ORDER IS THE
+        // WHOLE POINT. The block points a name-addressed route at 127.0.0.1; refreshing before it
+        // is removed resolves that name to loopback and writes the relay's own listen address into
+        // the route table, so the relay refuses to start. A block left by a killed run used to
+        // make the next start fail exactly once - and read as a network problem rather than as a
+        // leftover. Releasing it here also means a run always begins from a clean capture, which
+        // is what makes the launcher safe to run after any previous crash.
+        releaseHosts(configPath());
         syncAndRefreshRoutes();
 
         if (update) {
@@ -198,31 +232,70 @@ public final class Launcher {
         // the claim below, so no route is ever both claimed and hosts-captured.
         captureByHosts(configPath());
 
-        PowerShell.Result claimed = claimAddresses(configPath());
-        if (claimed.exitCode() == 3) {
-            // The script refused: a route address belongs to a real interface. Claiming it would take
-            // the machine off the network, so this stops rather than starting a proxy that cannot work.
-            return 3;
-        }
-        if (!claimed.ok()) {
-            IO.println();
-            IO.println("The addresses could not all be claimed (exit " + claimed.exitCode() + ").");
-            IO.println("The relay is starting anyway: whichever route is not captured will bypass it.");
-            IO.println("Rerun with --no-claim to skip this step, or see docs/PROTOCOL.md for the claim.");
-        }
-
+        // THE DISPOSAL IS ARMED BEFORE THE CLAIM IS MADE, NOT AROUND THE RUN ALONE.
+        //
+        // A claim and a hosts block are machine-wide side effects that outlive this process when it
+        // dies badly, and an unclaimed address left behind breaks the game until someone works out
+        // what happened. The `finally` below covers a normal exit and an exception; it does NOT
+        // reliably cover Ctrl+C, a closed console window, a logoff or a crash, because on those paths
+        // the JVM starts its shutdown sequence while this thread is still blocked in waitFor and the
+        // main thread may never reach its own finally. A shutdown hook does run on those paths, so
+        // both callers share one idempotent release.
+        Thread disposal = new Thread(() -> releaseCapture(configPath()), "drelay-release");
+        Runtime.getRuntime().addShutdownHook(disposal);
         try {
+            PowerShell.Result claimed = claimAddresses(configPath());
+            if (claimed.exitCode() == 3) {
+                // The script refused: a route address belongs to a real interface. Claiming it would take
+                // the machine off the network, so this stops rather than starting a proxy that cannot work.
+                // The hosts block, however, has already been written above - so it is given back here
+                // rather than left pointing the client at a relay that will never start.
+                return 3;
+            }
+            if (!claimed.ok()) {
+                IO.println();
+                IO.println("The addresses could not all be claimed (exit " + claimed.exitCode() + ").");
+                IO.println("The relay is starting anyway: whichever route is not captured will bypass it.");
+                IO.println("Rerun with --no-claim to skip this step, or see docs/PROTOCOL.md for the claim.");
+            }
             return runRelay(relayArguments);
         } finally {
-            IO.println();
-            IO.println("Releasing the claimed addresses...");
-            releaseHosts(configPath());
-            PowerShell.Result released = releaseClaims(configPath());
-            if (!released.ok()) {
+            releaseCapture(configPath());
+            try {
+                Runtime.getRuntime().removeShutdownHook(disposal);
+            } catch (IllegalStateException ignored) {
+                // Already shutting down: the hook itself is (or has been) the disposal.
+            }
+            IO.println("Stopped.");
+        }
+    }
+
+    /**
+     * Gives back everything this run put on the machine: the hosts block and the loopback claims.
+     *
+     * <p>Idempotent and safe from any thread, because it is the {@code finally} of the run and the
+     * JVM's shutdown hook at once. It releases the hosts block first: an address claim with no relay
+     * behind it already breaks the client, while a stale name capture is the one that makes the game
+     * fail to enter, which is the harder failure to recognise.
+     */
+    private void releaseCapture(Path config) {
+        if (!released.compareAndSet(false, true)) {
+            return;
+        }
+        IO.println();
+        IO.println("Releasing the claimed addresses...");
+        releaseHosts(config);
+        // Never let a failure here escape: this runs from a shutdown hook, where an exception has
+        // nowhere to go and would only hide that the release did not happen.
+        try {
+            PowerShell.Result releasedClaims = releaseClaims(config);
+            if (!releasedClaims.ok()) {
                 IO.println("  not every claim was released. Finish with:");
                 IO.println("    java -jar \"" + jarOrSelf() + "\" --release-claims");
             }
-            IO.println("Stopped.");
+        } catch (Exception e) {
+            IO.println("  the claim script could not be run: " + e.getMessage());
+            IO.println("    finish with: java -jar \"" + jarOrSelf() + "\" --release-claims");
         }
     }
 
@@ -321,7 +394,9 @@ public final class Launcher {
         }
 
         // Ctrl+C at the console reaches the whole process group, so the relay sees it directly; this
-        // hook covers a launcher that is stopped some other way, so the claims are still released.
+        // hook covers a launcher that is stopped some other way, so the child does not outlive it.
+        // The machine-wide side effects (claims and the hosts block) have their own hook, registered
+        // by startWithClaims around the capture - this one only owns the child process.
         var stopper = new Thread(() -> stop(relay), "relay-stop");
         Runtime.getRuntime().addShutdownHook(stopper);
         int exit = relay.waitFor();
@@ -415,12 +490,21 @@ public final class Launcher {
         return stopped > 0;
     }
 
-    /** Claims every route address, letting the claim script print its own progress. */
+    /**
+     * Claims every route address, letting the claim script print its own progress.
+     *
+     * <p>{@code -SessionOnly} on purpose. A claim is a process-scoped capture: the launcher
+     * releases it on the way out, so surviving this process is enough. Persisting it across a
+     * reboot is how a machine ends up with the game server's address on loopback and no relay to
+     * answer it - the game then cannot reach its own server and nothing in the UI says why. A
+     * reboot is the natural "start from a clean slate", and this keeps it that way.
+     */
     private PowerShell.Result claimAddresses(Path config) throws IOException {
         Path script = root.resolve("tools").resolve("Set-AddressClaim.ps1");
         IO.println("Claiming the game server addresses on the loopback interface...");
         IO.println("  this is what puts the relay in the client's path: no driver, no packet rewriting");
-        return PowerShell.run(script, List.of("-Config", config.toAbsolutePath().toString()), root, true);
+        return PowerShell.run(script,
+                List.of("-Config", config.toAbsolutePath().toString(), "-SessionOnly"), root, true);
     }
 
     private PowerShell.Result releaseClaims(Path config) throws IOException {
@@ -590,6 +674,9 @@ public final class Launcher {
                 : "Stopped " + stopped + " relay process(es).");
         IO.println();
         IO.println("Releasing the claimed addresses...");
+        // The hosts capture is part of the same net: a stop that leaves the client resolving the
+        // queue to 127.0.0.1 with no relay behind it has not stopped anything.
+        releaseHosts(root.resolve("relay-routes.json"));
         PowerShell.Result released = releaseClaims(root.resolve("relay-routes.json"));
         if (!released.ok()) {
             IO.println("Some claims could not be released (exit " + released.exitCode() + ").");
@@ -845,9 +932,10 @@ public final class Launcher {
                 Commands:
                   --check-update      report whether a newer release exists; change nothing
                   --update            install the newest release and restart
-                  --stop              stop a running relay and give the claimed addresses back
+                  --stop              stop a running relay and give the claimed addresses and the
+                                      hosts block back
                   --relay             run the relay alone in this JVM (no update, no claim)
-                  --release-claims    give every claimed address back
+                  --release-claims    give every claimed address and the hosts block back
                   --install           extract or upgrade the bundled files, then stop
                   --version           print the version
                   --help              this text

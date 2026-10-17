@@ -70,6 +70,18 @@ namespace Drelay.Launcher
             variables.Add(new KeyValuePair<string, string>(
                 "DOTNET_STARTUP_HOOKS", bootstrap));
 
+            // `--cores` is the second deliberate exception to the DOTNET_* filter, and it is
+            // deliberate for the same reason as the dump variables below: the runtime reads it
+            // before `Main`, it cannot be changed from inside the process, and the operator's
+            // shell is exactly where a stale value would come from. Writing it only when asked
+            // keeps the runtime's own default in charge of every other run.
+            if (options.SetCores && options.Cores > 0)
+            {
+                variables.Add(new KeyValuePair<string, string>(
+                    "DOTNET_PROCESSOR_COUNT",
+                    options.Cores.ToString(CultureInfo.InvariantCulture)));
+            }
+
             // THE ONE CASE WHERE A `DOTNET_*` VARIABLE IS ADDED BACK DELIBERATELY.
             //
             // The filter above exists so that a stray `DOTNET_TieredCompilation` in the

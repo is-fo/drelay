@@ -931,6 +931,25 @@ public final class Relay {
     }
 
     /**
+     * One frame, one write: {@code [4-byte length][payload]} must leave as a single segment.
+     *
+     * <p>Nagle would otherwise delay the second half, and a server whose reader assumes one frame
+     * per read desynchronises on the split (see the note in {@link #pump}). TCP_NODELAY is set on
+     * both sockets as well, so the frame that is written goes out immediately instead of waiting
+     * for an ACK.
+     */
+    private static void writeFrame(GameWriter out, byte[] prefix, byte[] payload) throws IOException {
+        if (payload.length == 0) {
+            out.write(prefix);
+            return;
+        }
+        byte[] frame = new byte[prefix.length + payload.length];
+        System.arraycopy(prefix, 0, frame, 0, prefix.length);
+        System.arraycopy(payload, 0, frame, prefix.length, payload.length);
+        out.write(frame);
+    }
+
+    /**
      * Opens the connection to the real server, bound to the configured upstream source.
      *
      * <p>Binding {@link Config#upstreamHost} is what makes the dial leave the host when the
@@ -944,6 +963,7 @@ public final class Relay {
 
         if (source == null && cfg.upstreamBindPort == 0) {
             var socket = new Socket();
+            socket.setTcpNoDelay(true);
             socket.connect(new InetSocketAddress(host, port), 10_000);
             return socket;
         }
@@ -958,6 +978,9 @@ public final class Relay {
     private static Socket dialBound(InetAddress source, int localPort, String host, int port) throws IOException {
         var socket = new Socket();
         try {
+            // No Nagle: every frame is written whole (see writeFrame) and a session's first frame is
+            // the handshake, which must not wait behind an ACK.
+            socket.setTcpNoDelay(true);
             socket.bind(new InetSocketAddress(source, localPort));
             socket.connect(new InetSocketAddress(host, port), 10_000);
             return socket;
@@ -974,6 +997,13 @@ public final class Relay {
             IO.println("[%s] listening on %s:%d".formatted(route.name(), cfg.listenHost, route.listenPort()));
             while (true) {
                 Socket client = serverSocket.accept();
+                try {
+                    // The client's frames are relayed one per write; keeping Nagle off on this side
+                    // too means a small frame (an injected Escape, a Pong) is not delayed either.
+                    client.setTcpNoDelay(true);
+                } catch (IOException ignored) {
+                    // A socket that cannot be tuned still relays; the frame is one write regardless.
+                }
                 Thread.startVirtualThread(() -> handleSession(client, route, cfg, registry, nexus, strip));
             }
         } catch (IOException e) {
@@ -1013,7 +1043,8 @@ public final class Relay {
         String clientAddr = String.valueOf(client.getRemoteSocketAddress());
         Session session = null;
         try (client; var server = dialUpstream(host, port, cfg, tag)) {
-            IO.println("[%s] %s -> %s:%d".formatted(tag, clientAddr, host, port));
+            IO.println("[%s] %s -> %s:%d (upstream %s)".formatted(
+                    tag, clientAddr, host, port, server.getLocalSocketAddress()));
 
             var clientIn = new GameReader(client.getInputStream());
             var clientOut = new GameWriter(client.getOutputStream());
@@ -1125,12 +1156,23 @@ public final class Relay {
                     payloadLength = rewritten.length;
                 }
 
+                // ONE WRITE PER FRAME. A frame is [4-byte length][payload] and the client writes it
+                // with a single send, so the server sees one TCP segment. Writing the length and the
+                // payload as two calls put them in two segments, and the game server's admission
+                // reader treats the FIRST READ as a whole frame: it took the 4-byte length as a
+                // zero-length packet and then read the 131-byte `Hello` as the next frame's header,
+                // which is ~9.2e8 bytes long. It then waited for that payload forever while its
+                // keepalive `Ping` kept the socket looking healthy - the client sat on the loading
+                // screen for 21 s and was dropped, and the relay's log showed a perfect handshake
+                // and then nothing. The lobby (little-endian, 8-byte frames) never desynced because
+                // its reader loops. Measured with work/segprobe.py: two reads upstream, 4 then N.
+                byte[] prefix = framing.encodeLength(payloadLength);
+
                 // The same monitor the injection path takes. Both directions of a session therefore
                 // serialize on their own writer, which is what keeps a length prefix and its payload
                 // contiguous and an injected message from landing inside a forwarded one.
                 synchronized (out) {
-                    out.write(framing.encodeLength(payloadLength));
-                    out.write(payload);
+                    writeFrame(out, prefix, payload);
                     out.flush();
                 }
 

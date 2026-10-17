@@ -133,6 +133,23 @@ final class Routes {
             if (resolved == null || resolved.isBlank() || resolved.equals(route.remoteHost)) {
                 continue;
             }
+            // A RESOLVED LOOPBACK IS THIS LAUNCHER'S OWN CAPTURE, NOT THE SERVER.
+            //
+            // The hosts block points a name-addressed route at 127.0.0.1 so the client reaches
+            // the relay. If a run left that block behind - a kill, a power cut, a console closed
+            // at the wrong moment - the next start resolves the name to 127.0.0.1 and, without
+            // this guard, writes it into the route table as the destination. The relay then
+            // refuses to start ("a route points at the address it listens on"), which is safe
+            // but presents as "the proxy cannot get into the game" and is fixed only by
+            // removing the block by hand. Keeping the pinned address makes a stale capture a
+            // note in the console instead of a failed start; the launcher also releases the
+            // block before this refresh, and this is the second line of defence.
+            if (isLoopbackLiteral(resolved)) {
+                failures.add(route.refresh + " resolved to loopback (" + resolved
+                        + "), which is the hosts capture rather than the server; keeping "
+                        + route.remoteHost);
+                continue;
+            }
             changes.add("%s %s -> %s".formatted(route.name, route.remoteHost, resolved));
             route.remoteHost = resolved;
         }
@@ -140,6 +157,21 @@ final class Routes {
         Files.createDirectories(target.getParent() == null ? Path.of(".") : target.getParent());
         Files.writeString(target, render(document), StandardCharsets.UTF_8);
         return new Refresh(changes, failures);
+    }
+
+    /**
+     * Is this a literal address that can only mean "this machine"?
+     *
+     * <p>Used to tell a real DNS answer from the launcher's own hosts capture. Only literal
+     * forms are matched: a host name that resolves to loopback has already been resolved by
+     * the caller, so the address it produced is what arrives here.
+     */
+    private static boolean isLoopbackLiteral(String host) {
+        return "127.0.0.1".equals(host)
+                || "0.0.0.0".equals(host)
+                || "::1".equals(host)
+                || "0:0:0:0:0:0:0:1".equals(host)
+                || host.startsWith("127.");
     }
 
     /**

@@ -30,7 +30,9 @@ final class Resources {
     static final List<String> INSTALLED = List.of(
             "relay-routes.json",
             "tools/Set-AddressClaim.ps1",
-            "tools/Restore-HostsFile.ps1");
+            "tools/Set-HostsEntry.ps1",
+            "tools/Restore-HostsFile.ps1",
+            "tools/Test-ClaimDataPath.ps1");
 
     static {
         var properties = new Properties();
