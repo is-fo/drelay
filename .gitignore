@@ -41,6 +41,11 @@ bin/
 ### Compiled output common to both components ###
 *.class
 
+# .NET intermediate output. `bin/` is above; `obj/` was left to each component's own file, and the
+# one project that lives outside both (proxy/redirector) then committed its `obj/` tree on the
+# first `git add -A` this repository ever saw.
+obj/
+
 # Linker and compiler program-database droppings, written beside whatever was built.
 vc140.pdb
 vc142.pdb

@@ -103,6 +103,13 @@ command-line-only and not a configuration key, because a double-click should not
 evidence. [`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §6.2 is the checklist of what to walk
 and note while it records.
 
+**The farmer itself is not in this repository.** The auto-farmer's decision code is a private module
+(`PLAN-AUTOFARM.md` §13): the tree carries a `Farmer` stub with the same surface and no behaviour, and
+a build made from a checkout cannot farm. To use it, put the module at `hook/private/Farmer.cs` and
+rebuild, or copy a privately built `Drelay.Bootstrap.dll` over the one in `out\`. `build.ps1` and
+`out\VERSION.txt` both say which build you have, and the release workflow refuses to publish one that
+contains the module.
+
 ### Starting it with no arguments (the configuration file)
 
 `Drelay.Launcher.exe` with **no arguments at all** is a supported way to start it, and it is what a

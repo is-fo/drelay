@@ -7,6 +7,20 @@
 obj/
 out/
 
+# ---------------------------------------------------------------------------------------------
+# The PRIVATE auto-farmer module (`PLAN-AUTOFARM.md` section 13).
+#
+# The farmer's decision code is not published. `managed/Drelay.Bootstrap/Farmer.cs` is the public
+# stub -- the same class surface with no behaviour -- and this directory is where the real module
+# lives: `build.ps1` and both project files compile `private/**/*.cs` INSTEAD OF the stub when it
+# is present, so dropping the file in is the whole installation.
+#
+# IGNORING THE DIRECTORY IS THE MECHANISM, NOT A CONVENIENCE. A checkout of this repository must
+# never contain the module; a release of this component is built from a checkout, so a released
+# `Drelay.Bootstrap.dll` is the stub build by construction. If `private/` ever shows up in
+# `git status`, this rule has been broken and the module is one commit away from being published.
+private/
+
 # The managed projects' `bin/Release` output.  It used to be covered by the root .gitignore's
 # `*.dll` / `*.exe` lines, which are not in this tree any more -- and those lines never covered the
 # `deps.json` / `runtimeconfig.json` / `.pdb` files beside them, so a sweep of this directory picked

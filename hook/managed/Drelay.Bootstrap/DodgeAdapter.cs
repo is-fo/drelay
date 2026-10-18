@@ -633,6 +633,17 @@ namespace Drelay.Bootstrap
                     // existing run is noise in the one place the project keeps noise out of.
                     HookEntry.AppendLog("INFO", "dodge config | " + _config.DescribeFarm());
                 }
+                // THE SWITCH CAN BE ON IN A BUILD THAT HAS NO FARMER, and it is a deployment fact
+                // rather than a bug -- so it is named once, at arm time, where the operator will see
+                // it while the session starts. `PLAN-AUTOFARM.md` section 13: the farmer's decision
+                // code is a private module, the public tree carries a stub whose `ChooseTarget`
+                // publishes nothing, and a run that expects it to walk would otherwise look like a
+                // selection rule that never found a target.
+                if (_config.FarmMode && !Farmer.Installed)
+                {
+                    HookEntry.AppendLog("WARN", "DRELAY_DODGE_FARM is set but this build has the"
+                        + " public farmer stub: no target will be chosen (PLAN-AUTOFARM.md s.13)");
+                }
                 if (!_gridResolved)
                 {
                     // SHORT, for the truncation reason `Resolve` records.

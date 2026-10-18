@@ -339,6 +339,25 @@ if ($doManaged) {
     }
 
     $managedDir = Join-Path $root 'managed'
+    # ---------------------------------------------------------------------------------------
+    # THE PRIVATE FARM MODULE (`PLAN-AUTOFARM.md` section 13).
+    #
+    # `hook/private` is git-ignored and holds the auto-farmer's decision code. When it is present
+    # the two project files compile it INSTEAD OF the public `Farmer.cs` stub beside them; when it
+    # is absent the stub is compiled and the farmer cannot walk. Nothing here copies `private` into
+    # `out\`: the release artefact is `out\`, so a build made without the module is the only thing
+    # that can be packaged -- and this line is how a build made WITH it says so out loud, because
+    # the mistake that matters is a private build being mistaken for a distributable one.
+    $privateDir = Join-Path $root 'private'
+    $privateSources = @(Get-ChildItem -LiteralPath $privateDir -Recurse -Filter '*.cs' -File -ErrorAction SilentlyContinue)
+    $privateModule = $privateSources.Count -gt 0
+    if ($privateModule) {
+        Write-Note "private farm module: $($privateSources.Count) source(s) under hook\private"
+        Write-Bad  '  THIS BUILD IS NOT FOR DISTRIBUTION: it contains the private farmer module.'
+        Write-Note '  PLAN-AUTOFARM.md section 13 -- hook\private is git-ignored and never in a release.'
+    } else {
+        Write-Note 'private farm module: absent; the public Farmer stub is compiled and cannot walk'
+    }
     foreach ($proj in @('Drelay.Bootstrap', 'Drelay.Launcher')) {
         $projPath = Join-Path $managedDir "$proj\$proj.csproj"
         if (-not (Test-Path -LiteralPath $projPath)) { Write-Bad "missing project: $projPath"; exit 1 }
@@ -475,10 +494,16 @@ $recordPath = Join-Path $root 'known-build.json'
 if (Test-Path -LiteralPath $recordPath) {
     $gameVersion = (Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json).game.version
 }
+$farmStamp = if (@(Get-ChildItem -LiteralPath (Join-Path $root 'private') -Recurse -Filter '*.cs' -File -ErrorAction SilentlyContinue).Count -gt 0) {
+    'private (NOT FOR DISTRIBUTION)'
+} else {
+    'public stub'
+}
 $stamp = @(
     "drelay hook $version",
     "game build: Darza's Dominion $gameVersion",
-    "built: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+    "built: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
+    "farm module: $farmStamp"
 ) -join "`n"
 [System.IO.File]::WriteAllText((Join-Path $outDir 'VERSION.txt'), $stamp + "`n", [System.Text.UTF8Encoding]::new($false))
 Write-Note "  stamped out\VERSION.txt as drelay hook $version (game build $gameVersion)"

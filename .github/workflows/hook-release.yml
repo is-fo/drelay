@@ -189,6 +189,31 @@ jobs:
         shell: pwsh
         run: .\build.ps1
 
+      # THE PRIVATE FARM MODULE MUST NEVER BE IN A RELEASE ('PLAN-AUTOFARM.md' section 13).
+      #
+      # The mechanism is that it CANNOT be here: `hook/private/` is git-ignored, and a checkout
+      # contains only tracked files. This step exists because "it cannot happen" is the kind of
+      # claim that is true until one `.gitignore` edit, and a released hook that walks and farms
+      # for every user is not a mistake that can be taken back -- the artefact is already public
+      # and the farmer's whole point is that it is not.
+      #
+      # The build's own stamp is checked too, because that catches the other route to the same
+      # outcome: a build.ps1 changed to compile the module from somewhere else. `out\VERSION.txt`
+      # names 'farm module: public stub' on every build made without it.
+      - name: Refuse to release the private farm module
+        working-directory: hook
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path -LiteralPath 'private') {
+            throw 'hook/private exists in the checkout: this release would contain the private auto-farmer module. Remove it; see PLAN-AUTOFARM.md section 13.'
+          }
+          $stamp = Get-Content -LiteralPath 'out\VERSION.txt' -Raw
+          if ($stamp -notmatch 'farm module: public stub') {
+            throw "out\VERSION.txt does not say this build has the public farmer stub. It says:`n$stamp"
+          }
+          Write-Host 'farm module: public stub (the private module is absent, as a release requires)'
+
       - name: Run the offline checks
         working-directory: hook
         shell: pwsh

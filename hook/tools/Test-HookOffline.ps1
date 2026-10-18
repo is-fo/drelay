@@ -202,6 +202,73 @@ Invoke-Check 'route arithmetic fixture (R1-R5)' {
     & $harness --scenario peaceful --frames 60 --seed 1 --quiet
 }
 
+# THE PRIVATE FARM MODULE BOUNDARY (`PLAN-AUTOFARM.md` section 13).
+#
+# Three facts are checked, and each is a different way the boundary can fail:
+#
+#   1. `hook/private` is git-ignored whenever it exists. That rule is the mechanism that keeps the
+#      module out of a checkout, and a checkout is what a release is built from. A stale or edited
+#      ignore file is one `git add` away from publishing the operator's one private module.
+#   2. `out\VERSION.txt` names the build that was actually produced: `farm module: public stub`
+#      when there is no private source, `farm module: private` when there is. This is what catches
+#      a build made before the module was moved, or a project file that stopped applying the rule.
+#   3. The harness agrees. With no module it must SKIP the farmer's fixtures by name; with one it
+#      must run them. A build that silently runs the stub's farmer and reports vacuous passes is
+#      exactly the failure the `Installed` const exists to make impossible.
+Invoke-Check 'private farm module boundary' {
+    $privateSources = @(Get-ChildItem -LiteralPath (Join-Path $hookRoot 'private') `
+                            -Recurse -Filter '*.cs' -File -ErrorAction SilentlyContinue)
+
+    # 1. The ignore rule. `check-ignore` answers from the pattern, not from the file, so it works
+    #    on a checkout that has no private directory too -- which is the state that matters.
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        & git -C $hookRoot rev-parse --is-inside-work-tree *> $null
+        if ($LASTEXITCODE -eq 0) {
+            & git -C $hookRoot check-ignore -q 'private/Farmer.cs'
+            if ($LASTEXITCODE -ne 0) {
+                throw "hook/private is NOT git-ignored: the private farm module would be committed. See PLAN-AUTOFARM.md section 13."
+            }
+        } else {
+            Write-Note 'not a git worktree; the ignore rule was not checked.'
+        }
+    } else {
+        Write-Note 'git is not on PATH; the ignore rule was not checked.'
+    }
+
+    # 2. The build on disk says which of the two it is.
+    $stamp = Get-Content -LiteralPath (Join-Path $outDir 'VERSION.txt') -Raw
+    $expected = if ($privateSources.Count -gt 0) { 'farm module: private' }
+                else { 'farm module: public stub' }
+    if ($stamp -notmatch [regex]::Escape($expected)) {
+        throw "out\VERSION.txt does not say '$expected'. It says:`n$stamp"
+    }
+
+    # 3. And the harness, which is a separate program compiled from the same rule.
+    $harness = Join-Path $hookRoot 'tools\SolverHarness\bin\Release\SolverHarness.exe'
+    if (-not (Test-Path -LiteralPath $harness)) {
+        Write-Bad "missing $harness -- run build.ps1 first."
+        exit 2
+    }
+    $output = (& $harness --scenario farmer --frames 120 --seed 1 2>&1 | Out-String)
+    if ($LASTEXITCODE -ne 0) {
+        Write-Bad $output
+        throw "the harness failed on --scenario farmer (exit $LASTEXITCODE)."
+    }
+    if ($privateSources.Count -gt 0) {
+        if ($output -match 'SKIPPED') {
+            throw 'the private module is present but the harness skipped the farmer fixtures; the two builds have diverged (one project file applies the rule, the other does not).'
+        }
+        Write-Note "the private module is installed and the farmer's fixtures ran ($($privateSources.Count) source(s))."
+    } else {
+        if ($output -notmatch 'SKIPPED') {
+            Write-Bad $output
+            throw 'there is no private module but the harness ran the farmer fixtures; it is not compiling the public stub.'
+        }
+        Write-Note 'no private module; the harness named the farmer fixtures as skipped.'
+    }
+}
+
+
 # The launcher's configuration: HANDOFF-LAUNCH-CONFIG.md section 13's invariants C1-C8, C9 for
 # PLAN-AUTOFARM.md section 6's launch surface, plus the
 # boundary cases section 11 asks for. It compiles the launcher's own settings, config reader,

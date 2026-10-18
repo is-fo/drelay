@@ -51,4 +51,39 @@
     someone to trust it.
   -->
 
+  <!--
+    THE PRIVATE FARM MODULE (`PLAN-AUTOFARM.md` section 13).
+
+    `Farmer.cs` beside this project file is the PUBLIC stub: the farmer's surface with no decision
+    in it. The real module is `hook/private/Farmer.cs`, which is git-ignored and never published.
+    When that directory is present the stub is removed and the private sources are compiled
+    instead, so exactly one of the two defines `Drelay.Bootstrap.Farmer` in any build.
+
+    WHY THE CONDITION IS `Exists` ON THE DIRECTORY AND NOT ON ONE FILE NAME: the private overlay
+    may grow past one file (the state machine of section 5, the dungeon whitelist of section 8), and
+    keying the swap on `Farmer.cs` would silently compile a second private file against a module
+    that is not there. The directory is the switch and the glob collects whatever is in it.
+
+    (MSBuild evaluates properties and items in separate passes, so a condition cannot test the item
+    list itself: `'@(PrivateFarmSource)' != ''` is MSB4099 at project level. An empty `private`
+    directory therefore removes the stub with nothing to replace it and fails to compile, which is
+    the loud failure rather than the silent one.)
+
+    `DRELAY_PRIVATE_FARMER` is defined for anything that has to compile differently. It is NOT how
+    the code asks whether the farmer is installed: that is `Farmer.Installed`, a const, so no
+    caller can be compiled against the other build's answer.
+  -->
+  <ItemGroup>
+    <PrivateFarmSource Include="..\..\private\**\*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="Exists('..\..\private')">
+    <DefineConstants>$(DefineConstants);DRELAY_PRIVATE_FARMER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('..\..\private')">
+    <Compile Remove="Farmer.cs" />
+    <Compile Include="@(PrivateFarmSource)" LinkBase="Private" />
+  </ItemGroup>
+
 </Project>

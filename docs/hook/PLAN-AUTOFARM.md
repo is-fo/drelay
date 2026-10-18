@@ -751,10 +751,10 @@ diff. Rows 5, 7, 8 and 9 of §10's table are **not built**; §12.7 says what eac
 
 ### 12.1 Row 2 (§4) is in — `a38de9d`, "the farmer walks"
 
-`Farmer.cs` (new), plus `DodgeSnapshot`, `DodgeSolver`, `PathPlanner`, `EnemyReader` and
-`DodgeAdapter`. `SteeringPilot.cs` is untouched, exactly as §10.1's file-ownership table predicted,
-because the farm writes no input: the client's own auto-fire and the existing auto-aim module do the
-shooting (§3).
+`Farmer.cs` (new, and since §13 a PRIVATE module outside the repository), plus `DodgeSnapshot`,
+`DodgeSolver`, `PathPlanner`, `EnemyReader` and `DodgeAdapter`. `SteeringPilot.cs` is untouched,
+exactly as §10.1's file-ownership table predicted, because the farm writes no input: the client's
+own auto-fire and the existing auto-aim module do the shooting (§3).
 
 The farmer is what §2 says it is — a source of the goal and nothing else. It publishes
 `DodgeSnapshot.GoalHasPoint/GoalX/GoalY`, the solver resolves it into `_goalRadians` ahead of its
@@ -1161,4 +1161,90 @@ teleport as one. And the whole lobby is four portals inside a 30-unit square, wh
 "walk down a bit" a route of a few seconds rather than a navigation problem.
 
 
+
+
+### 13. The private module: what ships, what does not, and how to drop it in
+
+The operator's constraint, recorded before the next row was built:
+
+> *"A constraint of the autofarmer is that I do not want to share it like everything else. I should be
+> able to drop in the class file or .dll and have it, but not pushed to remote or packaged in
+> releases."*
+
+This is a distribution decision, not a behaviour change: **the auto-farmer's decision code is not
+published.** Everything else in this component is — the solver, the planner, the point-goal plumbing
+that the farmer and the routes share, the world log, the harness, and this document. The line is
+drawn at the one file that decides which enemy to walk at.
+
+| | public tree | private |
+|---|---|---|
+| `hook/managed/Drelay.Bootstrap/Farmer.cs` | **the stub**: `Drelay.Bootstrap.Farmer` with the module's whole public surface and no behaviour (`ChooseTarget` publishes nothing, every counter stays zero, `Installed` is `false`) | — |
+| `hook/private/Farmer.cs` | — | **the module**: the same class with the target selection, the stickiness rule and the counters, `Installed = true` |
+| the point-goal plumbing (`DodgeSnapshot.GoalHasPoint/GoalX/GoalY`, the solver's `GameplayTarget` resolution, the planner's point target, the `stand` range condition) | yes, and it does nothing without a publisher | — |
+| the harness's five `farmer*` fixtures and their W1–W6 assertions | yes, and they **skip by name** on a build without the module | — |
+| this plan, including §4 and §12 | yes | — |
+
+#### 13.1 The mechanism, in five places
+
+1. **`hook/.gitignore` ignores `private/`.** This is the mechanism, not a convenience: a release is
+   built from a checkout, and a checkout contains only tracked files, so a released
+   `Drelay.Bootstrap.dll` is the stub build by construction.
+2. **`build.ps1` prints which build it made** — `private farm module: absent` or `private farm
+   module: N source(s)` with a red *NOT FOR DISTRIBUTION* — and stamps the answer into
+   `out\VERSION.txt` as `farm module: public stub` or `farm module: private (NOT FOR DISTRIBUTION)`.
+   The stamp is the fact that travels with the artefact.
+3. **Both project files apply the same rule** (`Drelay.Bootstrap.csproj` and
+   `SolverHarness.csproj`): if `hook/private` exists, `Compile Remove` the stub and compile
+   `private/**/*.cs` instead, and define `DRELAY_PRIVATE_FARMER`. They are separate files and could
+   drift, which is why the harness is also the thing that checks the result (point 5).
+4. **`Farmer.Installed` is a `const`** — `false` in the stub, `true` in the module. It is the only
+   fact the two files may disagree on, and being a `const` means no caller can be compiled against
+   the other build's answer. It is how the adapter warns at arm time that `DRELAY_DODGE_FARM=1` was
+   set in a build that has no farmer, and how the harness decides to skip rather than fail.
+5. **`Test-HookOffline.ps1` checks the boundary in three ways**: `git check-ignore` proves
+   `hook/private` cannot be committed; `out\VERSION.txt` must name the build that the private
+   directory implies; and `SolverHarness --scenario farmer` must *skip* when the module is absent and
+   *run* when it is present. The last one is a separate program compiled from the same rule, so it
+   catches one project file applying the rule and the other not.
+
+The release workflow adds a fourth guard: `hook-release.yml` refuses to publish if `hook/private`
+exists in the checkout or if `out\VERSION.txt` does not say `farm module: public stub`. A release
+that contains the farmer cannot be taken back, which is why the check is in the pipeline as well as
+in the ignore file.
+
+#### 13.2 Dropping it in
+
+**The class file.** Put `Farmer.cs` at `hook/private/Farmer.cs` and run `build.ps1`. The build picks
+it up, removes the stub, prints the red line, and stamps `out\VERSION.txt` as private. Nothing else
+changes; the module's surface is the stub's surface, and a member added to one and not the other
+breaks the build loudly in whichever direction it is missing.
+
+**The DLL.** Take the `Drelay.Bootstrap.dll` a private build produced and copy it over the one in
+`out\`. The bootstrap is the only file that differs — it is where `Farmer` lives — so there is no
+second assembly to load, no plugin directory to configure, and no version skew between the module
+and the code it feeds. `out\VERSION.txt` is stale in that hand-copied case; the private build's own
+stamp is the record of what was copied.
+
+**Why not a runtime plugin.** A `Drelay.Farmer.dll` loaded with `Assembly.LoadFrom` would make the
+module replaceable without a rebuild, and it was considered. It loses on two counts that matter
+here: the first call into an un-JITted plugin would happen inside a patched game frame, which is
+exactly what `DodgeAdapter.Prepare` exists to prevent; and the plugin's ABI against
+`DodgeSnapshot`/`DodgeConfig` would become a thing that can drift from the bootstrap's, where today
+it is the same compile. A one-file swap is the smallest mechanism that satisfies the constraint.
+
+#### 13.3 What this does not hide
+
+The plan describes the farmer's design in §4 and records its measurements in §12, and both stay
+public on the operator's explicit instruction. What is private is the implementation of the
+selection rule, the hold, the counters and the arrival policy's farm-mode clause — enough that the
+published binary cannot farm, and not a claim that the technique is secret. The public build is
+otherwise the same program: `DRELAY_DODGE_FARM=1` is still parsed, `FarmEngageRadius` and
+`FarmStopRadius` are still settings, and the solver still resolves a point goal — because the routes
+(§7) publish one too, and they are not private.
+
+**The docs in §12 cite commits that no longer exist in that form.** The farmer's decision code was
+committed locally before this constraint was known, so the local branch was rewritten to replace
+every historical `Farmer.cs` with the stub; the SHAs in §12 are the post-rewrite ones. The branch is
+still not pushed: the module's history is not something a rewrite can put back into the public
+record, and it never needed to be there.
 

@@ -65,4 +65,31 @@
     <Compile Include="..\..\managed\Drelay.Bootstrap\RouteFollower.cs" Link="Solver\RouteFollower.cs" />
   </ItemGroup>
 
+  <!--
+    THE PRIVATE FARM MODULE, ON THE SAME TERMS AS THE HOOK (`PLAN-AUTOFARM.md` section 13).
+
+    `..\..\managed\Drelay.Bootstrap\Farmer.cs` above is the public stub. When `hook/private` holds
+    sources they are compiled INSTEAD OF it, exactly as `Drelay.Bootstrap.csproj` does: the two
+    project files have to agree or the harness would be measuring a different farmer from the one
+    the hook ships. `Farmer.Installed` is how the harness knows which build it is running; the
+    `farmer*` fixtures are skipped when it is false rather than failed, because a public checkout
+    has not discovered a defect.
+
+    The private sources are compiled here for the same reason the stub is: the module's whole
+    design point is that it is a pure function of the snapshot, and that is only checkable if it
+    compiles with no game in sight.
+  -->
+  <ItemGroup>
+    <PrivateFarmSource Include="..\..\private\**\*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="Exists('..\..\private')">
+    <DefineConstants>$(DefineConstants);DRELAY_PRIVATE_FARMER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('..\..\private')">
+    <Compile Remove="..\..\managed\Drelay.Bootstrap\Farmer.cs" />
+    <Compile Include="@(PrivateFarmSource)" LinkBase="Solver" />
+  </ItemGroup>
+
 </Project>

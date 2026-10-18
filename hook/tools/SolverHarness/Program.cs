@@ -176,6 +176,30 @@ namespace Drelay.SolverHarness
             else if (!string.IsNullOrEmpty(scenarioName))
             {
                 Scenario kind = ParseScenario(scenarioName);
+                // A FARM FIXTURE ON A BUILD WITH NO FARMER IS SKIPPED, NOT FAILED.
+                //
+                // `Farmer.Installed` is a const declared by whichever of the two files the build
+                // compiled -- the public stub (`hook/managed/Drelay.Bootstrap/Farmer.cs`) says
+                // false, the private module (`hook/private/Farmer.cs`) says true. See
+                // `PLAN-AUTOFARM.md` section 13. On a public checkout the five `farmer*` fixtures
+                // would run the geometry with a `ChooseTarget` that publishes nothing, and their
+                // assertions would fail for the honest reason that there is no farmer to measure.
+                // A test that only passes on a machine that has the private file is a test that
+                // fails CI, and a CI failure that means "the operator's private module is missing"
+                // is a failure everybody learns to ignore -- which is how a real one gets missed.
+                //
+                // The skip is LOUD and NAMED, in the same spirit as the offline suite naming the
+                // game-pinned checks it could not run: silence here would read as a pass.
+                if (SyntheticTrace.IsFarm(kind) && !Farmer.Installed)
+                {
+                    Console.WriteLine("scenario : " + kind + " -- SKIPPED. The auto-farmer is a"
+                                      + " private module and this build has the public stub"
+                                      + " (`PLAN-AUTOFARM.md` section 13). Drop the module into"
+                                      + " hook/private and rebuild to run the farmer's fixtures;"
+                                      + " this is not a failure and nothing was measured.");
+                    return 0;
+                }
+
                 // THE FARMER'S FIXTURES ARE A CLOSED LOOP AND THE OTHERS ARE NOT. See
                 // `DodgeTrace.ClosedLoop`: a farmer claims the character REACHES its target, which is
                 // a property of the loop rather than of any frame, so on these five the player's
