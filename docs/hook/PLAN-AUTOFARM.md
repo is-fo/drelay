@@ -1380,3 +1380,57 @@ what §7 already built, the four commands the bridge needs (`route.record.start/
 `route.play/stop`), why the hook should keep owning the file, and the one open measurement (what a
 recorder should do with a teleport). The roam waypoint is the stopgap and is named as one wherever it
 appears.
+
+**14.5 The third session: the portal's own tile, a 20-unit range, and critters as a rule**
+
+`20261018-031916-p21156`. Two of §14.4's changes were in it and one of them was wrong.
+
+**(a) The portal approach double-counted its own radius.** §14.4 published a point
+`FarmPortalRadius` short of the portal "on the player's side" to give the path search a walkable
+target. But the arrival policy then used `FarmPortalRadius` as the distance at which it stops, so the
+character stopped `FarmPortalRadius` + `FarmPortalRadius` = 3.0 units short — and the run's world log
+has it holding at **2.7 units** from `[US] Orion (37)` for a hundred and fifty frames, entering only
+when the operator walked it the rest of the way. The operator's sentence — *"it never walks to a
+portal, I did that manually. But it does enter"* — is exactly that arithmetic.
+
+The fix puts each number back where it belongs: **the goal is the portal's own position, and the
+`PathPlanner` snaps a POINT goal whose cell is not walkable to the nearest walkable cell within three
+cells**, instead of returning `NoTarget`. That is the operator's original suggestion — "pathfind to a
+coordinate near the portal" — made generic, and it also helps a route waypoint that lands on a rock.
+The goal point itself is untouched, so the score terms, the distance and the arrival policy still see
+the portal; only the search's end cell moves.
+
+**(b) The acquisition range was four paces.** `FarmEngageRadius` shipped 8 units on a 2698x2634
+realm — the operator's *"the range it paths to enemies are quite small, can it be increased?"*. It is
+now **20**, still inside the planner's 64-unit window so the whole approach is visible to the search,
+and still a separate number from the client's weapon range (which decides what can be SHOT, not what
+is worth walking to). `DRELAY_DODGE_FARM_RANGE` moves it, and `farmerorbit` pins 8 for itself because
+its characterisation is "the character leaves the acquisition radius", which is a different walk at
+20.
+
+**(c) Critters are a RULE, not a name list.** §14.1's `critter` substring did not catch them,
+because the client does not use that word: the operator names crabs, ducks and "different kinds", and
+the defining fact is mechanical — *"they're not shootable or damageable as normal enemies, the only
+way to subdue them is to walk on top of them"*. That is the class of object the client's own
+`Entity.Effects.Unhittable()` marks, the same predicate `AutoAim` already resolves and uses to exclude
+a target (true for Invincible, Invulnerable and Cutscene). So:
+
+- `EnemyReader` resolves `Entity.Effects` and `StatusEffects.Unhittable()` — the same pair
+  `AutoAim` uses — and carries the answer on `FarmTarget.Unhittable`;
+- the farmer skips an unhittable target unconditionally, because a target that cannot be damaged is
+  not something to farm. The dodge deliberately does **not** use the predicate: an invulnerable enemy
+  can still shoot, so rule 7 must still avoid it. It is a farm-half rule only;
+- the name list stays, as a belt for anything that is damageable but still unwanted, and the farm
+  line now carries `unhittable=` beside `ignored=` so the two rules are separable in a session;
+- the arm-time log gained a line naming both members the filter resolved:
+  `farm filter: name GameObjectData.Name / GameObjectData.Class | cannot-be-damaged StatusEffects.Unhittable()`,
+  or what was missing. A filter whose resolution failed must never look like a filter that found
+  nothing.
+
+`--scenario farmerignore` sets **both** halves on the near target (its name is a critter's and it is
+`Unhittable`), so W1d fails if either rule regresses.
+
+**And the two lines are separate lines now.** The farm line had reached the 256-byte truncation
+edge with the target name and the lobby/travel counters on it, and the tail it would have lost is
+exactly the part a session that never left the spawn needs. `PHASE 3 DODGE FARM` keeps the target
+numbers; `PHASE 3 DODGE PILOT` carries `lobby=`, `portal=` and `travel=`.

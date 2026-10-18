@@ -134,6 +134,19 @@ namespace Drelay.Bootstrap
         private static Func<object, object> _getClass;
         private static string _nameSource;
 
+        /// <summary>
+        /// `Entity.Effects` and `StatusEffects.Unhittable()` -- the client's own "cannot be damaged"
+        /// predicate, and the CRITTER FILTER's second half. See `FarmTarget.Unhittable`.
+        ///
+        /// IT IS THE SAME PAIR `AutoAim` RESOLVES (its `_getEffects`/`_unhittable`), and the same
+        /// argument applies here: a target that cannot be damaged is not something to farm. The
+        /// dodge deliberately does NOT use it (an invulnerable enemy can still shoot at the player,
+        /// so rule 7 must still avoid it), which is why it belongs to the farm half only.
+        /// </summary>
+        private static Func<object, object> _getEffects;
+        private static IntPtr _unhittable;
+        private static string _unhittableSource = "not resolved";
+
         /// <summary>The element type's own name, for the farm half's failure line.</summary>
         private static string _enemyTypeName;
 
@@ -189,6 +202,19 @@ namespace Drelay.Bootstrap
         public static string UnresolvedReason
         {
             get { return _rejectionReason ?? _unresolvedReason; }
+        }
+
+        /// <summary>
+        /// The farm half's filter, on its own line: which members the name filter and the
+        /// cannot-be-damaged rule resolved against. `PLAN-AUTOFARM.md` section 14.5.
+        ///
+        /// IT IS A SEPARATE LINE BECAUSE `Status()` IS ALREADY AT THE 256-BYTE EDGE, and because the
+        /// two halves of the filter can resolve independently: a build where `Data` moved still has
+        /// the `Unhittable()` rule, and the log has to be able to say which one is active.
+        /// </summary>
+        public static string FarmFilterStatus()
+        {
+            return "farm filter: name " + _nameSource + " | cannot-be-damaged " + _unhittableSource;
         }
 
         // ===================================================================================
@@ -313,6 +339,29 @@ namespace Drelay.Bootstrap
                 else
                 {
                     _nameSource = "no GameObject.Data";
+                }
+
+                // THE CRITTER FILTER'S RULE, from the client's own predicate. See `FarmTarget.Unhittable`.
+                FieldInfo effectsField = FieldLookup.Find(enemyType, out _, "Effects");
+                if (effectsField != null && effectsField.FieldType != null)
+                {
+                    MethodInfo unhittable = effectsField.FieldType.GetMethod(
+                        "Unhittable", BindingFlags.Public | BindingFlags.Instance, null,
+                        Type.EmptyTypes, null);
+                    if (unhittable != null)
+                    {
+                        _getEffects = FieldAccessor.Reference(effectsField);
+                        _unhittable = unhittable.MethodHandle.GetFunctionPointer();
+                        _unhittableSource = effectsField.FieldType.Name + ".Unhittable()";
+                    }
+                    else
+                    {
+                        _unhittableSource = effectsField.FieldType.Name + ".Unhittable() not found";
+                    }
+                }
+                else
+                {
+                    _unhittableSource = "no Entity.Effects";
                 }
 
                 _getEnemies = getEnemies.MethodHandle.GetFunctionPointer();
@@ -461,6 +510,21 @@ namespace Drelay.Bootstrap
                             if (_getClass != null) { className = _getClass(data) as string; }
                         }
                     }
+                    // THE CANNOT-BE-DAMAGED PREDICATE. Null effects are treated as hittable, the
+                    // same rule `AutoAim.Unhittable` follows: a null here means an object being torn
+                    // down, not an invulnerable one.
+                    bool unhittable = false;
+                    if (_getEffects != null && _unhittable != IntPtr.Zero)
+                    {
+                        object effects = _getEffects(enemy);
+                        if (effects != null)
+                        {
+                            unsafe
+                            {
+                                unhittable = ((delegate* managed<object, bool>)(IntPtr)_unhittable)(effects);
+                            }
+                        }
+                    }
                     s.FarmTargets.Add(new FarmTarget
                     {
                         GameId = _getGameId(enemy),
@@ -468,6 +532,7 @@ namespace Drelay.Bootstrap
                         Y = ey,
                         Name = name,
                         Class = className,
+                        Unhittable = unhittable,
                     });
                     _farmTargetsAdded++;
                 }

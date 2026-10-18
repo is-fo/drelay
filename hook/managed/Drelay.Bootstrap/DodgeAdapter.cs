@@ -548,6 +548,7 @@ namespace Drelay.Bootstrap
                 // config is built below, and `DRELAY_DODGE_FARM` is the one name both read.
                 if (Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM") == "1")
                 {
+                    HookEntry.AppendLog("INFO", EnemyReader.FarmFilterStatus());
                     PortalReader.ResolveWorld(sharedField);
                     bool portals = PortalReader.Resolve(game, ManagedArmingProbe.WorldTypeName);
                     HookEntry.AppendLog(portals ? "INFO" : "WARN", PortalReader.Status());
@@ -1594,6 +1595,11 @@ namespace Drelay.Bootstrap
                 HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
                     "PHASE 3 DODGE FARM | {0} | stand held for range {1}",
                     _farmer.Describe(), _solver.StandHeldForRange));
+                // THE LOBBY AND TRAVEL NUMBERS GET THEIR OWN LINE, because the farm line above is at
+                // the 256-byte edge and these are the numbers a session that never left the spawn
+                // needs. See `Farmer.DescribePilot`.
+                HookEntry.AppendLog("INFO",
+                    "PHASE 3 DODGE PILOT | " + _farmer.DescribePilot());
             }
             HookEntry.FlushLog();
         }

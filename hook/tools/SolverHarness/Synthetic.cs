@@ -749,6 +749,10 @@ namespace Drelay.SolverHarness
                         Y = StartY,
                         Name = "Baby Critter",
                         Class = "critter",
+                        // BOTH HALVES OF THE FILTER SET, because the fixture must exercise the RULE
+                        // and not only the name list: the operator's critters are "not shootable or
+                        // damageable as normal enemies", which is the client's own `Unhittable()`.
+                        Unhittable = true,
                     });
                     targets.Add(new FarmTarget
                     {

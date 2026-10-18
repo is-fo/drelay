@@ -115,6 +115,9 @@ namespace Drelay.Bootstrap
         /// <summary>Targets skipped by `FarmIgnore`. Always zero here.</summary>
         public long Ignored;
 
+        /// <summary>Targets skipped by the client's `Unhittable()` rule. Always zero here.</summary>
+        public long UnhittableSkipped;
+
         /// <summary>The lobby pilot's counters. Always zero here, and named so the two builds agree.</summary>
         public long LobbyFrames;
         public long PortalAttempts;
@@ -170,6 +173,12 @@ namespace Drelay.Bootstrap
         public string Describe()
         {
             return "farm not installed (private module; PLAN-AUTOFARM.md section 13)";
+        }
+
+        /// <summary>The lobby/travel line. Empty here, so the public build writes no second line.</summary>
+        public string DescribePilot()
+        {
+            return "pilot not installed";
         }
     }
 }

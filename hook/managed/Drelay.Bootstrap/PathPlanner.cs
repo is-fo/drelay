@@ -1008,6 +1008,29 @@ namespace Drelay.Bootstrap
 
             _targetIndex = IndexOf(tx, ty);
             _targetSet = _targetIndex >= 0 && WalkableIndex(_targetIndex);
+            if (!_targetSet && pointTarget)
+            {
+                // A POINT GOAL ON A SOLID CELL IS NOT "NO TARGET", IT IS "END BESIDE IT".
+                //
+                // The ray case's answer (refuse, and let the goal term decide) is right for a ray:
+                // the heading is the information and there is nowhere to route. A POINT is
+                // different -- it names a place, and the place is usually an OBJECT: a portal stands
+                // on a tile, a mob's centre can be over a wall corner, a route waypoint can land on
+                // a rock. Refusing the search there produced the operator's bug report ("it never
+                // walks to a portal"), because the character then has no route and, with a portal
+                // goal, stands at the arrival radius doing nothing.
+                //
+                // SO THE TARGET SNAPS TO THE NEAREST WALKABLE CELL, within `PathPointSnapCells`
+                // cells, in rings so the first hit is the nearest. The goal POINT is untouched --
+                // the score terms, the goal distance and the arrival policy still see the real
+                // place -- and only the search's end cell moves. If no walkable cell is within the
+                // radius the search still refuses, honestly, as before.
+                if (TrySnapToWalkable(_targetIndex, out int snapped))
+                {
+                    _targetIndex = snapped;
+                    _targetSet = true;
+                }
+            }
             if (!_targetSet)
             {
                 _reason = PathReason.NoTarget;
@@ -1516,6 +1539,79 @@ namespace Drelay.Bootstrap
                 return -1;
             }
             return (cy * _gridW) + cx;
+        }
+
+        /// <summary>
+        /// How many cells a POINT goal may be pulled aside to find walkable ground. Three is a tile
+        /// and a bit: enough for an object's footprint (a portal, a mob over a corner) and small
+        /// enough that "beside the goal" cannot become "on the other side of the wall it was
+        /// adjacent to".
+        /// </summary>
+        private const int PathPointSnapCells = 3;
+
+        /// <summary>
+        /// The nearest walkable cell to <paramref name="index"/>, searched in rings so the first
+        /// ring with a hit is the nearest. See the call site: a point goal on a solid cell is
+        /// "end beside it", not `NoTarget`.
+        /// </summary>
+        private bool TrySnapToWalkable(int index, out int snapped)
+        {
+            snapped = -1;
+            if (index < 0 || _grid.Cells == null)
+            {
+                return false;
+            }
+            int cx = index % _gridW;
+            int cy = index / _gridW;
+            for (int ring = 1; ring <= PathPointSnapCells; ring++)
+            {
+                int best = -1;
+                int bestD2 = int.MaxValue;
+                int x0 = cx - ring;
+                int x1 = cx + ring;
+                int y0 = cy - ring;
+                int y1 = cy + ring;
+                for (int y = y0; y <= y1; y++)
+                {
+                    if (y < 0 || y >= _gridH)
+                    {
+                        continue;
+                    }
+                    int row = y * _gridW;
+                    for (int x = x0; x <= x1; x++)
+                    {
+                        if (x < 0 || x >= _gridW)
+                        {
+                            continue;
+                        }
+                        // The ring only: the interior was searched by an earlier pass or does not
+                        // exist at ring 1.
+                        if (x != x0 && x != x1 && y != y0 && y != y1)
+                        {
+                            continue;
+                        }
+                        int cell = row + x;
+                        if (_grid.Cells[cell] != 0)
+                        {
+                            continue;
+                        }
+                        int dx = x - cx;
+                        int dy = y - cy;
+                        int d2 = (dx * dx) + (dy * dy);
+                        if (d2 < bestD2)
+                        {
+                            bestD2 = d2;
+                            best = cell;
+                        }
+                    }
+                }
+                if (best >= 0)
+                {
+                    snapped = best;
+                    return true;
+                }
+            }
+            return false;
         }
 
         private bool WalkableIndex(int index)

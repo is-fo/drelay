@@ -308,6 +308,21 @@ namespace Drelay.Bootstrap
         public string Name;
 
         public string Class;
+
+        /// <summary>
+        /// `Entity.Effects.Unhittable()` -- the client's own "this cannot be damaged" predicate, the
+        /// same one `AutoAim` already resolves and uses to exclude a target.
+        ///
+        /// THE OPERATOR'S THIRD SESSION IS WHY IT IS HERE: the CRITTERS they described -- crabs,
+        /// ducks, several kinds -- are *"not shootable or damageable as normal enemies, the only way
+        /// to subdue them is to walk on top of them"*. That is precisely the class of object the
+        /// client's own `Unhittable()` marks (Invincible, Invulnerable, Cutscene), and it is a rule
+        /// rather than a name list: it covers every kind, including the ones nobody has seen yet.
+        ///
+        /// It is OPTIONAL, like every other field the reader resolves: a build where `Effects` moved
+        /// leaves it false and the farmer keeps its old behaviour (which is to walk at everything).
+        /// </summary>
+        public bool Unhittable;
     }
 
     /// <summary>
@@ -1070,12 +1085,15 @@ namespace Drelay.Bootstrap
         /// radius. `PLAN-AUTOFARM.md` section 4.2: "distance &lt;= FarmEngageRadius (default: the
         /// weapon range, from the same client call AutoAim uses)".
         ///
-        /// `8.0` IS THAT DEFAULT STATED AS A NUMBER, AND THE NUMBER IS DEFENSIBLE RATHER THAN
-        /// INVENTED: `AutoAim.WeaponRange` clamps the client's own `CalculateWeaponRange` into
-        /// `[1.5, 10.0]`, so 8 sits inside the client's own selection band. The live value should
-        /// come from `AimbotSystem.CalculateWeaponRange` for the equipped weapon, exactly as
-        /// `AutoAim` does; doing that here would couple the solver to a game type, which the
-        /// pure-data contract forbids, so the hook resolves it and passes it in when it can.
+        /// `8.0` WAS A GUESS THAT MEASURED TOO SMALL, and the shipped value is `20.0`. The operator's
+        /// third session: *"the range it paths to enemies are quite small, can it be increased?"* --
+        /// and the run agrees, because a realm is 2698x2634 units and 8 units is four paces. The
+        /// client's own weapon range is the wrong bound for the ACQUISITION question: the farmer can
+        /// see a pack 20 units away, walk to it, and shoot when it arrives. 20 is still inside the
+        /// planner's 64-unit window, so the path search sees the whole approach. `AutoAim`'s range
+        /// still decides what can be SHOT; this only decides what is worth walking to.
+        ///
+        /// `DRELAY_DODGE_FARM_RANGE` moves it.
         /// </summary>
         public float FarmEngageRadius;
 
@@ -1464,7 +1482,7 @@ namespace Drelay.Bootstrap
             // a new behaviour and every existing number in this project was measured without it.
             // `--scenario farmer*` in the SolverHarness is where these are exercised.
             c.FarmMode = false;
-            c.FarmEngageRadius = 8.0f;
+            c.FarmEngageRadius = 20.0f;
             // 3.0 AND NOT 1.5: see `FarmStopRadius`. It must clear the enemy's emitter disc (1.25 at
             // these pad values) or the farmer fights `WeightEnemyDanger` and never settles, and the
             // operator's first live session showed 1.5 stands the character close enough to be inside

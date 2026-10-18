@@ -214,6 +214,12 @@ namespace Drelay.SolverHarness
                     // the invocation may forget is a fixture that silently becomes a different one,
                     // and this one exists precisely because the two settings behave differently.
                     config.FarmStopRadius = 0.0f;
+                    // AND ITS ACQUISITION RADIUS IS PINNED TOO, because the character "loses the
+                    // mob" by leaving this radius and the shipped value is now 20 (the operator
+                    // raised it). A fixture that has to walk twenty units past a mob before its
+                    // miss is measurable is measuring a different miss; 8 is the radius the
+                    // characterisation was recorded at.
+                    config.FarmEngageRadius = 8.0f;
                 }
                 if (kind == Scenario.FarmerPair)
                 {
