@@ -33,7 +33,7 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 .\\hook\tools\Test-Injection.ps1  # end-to-end, against a synthetic host (127 checks)
 .\\hook\tools\Test-HookOffline.ps1  # everything that needs NO game: the ABI self-test, the two generated tables,
                                     # both report fixtures, and the launcher's configuration
-                                    # invariants (C1-C9: the four sources, their per-field
+                                    # invariants (C1-C10: the four sources, their per-field
                                     # precedence, the discovery walk, the environment the child
                                     # is given and the world log's launch surface). The metadata
                                     # reader's self-test joins them only
@@ -109,6 +109,37 @@ a build made from a checkout cannot farm. To use it, put the module at `hook/pri
 rebuild, or copy a privately built `Drelay.Bootstrap.dll` over the one in `out\`. `build.ps1` and
 `out\VERSION.txt` both say which build you have, and the release workflow refuses to publish one that
 contains the module.
+
+### Running the auto-farmer (`--autofarm`)
+
+`--autofarm` is one switch for the whole loop: walk to the nearest enemy, stop at its edge, and let
+the client's own auto-fire and aimbot do the shooting — while still dodging. It implies `--dodge-act`
+(the farmer only publishes a POINT GOAL; the dodge's solver turns it into steering and writes the
+input) and picks `--autoaim closest` when no other source chose an aim mode.
+
+```powershell
+.\\hook\\out\\Drelay.Launcher.exe --autofarm
+```
+
+From the configuration file, the same request is:
+
+```json
+"Farm": { "Enabled": true }
+```
+
+Two things the launcher cannot check, and each is a one-line diagnosis when wrong:
+
+- **the build must contain the private farm module** ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §13).
+  A public build accepts the flag, turns the dodge on, and cannot walk: `out\VERSION.txt` says
+  `farm module: public stub`, and arm time logs *"public farmer stub: no target will be chosen"*.
+- **the game's own Auto-Fire input option must be ON.** The hook writes no firing input
+  ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §3); without it the character walks to a mob
+  and does not shoot.
+
+`--autofarm` cannot be combined with `--move-steer`: both claim the one actuator that moves the
+player, and two typed together is refused by name. The decision window is still the dodge's
+(`--dodge-disc`, `--dodge-window`), and `--autoaim highesthp` overrides the aim score the farmer
+picks for you.
 
 ### Starting it with no arguments (the configuration file)
 

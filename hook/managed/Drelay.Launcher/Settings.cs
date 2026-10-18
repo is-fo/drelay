@@ -63,6 +63,7 @@ namespace Drelay.Launcher
         public bool? Dodge;
         public bool? DodgeAct;
         public bool? WorldLog;
+        public bool? AutoFarm;
 
         // Values that are not switches.
         public string AutoAim;
@@ -84,6 +85,7 @@ namespace Drelay.Launcher
                     && NoWait == null && PauseAfterRun == null && DbgDump == null
                     && FrameHelper == null && FrameReplacement == null && Trace == null
                     && Dodge == null && DodgeAct == null && WorldLog == null
+                    && AutoFarm == null
                     && AutoAim == null && MoveSteer == null && TestTargets == null
                     && WorldLogEvery == null;
             }
@@ -364,6 +366,31 @@ namespace Drelay.Launcher
         public bool Dodge;
         public bool DodgeAct;
 
+        // THE AUTO-FARMER, AS ONE SWITCH: `--autofarm`, or `"Farm": { "Enabled": true }` in the
+        // configuration file.
+        //
+        // IT IMPLIES EVERYTHING THE LOOP NEEDS, because the loop is not useful in pieces:
+        //
+        //   * `Dodge` -- the farmer publishes a POINT GOAL and the dodge's own solver turns it into
+        //     a heading. Without the solver the goal is a number nobody reads;
+        //   * `DodgeAct` -- the decision has to reach the input, or the character walks nowhere. This
+        //     is the same actuator `--dodge-act` names, set through the same implication, so
+        //     `--autofarm` cannot produce a second way to move the player;
+        //   * `AutoAim = "closest"` WHEN NOTHING ELSE CHOSE A MODE -- so the client's own
+        //     `Player.Shoot` aims at what the farmer walked to. A `--autoaim highesthp` or a config
+        //     `AutoAim` is left alone: the operator's choice of score is not the farmer's to
+        //     overwrite.
+        //
+        // IT DOES NOT START THE FARMER BY ITSELF. The module's own switch is
+        // `DRELAY_DODGE_FARM=1`, written by `EnvironmentBlock` from this flag, and the code that
+        // reads it is the PRIVATE module (`PLAN-AUTOFARM.md` section 13). On a public build the
+        // flag still parses, still turns the dodge on, and still writes the variable -- and the
+        // farmer cannot walk, which the adapter says out loud at arm time.
+        //
+        // FIRING IS NOT HERE, AND MUST NOT BE. `PLAN-AUTOFARM.md` section 3: auto-fire is the
+        // client's own `InputOptions.AutoFire`, and the hook writes no firing input on any run.
+        public bool AutoFarm;
+
         // THE RULE 6 DECISION WINDOW, PASSED AT STARTUP RATHER THAN REBUILT.
         //
         // `--dodge-disc K` sets the window as a MULTIPLE of the time a projectile takes to cross the
@@ -486,6 +513,7 @@ namespace Drelay.Launcher
             if (from.Dodge.HasValue) { Dodge = from.Dodge.Value; }
             if (from.DodgeAct.HasValue) { DodgeAct = from.DodgeAct.Value; }
             if (from.WorldLog.HasValue) { WorldLog = from.WorldLog.Value; }
+            if (from.AutoFarm.HasValue) { AutoFarm = from.AutoFarm.Value; }
             if (from.WorldLogEvery.HasValue) { WorldLogEvery = from.WorldLogEvery.Value; }
 
             if (from.AutoAim != null) { AutoAim = from.AutoAim; }
@@ -505,6 +533,17 @@ namespace Drelay.Launcher
         /// </summary>
         public void ApplyImplications()
         {
+            // THE AUTO-FARMER'S ONE SWITCH, FIRST IN THE PASS, so the aim-mode rule below sees the
+            // mode this sets and arms the frame replacement through it. Setting `AutoAim` here and
+            // hoping a later block notices would be two rules about one fact. See
+            // `Options.AutoFarm` for why each implication is a dependency rather than a preference.
+            if (AutoFarm)
+            {
+                Dodge = true;
+                DodgeAct = true;
+                if (string.IsNullOrEmpty(AutoAim)) { AutoAim = "closest"; }
+            }
+
             // `--escape-test` calls `World.RequestEscape()` from the frame replacement, so a run
             // without it reports "the test never armed" -- indistinguishable from a client that
             // refused to escape.
@@ -551,6 +590,19 @@ namespace Drelay.Launcher
                 error = "--dodge-act (or \"Dodge\": {\"Act\": true} in drelay.config.json) drives the "
                         + "actuator itself and cannot be combined with --move-steer '" + MoveSteer
                         + "'. Set \"Act\": false in the config file, or drop --move-steer.";
+                return false;
+            }
+            // AND THE SAME CONTRADICTION FOR THE FARMER, WHICH IS THE SAME ACTUATOR. `--autofarm`
+            // implies the dodge's live mode because a farmer that cannot steer is not farming, so a
+            // run carrying both flags is asking two different things to be the pilot. The
+            // config-file spelling resolves instead of refusing (`Configuration.Resolve` gives the
+            // command line the actuator and says so); two flags typed together are a mistake and
+            // this is the one place that can say which two.
+            if (AutoFarm && !string.IsNullOrEmpty(MoveSteer))
+            {
+                error = "--autofarm (or \"Farm\": {\"Enabled\": true} in drelay.config.json) steers the "
+                        + "player through the dodge's actuator and cannot be combined with --move-steer '"
+                        + MoveSteer + "'. Drop --autofarm, or drop --move-steer.";
                 return false;
             }
             return true;

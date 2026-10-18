@@ -280,7 +280,7 @@ Invoke-Check 'private farm module boundary' {
 # about a value: C5 asserts the single `Console.ReadKey` in `Program.Main` is behind
 # `FirstRun.ShouldPause`, and C8 asserts the pinned record still carries the Steam app id and the
 # OpenGL assembly size that discovery names the wrong-install case with.
-Invoke-Check 'launcher configuration (C1-C9)' {
+Invoke-Check 'launcher configuration (C1-C10)' {
     $harness = Join-Path $hookRoot 'tools\LauncherHarness\bin\Release\LauncherHarness.exe'
     if (-not (Test-Path -LiteralPath $harness)) {
         Write-Bad "missing $harness -- run build.ps1 first."

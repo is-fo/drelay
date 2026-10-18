@@ -285,6 +285,15 @@ namespace Drelay.Launcher
                 Console.WriteLine("game (discovered from auto-discovery): " + options.DiscoveredFrom);
             }
 
+            // THE AUTO-FARMER'S ONE LINE, because the one thing it cannot do for the operator is
+            // turn on the game's own Auto-Fire, and a transcript that names the switch is also how
+            // a farm run is identified later. The module's own presence is the hook's to report
+            // (the adapter logs the stub at arm time); this is the launcher's half.
+            if (options.AutoFarm)
+            {
+                Console.WriteLine("autofarm      : on (walk the nearest enemy; the game's Auto-Fire must be ON)");
+            }
+
             // The environment is built, not inherited.  This is the one place the
             // DOTNET_TieredCompilation hazard from HOOK-ARCHITECTURE.md section 1
             // can be closed, and closing it here is why the launcher exists at all
@@ -758,6 +767,20 @@ namespace Drelay.Launcher
                        in `dodge` mode. On any frame the adapter publishes no command the
                        pilot writes nothing, so the player's own input stands. Mutually
                        exclusive with --move-steer. The player WILL move; the log says where.
+  --autofarm           THE AUTO-FARMER: walk to the nearest enemy, stop at its edge, and let the
+                       client's own auto-fire and aimbot do the shooting. It implies --dodge and
+                       --dodge-act (the farmer publishes a POINT GOAL; the dodge's solver turns it
+                       into steering), and it sets AutoAim ""closest"" when no other source chose a
+                       mode -- so the shot goes at what the character walked to. It writes
+                       DRELAY_DODGE_FARM=1, which is the module's own switch. It moves the player:
+                       mutually exclusive with --move-steer.
+                       IT NEEDS TWO THINGS THE LAUNCHER CANNOT CHECK FOR YOU: the private farm
+                       module in the build (PLAN-AUTOFARM.md section 13 -- a public build accepts
+                       this flag and cannot walk), and the game's own Auto-Fire input option turned
+                       ON (the hook writes no firing input; without it the character walks to a
+                       mob and does not shoot). The run's log says both: the harness prints
+                       ""farm module: ..."" in out\VERSION.txt, and arm time logs either the farmer
+                       or ""public farmer stub: no target will be chosen"".
   --dodge-disc K       THE RULE 6 DECISION WINDOW, as a multiple of the time a projectile takes
                        to cross the collision disc (player radius + projectile radius). The
                        window is how much of a bullet's path counts as the frame being spent and is refused

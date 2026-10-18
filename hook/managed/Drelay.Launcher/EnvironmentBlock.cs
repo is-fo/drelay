@@ -74,6 +74,17 @@ namespace Drelay.Launcher
                     removed.Add(key);
                     continue;
                 }
+                // AND THE AUTO-FARMER'S OWN SWITCH IS THE SAME CASE, for the same reason: a
+                // `DRELAY_DODGE_FARM=1` left in the operator's shell from an earlier experiment would
+                // otherwise decide that a run which did not ask for the farmer walks at things. It is
+                // dropped only when the launcher is about to write it, so a hand-set variable still
+                // works on a run without the flag.
+                if (options.AutoFarm &&
+                    key.Equals("DRELAY_DODGE_FARM", StringComparison.OrdinalIgnoreCase))
+                {
+                    removed.Add(key);
+                    continue;
+                }
                 variables.Add(new KeyValuePair<string, string>(key, entry.Value));
             }
 
@@ -302,8 +313,22 @@ namespace Drelay.Launcher
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
                 variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", "dodge"));
             }
-            if (options.EscapeTestSeconds >= 0.0)
+            if (options.AutoFarm)
             {
+                // THE FARMER'S OWN SWITCH (`DodgeConfig.FarmMode`), AND ONLY THIS FLAG WRITES IT.
+                //
+                // The dodge, its live actuator and the aim mode are already in the block above,
+                // because `Options.ApplyImplications` turns them on for this flag -- writing them a
+                // second time here would be the duplicate-name defect the dedupe at the bottom of
+                // this method exists to prevent, and it would also make the two places able to
+                // disagree. This is the one name nothing else in the launcher writes.
+                //
+                // A PUBLIC BUILD ACCEPTS IT AND CANNOT FARM (`PLAN-AUTOFARM.md` section 13): the
+                // variable reaches `DodgeConfig.FromEnvironment` either way, and the module that
+                // would use it is private. The adapter warns at arm time, so the run says so.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_DODGE_FARM", "1"));
+            }
+            if (options.EscapeTestSeconds >= 0.0)            {
                 // Same two-name split as `--move-steer`, and for the same reason: the
                 // *flag* that decides whether managed code is entered lives in the
                 // namespace the launcher owns and deletes inherited values from

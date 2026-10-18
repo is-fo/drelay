@@ -63,6 +63,7 @@ namespace Drelay.Launcher
             new ConfigField("AutoAim", "--autoaim"),
             new ConfigField("Dodge.Enabled", "--dodge"),
             new ConfigField("Dodge.Act", "--dodge-act"),
+            new ConfigField("Farm.Enabled", "--autofarm"),
             new ConfigField("Dodge.DecisionDisc", "--dodge-disc"),
             new ConfigField("Dodge.WindowSeconds", "--dodge-window"),
             new ConfigField("CollectDelayMs", "--collect-delay"),
@@ -226,6 +227,9 @@ namespace Drelay.Launcher
                 case "dodge":
                     return ReadDodge(file, property, settings, recognised, ref error);
 
+                case "farm":
+                    return ReadFarm(file, property, settings, recognised, ref error);
+
                 case "collectdelayms":
                     recognised.Add("CollectDelayMs");
                     return ReadInt(file, property, "CollectDelayMs", ref settings.CollectDelayMs, ref error);
@@ -321,6 +325,50 @@ namespace Drelay.Launcher
                         {
                             return false;
                         }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// The `Farm` object: one key today, and an object rather than a boolean on the operator's
+        /// request and for the same reason `Dodge` is one -- `PLAN-AUTOFARM.md` sections 5 and 8
+        /// add farm settings (the engage radius, the stop radius, the dungeon whitelist) and a bare
+        /// boolean would have to grow into this shape later, changing the meaning of an existing
+        /// file.
+        ///
+        /// `"Farm": null` is "not set", exactly like a missing key: null never turns anything off,
+        /// because a field nobody mentioned is a field the compiled default decides
+        /// (HANDOFF-LAUNCH-CONFIG.md section 10.5).
+        /// </summary>
+        private static bool ReadFarm(string file, JsonProperty property, Settings settings,
+                                     List<string> recognised, ref string error)
+        {
+            if (property.Value.ValueKind == JsonValueKind.Null)
+            {
+                return true;
+            }
+            if (property.Value.ValueKind != JsonValueKind.Object)
+            {
+                error = Field(file, "Farm", "must be an object, got " + Describe(property.Value));
+                return false;
+            }
+            recognised.Add("Farm");
+            foreach (JsonProperty child in property.Value.EnumerateObject())
+            {
+                switch (child.Name.ToLowerInvariant())
+                {
+                    case "enabled":
+                        recognised.Add("Farm.Enabled");
+                        if (!ReadBool(file, child, "Farm.Enabled", ref settings.AutoFarm, ref error))
+                        {
+                            return false;
+                        }
+                        // `Enabled` implies the dodge, its live actuator and a default aim mode;
+                        // all of that is applied once, in `Options.ApplyImplications`.
                         break;
                     default:
                         break;
@@ -478,6 +526,15 @@ namespace Drelay.Launcher
             text.Append("                            // false still solves and logs; it just never moves you\n");
             text.Append("    \"DecisionDisc\": null,   // --dodge-disc, multiples of the disc-crossing time\n");
             text.Append("    \"WindowSeconds\": null   // --dodge-window, absolute floor in seconds\n");
+            text.Append("  },\n");
+            text.Append("\n");
+            text.Append("  // The auto-farmer (--autofarm): walk at the nearest enemy and let the\n");
+            text.Append("  // client's own auto-fire shoot it. Turning this on also turns the dodge\n");
+            text.Append("  // and its actuator on, and picks AutoAim \"closest\" unless one is set.\n");
+            text.Append("  // It only walks on a build with the private farm module; a public build\n");
+            text.Append("  // accepts the key and stays still (PLAN-AUTOFARM.md section 13).\n");
+            text.Append("  \"Farm\": {\n");
+            text.Append("    \"Enabled\": false\n");
             text.Append("  },\n");
             text.Append("\n");
             text.Append("  // Timing. The first two are reporting bounds: the patch no longer waits for\n");

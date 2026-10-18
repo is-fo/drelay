@@ -1212,7 +1212,32 @@ exists in the checkout or if `out\VERSION.txt` does not say `farm module: public
 that contains the farmer cannot be taken back, which is why the check is in the pipeline as well as
 in the ignore file.
 
-#### 13.2 Dropping it in
+#### 13.2 Switching it on: `--autofarm`
+
+The farmer is one launch switch, `--autofarm`, or one configuration key, `"Farm": { "Enabled": true }`.
+Both go through the launcher's single implication pass, so the two spellings produce the same run:
+
+| what it turns on | why it is a dependency and not a preference |
+|---|---|
+| the dodge (`DRELAY_DODGE=1`) | the farmer publishes a POINT GOAL; the solver is the only thing that turns it into a heading. A goal nobody reads is a number. |
+| the live actuator (`DRELAY_DODGE_ACT=1`, `DRELAY_MOVE_STEER=dodge`) | the decision has to reach the input or the character never walks. This is the *same* actuator `--dodge-act` names — `--autofarm` does not add a second way to move the player. |
+| `AutoAim = "closest"`, **only when no other source chose a mode** | `Player.Shoot` aims through the aimbot, so without a mode the client shoots somewhere other than where the character walked. An operator's `--autoaim highesthp` or config `AutoAim` is left alone. |
+| `DRELAY_DODGE_FARM=1` | the module's own switch (`DodgeConfig.FarmMode`). Nothing else in the launcher writes it, and a stale value in the operator's shell is dropped when the launcher writes its own. |
+
+**Firing is still not the hook's, and must not be.** `PLAN-AUTOFARM.md` §3: auto-fire is the client's
+`InputOptions.AutoFire`, and the hook writes no firing input on any run. The launcher help says so,
+because "it walked up and did not shoot" is the one failure `--autofarm` cannot diagnose for you.
+
+Two contradictions are handled rather than discovered: `--autofarm --move-steer X` is **refused** by
+name (two pilots, both typed by hand), and `"Farm": {"Enabled": true}` in the file beside
+`--move-steer` on the command line is a **run** in which the command line takes the actuator and the
+file's request is cleared with a notice — the same rule `Dodge.Act` already followed.
+
+The template a first run writes names the key and leaves it `false`: a double-click is not a request
+to farm. `LauncherHarness` checks all of this as `c10`, including that no run without the flag writes
+`DRELAY_DODGE_FARM` and that the flag on a public build still parses (it just cannot walk).
+
+#### 13.3 Dropping it in
 
 **The class file.** Put `Farmer.cs` at `hook/private/Farmer.cs` and run `build.ps1`. The build picks
 it up, removes the stub, prints the red line, and stamps `out\VERSION.txt` as private. Nothing else
@@ -1232,7 +1257,7 @@ exactly what `DodgeAdapter.Prepare` exists to prevent; and the plugin's ABI agai
 `DodgeSnapshot`/`DodgeConfig` would become a thing that can drift from the bootstrap's, where today
 it is the same compile. A one-file swap is the smallest mechanism that satisfies the constraint.
 
-#### 13.3 What this does not hide
+#### 13.4 What this does not hide
 
 The plan describes the farmer's design in §4 and records its measurements in §12, and both stay
 public on the operator's explicit instruction. What is private is the implementation of the

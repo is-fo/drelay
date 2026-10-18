@@ -103,6 +103,13 @@ namespace Drelay.Launcher
                         // `Dodge.Act` goes through too (section 10.6).
                         settings.DodgeAct = true;
                         break;
+                    case "--autofarm":
+                        // SAME RULE, ONE MORE IMPLICATION: `--autofarm` is an acting request, and
+                        // what it implies (the dodge, its live actuator and a default aim mode) is
+                        // applied in `Options.ApplyImplications` so the config file's
+                        // `Farm.Enabled` produces exactly the same run. See `Options.AutoFarm`.
+                        settings.AutoFarm = true;
+                        break;
                     case "--autoaim":
                     {
                         string raw = Next(args, ref i);
