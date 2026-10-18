@@ -112,6 +112,17 @@ namespace Drelay.Bootstrap
         /// <summary>Player-to-target distance on the last frame. Always zero here.</summary>
         public float TargetDistance => 0.0f;
 
+        /// <summary>Targets skipped by `FarmIgnore`. Always zero here.</summary>
+        public long Ignored;
+
+        /// <summary>The lobby pilot's counters. Always zero here, and named so the two builds agree.</summary>
+        public long LobbyFrames;
+        public long PortalAttempts;
+        public long PortalActivations;
+        public long PortalFailures;
+        public string PortalFailure;
+        public string PortalTitle;
+
         /// <summary>
         /// Drops the hold. A no-op here, and named anyway so the world-change path compiles
         /// without a conditional.

@@ -122,13 +122,13 @@ namespace Drelay.SolverHarness
         Farmer,
 
         /// <summary>
-        /// W3: the enemy three units out, with `FarmStopRadius` small enough that the character must
-        /// close on it.
+        /// W3: the enemy six units out, with the shipped three-unit `FarmStopRadius` -- so the
+        /// character has distance to close before it may stand.
         ///
-        /// THE STOP RADIUS IS THE FIXTURE'S PARAMETER, NOT A CONSTANT, and W3 sweeps it. At the
-        /// shipped `stop=1` the character closes to one unit and stands; at `stop=0` the plan's
-        /// literal arrival rule ("keep closing until rule 7 refuses") is in force, and what that does
-        /// is the `farmerorbit` measurement rather than this one.
+        /// THE STOP RADIUS IS THE FIXTURE'S PARAMETER, NOT A CONSTANT, and W3 is a statement about
+        /// closing AND settling. With the shipped three units the character closes three and stands;
+        /// at `stop=0` the plan's literal arrival rule ("keep closing until rule 7 refuses") is in
+        /// force, and what that does is the `farmerorbit` measurement rather than this one.
         /// </summary>
         FarmerClose,
 
@@ -155,6 +155,17 @@ namespace Drelay.SolverHarness
         /// them apart.
         /// </summary>
         FarmerPair,
+
+        /// <summary>
+        /// THE CRITTER FILTER: two enemies in range, the NEARER one named like the realm's ambient
+        /// creatures. The farmer must ignore the near one and walk at the far one.
+        ///
+        /// THE OPERATOR'S FIRST LIVE SESSION IS THE FIXTURE'S REASON: *"it paths to critters, they
+        /// die by walking over them but should be ignored"*. No geometric rule separates a critter
+        /// from a mob, so the filter is on the client's own `Data.Name`/`.Class`
+        /// (`DodgeConfig.FarmIgnore`), and this is the only place it can be checked without the game.
+        /// </summary>
+        FarmerIgnore,
 
         /// <summary>
         /// W5: the farmer and a live bullet on the same frame. See `PlanSpawns`'s case for the
@@ -630,7 +641,7 @@ namespace Drelay.SolverHarness
         {
             return kind == Scenario.Farmer || kind == Scenario.FarmerClose
                    || kind == Scenario.FarmerOrbit || kind == Scenario.FarmerPair
-                   || kind == Scenario.FarmerDodge;
+                   || kind == Scenario.FarmerIgnore || kind == Scenario.FarmerDodge;
         }
 
         /// <summary>
@@ -652,6 +663,8 @@ namespace Drelay.SolverHarness
                     bodies.Add(Body(StartX, StartY + 6.0f, FarmBodyRadius));
                     break;
                 case Scenario.FarmerClose:
+                    bodies.Add(Body(StartX, StartY + 6.0f, FarmBodyRadius));
+                    break;
                 case Scenario.FarmerOrbit:
                     bodies.Add(Body(StartX, StartY + 3.0f, FarmBodyRadius));
                     break;
@@ -659,7 +672,7 @@ namespace Drelay.SolverHarness
                     // THE FARMER'S OWN STOP RADIUS IS WHAT MAKES A SWITCH POSSIBLE, AND SEEING WHY
                     // IS THE FIXTURE. The character closes on the nearest mob and STOPS within
                     // `FarmStopRadius` of it; nothing can then overtake a mob that is a unit and a
-                    // half away, so with the shipped 1.5 the nearest would never change and the
+                    // half away, so with the shipped 3.0 the nearest would never change and the
                     // stickiness rule would never be asked a question. So the fixture sets a WIDE
                     // stop radius (it is on the closed-loop side, so the character halts at once)
                     // and lets the second mob walk in from the east until it is a clear margin
@@ -667,8 +680,14 @@ namespace Drelay.SolverHarness
                     bodies.Add(Body(StartX, StartY + 5.0f, FarmBodyRadius));
                     bodies.Add(FarmPairSecond(frame));
                     break;
+                case Scenario.FarmerIgnore:
+                    // The critter is nearer and off to the east; the mob is north. Both are bodies,
+                    // because the live reader puts the same enemies in both lists.
+                    bodies.Add(Body(StartX + 4.0f, StartY, FarmBodyRadius));
+                    bodies.Add(Body(StartX, StartY + 5.0f, FarmBodyRadius));
+                    break;
                 case Scenario.FarmerDodge:
-                    bodies.Add(Body(StartX, StartY + 6.0f, FarmBodyRadius));
+                    bodies.Add(Body(StartX, StartY + 3.0f, FarmBodyRadius));
                     break;
             }
             return bodies;
@@ -691,6 +710,8 @@ namespace Drelay.SolverHarness
                     targets.Add(Target(1, StartX, StartY + 6.0f));
                     break;
                 case Scenario.FarmerClose:
+                    targets.Add(Target(1, StartX, StartY + 6.0f));
+                    break;
                 case Scenario.FarmerOrbit:
                     targets.Add(Target(1, StartX, StartY + 3.0f));
                     break;
@@ -703,8 +724,29 @@ namespace Drelay.SolverHarness
                     EntityBody second = FarmPairSecond(frame);
                     targets.Add(new FarmTarget { GameId = 2, X = second.X, Y = second.Y });
                     break;
+                case Scenario.FarmerIgnore:
+                    // THE NAMES ARE THE WHOLE FIXTURE. `DodgeConfig.FarmIgnore` ships `critter`, so
+                    // the near one matches on its class and the far one does not -- which is the
+                    // only difference the farmer is allowed to see.
+                    targets.Add(new FarmTarget
+                    {
+                        GameId = 1,
+                        X = StartX + 4.0f,
+                        Y = StartY,
+                        Name = "Baby Critter",
+                        Class = "critter",
+                    });
+                    targets.Add(new FarmTarget
+                    {
+                        GameId = 2,
+                        X = StartX,
+                        Y = StartY + 5.0f,
+                        Name = "Slime",
+                        Class = "enemy",
+                    });
+                    break;
                 case Scenario.FarmerDodge:
-                    targets.Add(Target(1, StartX, StartY + 6.0f));
+                    targets.Add(Target(1, StartX, StartY + 3.0f));
                     break;
             }
             return targets;

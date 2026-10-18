@@ -141,6 +141,28 @@ player, and two typed together is refused by name. The decision window is still 
 (`--dodge-disc`, `--dodge-window`), and `--autoaim highesthp` overrides the aim score the farmer
 picks for you.
 
+**Where it walks, and what it ignores** ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §14):
+
+```powershell
+# the three knobs, all environment variables (defaults in brackets)
+$env:DRELAY_DODGE_FARM_STOP   = '3'        # [3]   how close it stands to a mob, world units
+$env:DRELAY_DODGE_FARM_IGNORE = 'critter'  # [critter] name/class substrings it will not walk at
+$env:DRELAY_DODGE_FARM_RANGE  = '8'        # [8]   how far away an enemy is still worth walking to
+```
+
+The ignore list is matched, case-insensitively, against the client's own `Data.Name` and `Data.Class`
+— the only thing that separates the realm's ambient critters from a mob. The farm line in
+`bootstrap.log` names the target it is walking at, so a name can be found and ignored without a
+rebuild:
+
+```
+PHASE 3 DODGE FARM | farm frames=… target=418433 at=2.94 name='Slime' ignored=12 lobby=3/2 portal='[US] Cronus (42)'
+```
+
+`lobby=` is the reconnect counter: attempts / the ones the client's own `Portal.Activate(0)` accepted.
+In the Tavern the farmer walks to the nearest realm portal (the one titled `[US] …` / `[EU] …`),
+stands on it and enters, so a death does not end the session in the lobby.
+
 ### Starting it with no arguments (the configuration file)
 
 `Drelay.Launcher.exe` with **no arguments at all** is a supported way to start it, and it is what a

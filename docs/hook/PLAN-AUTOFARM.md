@@ -1273,3 +1273,68 @@ every historical `Farmer.cs` with the stub; the SHAs in §12 are the post-rewrit
 still not pushed: the module's history is not something a rewrite can put back into the public
 record, and it never needed to be there.
 
+
+---
+
+### 14. The first live farm session: critters, a three-unit distance, and the lobby it never left
+
+`20261018-023243-p21896`, the first run with `--autofarm`. It worked -- the farmer walked to mobs,
+held targets, switched seven times over ~5900 frames, and the dodge stayed in charge -- and it did
+three things the operator did not want. Each is recorded here with the number that decided the fix.
+
+**14.1 It walked at critters, and the report could not say what they were.** The farmer's line read
+`target=418433 at=0.85`; nothing in the run said what 418433 was. The realm's ambient creatures are
+ordinary `Enemy` objects to `World.GetEnemies()` -- `Dead` false, `Npc` false, a position, a health
+bar -- so every filter the farmer had passed them, and they die when the character walks over them,
+so the character spent its session switching between them. **No geometric rule separates a critter
+from a mob.** The fix is the client's own name for it:
+
+- `EnemyReader` now reads `GameObject.Data`, then `GameObjectData.Name` and `.Class`, and carries
+  them on `FarmTarget` -- optional like every other accessor, so a build where `Data` moved loses
+  the filter and keeps the farmer;
+- `DodgeConfig.FarmIgnore` is a comma-separated, case-insensitive substring list matched against
+  both strings. **It ships `critter`**, because a default that matches nothing costs nothing: if the
+  client does not use that word, no enemy is filtered and the behaviour is the old one;
+- the farmer's line now carries the held target's **name**, which is how the next session names a
+  name to ignore instead of quoting an id;
+- `--scenario farmerignore` is the offline fixture: the near enemy is a `Baby Critter`, the far one
+  a `Slime`, and W1d asserts the near one was seen and rejected (`Ignored > 0`) and the far one
+  chosen.
+
+If `critter` is not the client's word, one run of `--autofarm` shows the name in the farm line and
+`DRELAY_DODGE_FARM_IGNORE=<name>` sets it without a rebuild.
+
+**14.2 It stood too close.** `FarmStopRadius` shipped 1.5 -- one and a quarter units of emitter disc
+plus a quarter of slack -- and the run ended holding a target at **0.85 units**, inside a mob's own
+contact reach. The operator's request is three tiles, and the shipped value is now **3.0**: still
+well inside `FarmEngageRadius` (8), still clear of the emitter disc, and the character stops there
+instead of walking into the mob. `DRELAY_DODGE_FARM_STOP` moves it. The `farmerclose` fixture moved
+its enemy from three units to six so that W3 still measures closing AND settling, and `farmerdodge`'s
+target moved onto the stop radius so the bullet still arrives at the same relative position.
+
+**14.3 It never went to a portal, because nothing asked it to.** The state machine of §5.1 is row 5
+and is still not built, but the half the operator watched fail is the half a farmer needs after every
+death: the character respawns in the Tavern and stands there. That half is now in:
+
+- **`PortalReader`** (public, a reader and not a policy, like `EnemyReader`) resolves
+  `World.Activatables`, the `Portal` subclass, `Node.Position.X/Y` and `ActivatableObject.Title`, and
+  samples the frame's portals into `DodgeSnapshot.Portals` -- in a safe world only, because that is
+  the only place the lobby pilot uses them;
+- **the private module's lobby branch** picks the nearest **realm entrance** -- the portal whose
+  title starts with `[US]`/`[EU]`, which is what the 2026-10-18 session measured; `Storage Vault` and
+  `Guild Hall` do not -- publishes its `Position` as the point goal, and calls
+  `PortalReader.TryActivate`, which is `Portal.Activate(0)`: the client's own entry point, warmed at
+  arm time and running the client's own locked/cooldown gates. It retries every ~3 s until the world
+  changes;
+- **`DodgeSnapshot.GoalIsPortal`** is the one thing the arrival policy needs to know: a portal must
+  be walked all the way onto (`FarmPortalRadius`, 1.5) rather than stopped three units short, so the
+  solver's `stand` gate reads that radius for this goal and `FarmStopRadius` for a mob.
+
+**What this still is not.** The §5.1 machine's other states -- `IN_DUNGEON`, the whitelist, the
+clear-and-advance loop, the explicit exit -- are rows 7-9 and remain unbuilt. The lobby branch is
+enter-only; the way back out of a dungeon is still the client's own nexus (§8.4), which is the
+measured behaviour and needs no code. And **none of §14's three changes has had a live run**: the
+portal reader is reflection against a live `World.Activatables` that no offline fixture can hold.
+The run's log will say which half resolved -- `portals: World.Activatables -> Portal | x/y Position |
+title Title | enter Activate(0)`, or the named failure -- and the farm line carries
+`lobby=<attempts>/<activations> portal='<title>'`.

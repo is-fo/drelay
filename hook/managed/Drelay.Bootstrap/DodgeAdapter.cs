@@ -536,6 +536,27 @@ namespace Drelay.Bootstrap
                 bool enemies = EnemyReader.Resolve(game);
                 HookEntry.AppendLog(enemies ? "INFO" : "WARN", EnemyReader.Status());
 
+                // THE LOBBY'S PORTALS (`PLAN-AUTOFARM.md` section 5.2, the operator's "it should have
+                // reconnect"). On the same terms as the enemy reader and for the same reason: the
+                // reader owns the reflection, this file owns the assembly and the `World.Shared`
+                // static. A failure disarms the lobby pilot and says so; it does NOT disarm the
+                // dodge or the farmer.
+                //
+                // IT IS RESOLVED ONLY WHEN THE FARMER IS ON, because resolving it walks the game
+                // assembly's type list (`GetTypes` over ~1900 types) and a dodge-only run has no
+                // use for a portal. The switch is read here rather than from `_config` because the
+                // config is built below, and `DRELAY_DODGE_FARM` is the one name both read.
+                if (Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM") == "1")
+                {
+                    PortalReader.ResolveWorld(sharedField);
+                    bool portals = PortalReader.Resolve(game, ManagedArmingProbe.WorldTypeName);
+                    HookEntry.AppendLog(portals ? "INFO" : "WARN", PortalReader.Status());
+                }
+                else
+                {
+                    HookEntry.AppendLog("INFO", "portals: not read (the farmer is off)");
+                }
+
                 // The rest are optional and each one degrades a named thing rather than the run.
                 FieldInfo radiusField = FindRadius(playerType);
                 if (radiusField != null)
@@ -924,6 +945,11 @@ namespace Drelay.Bootstrap
                 // nothing at all when the reader did not resolve, which is what leaves rule 7 vacuous
                 // on exactly the runs where it cannot be anything else.
                 EnemyReader.Fill(s, _config, px, py, radius);
+
+                // AND THE LOBBY'S PORTALS, which are the lobby pilot's input and nothing else. It
+                // fills nothing unless the farmer is on, so a run without the farmer pays one branch
+                // per frame -- the same accounting `EnemyReader.Fill` itself makes.
+                PortalReader.Fill(s, _config);
 
                 // THE FARMER, WHICH IS A SOURCE OF THE GOAL AND NOTHING ELSE. It runs here, on the
                 // sensor's side of the decision, because the enemy list it chooses from is the

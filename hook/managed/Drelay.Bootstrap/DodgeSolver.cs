@@ -1032,7 +1032,9 @@ namespace Drelay.Bootstrap
             // and the other is not is a frame that closes the distance by the goal term and then
             // throws the answer away -- the exact "two answers in one frame" shape the plan's
             // section 2 refuses to build.
-            _farmClosing = _farmGoalActive && _farmGoalDistance > _config.FarmStopRadius;
+            _farmClosing = _farmGoalActive
+                           && _farmGoalDistance
+                              > (snapshot.GoalIsPortal ? _config.FarmPortalRadius : _config.FarmStopRadius);
             // AND THE WIDER FLAG THE ARRIVAL POLICY ACTUALLY READS. A farmer stops once it is in
             // range; a ROUTE never does, because the follower advances to the next waypoint the moment
             // this one is reached -- so a route goal is always something to walk at, and suppressing

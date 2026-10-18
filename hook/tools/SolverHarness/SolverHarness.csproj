@@ -42,8 +42,8 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The pure-data contract and the solver. Nothing else from the hook may be added here:
-         these two files are the only ones guaranteed to compile without the game. -->
+    <!-- The pure-data contract and the solver. Nothing else from the hook may be added here: every
+         file in this group is guaranteed to compile without the game. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSnapshot.cs" Link="Solver\DodgeSnapshot.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSolver.cs" Link="Solver\DodgeSolver.cs" />
     <!-- The frame's path (HANDOFF-DIRECTED-DODGE.md section 4). It is here for the same reason the
@@ -56,6 +56,13 @@
          module's whole design point is that it publishes a goal point and touches nothing else,
          which is only checkable if it compiles with no game in sight. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\Farmer.cs" Link="Solver\Farmer.cs" />
+    <!-- The lobby's portal reader, and the field-accessor builders it needs (`FieldAccessor`).
+         The private farmer calls `PortalReader.TryActivate` from its lobby branch, so the harness
+         cannot compile that module without this file. It is pure reflection with no game in sight,
+         which is the same contract as the five around it: it resolves nothing until it is handed an
+         assembly, and the harness never hands it one. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\PortalReader.cs" Link="Solver\PortalReader.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\FieldAccessor.cs" Link="Solver\FieldAccessor.cs" />
     <!-- THE ROUTES (`PLAN-AUTOFARM.md` section 7). Same contract, same reason: the simplifier, the
          resampler, the snap, the deviation and the file format must all be pure functions of plain
          data, and a change that reaches for a game accessor has to break THIS build rather than the

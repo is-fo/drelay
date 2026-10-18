@@ -290,6 +290,53 @@ namespace Drelay.Bootstrap
 
         public float X;
         public float Y;
+
+        /// <summary>
+        /// `GameObjectData.Name` and `.Class`, read so the farmer can IGNORE a kind of enemy rather
+        /// than walk at everything `GetEnemies()` calls an enemy.
+        ///
+        /// THE OPERATOR'S FIRST LIVE FARM SESSION IS WHY: the character walked at the realm's ambient
+        /// critters, which die when it walks over them, and spent its time switching between them.
+        /// Nothing geometric tells a critter from a mob -- they are the same `Enemy` with the same
+        /// fields -- so the only honest discriminator is what the client calls them. See
+        /// `DodgeConfig.FarmIgnore`.
+        ///
+        /// THEY ARE STRING REFERENCES THE CLIENT ALREADY HOLDS (`Data.Name`, `Data.Class`), so the
+        /// per-frame cost is one indirect read each and no allocation. Null when the reader could not
+        /// resolve `Data`, which makes the ignore list a no-op rather than a wrong filter.
+        /// </summary>
+        public string Name;
+
+        public string Class;
+    }
+
+    /// <summary>
+    /// One portal the LOBBY PILOT may walk to (`PLAN-AUTOFARM.md` section 5.2), as the sensor saw it.
+    ///
+    /// IT CARRIES THE LIVE OBJECT BECAUSE ENTERING IS A CLIENT CALL, not a coordinate. Section 5.2's
+    /// preferred path is `Portal.Activate(0)` -- the function the input handler calls -- and that
+    /// needs the instance. The position is what the walk uses; the title is what chooses between the
+    /// realm entrance and the Vault/Guild Hall.
+    ///
+    /// A REFERENCE IN A SNAPSHOT IS DELIBERATE HERE: the portals are long-lived objects owned by the
+    /// world, so this is not a copy of game state and cannot go stale inside a frame. It is cleared
+    /// every frame with the rest of the snapshot.
+    /// </summary>
+    public struct PortalTarget
+    {
+        public object Object;
+
+        public float X;
+        public float Y;
+
+        /// <summary>
+        /// `ActivatableObject.Title`. The measured realm entrances are `[US] Cronus (42)` and
+        /// `[EU] Ulysses (1)`; the Vault and Guild Hall portals are titled `Storage Vault` and
+        /// `Guild Hall`; dungeon portals are `<name>\nLV <n>`. So "starts with '['" is the realm
+        /// entrance rule the 2026-10-18 session measured, and it is a filter on a value the client
+        /// already displays rather than a guess at a destination id (§1: there is none).
+        /// </summary>
+        public string Title;
     }
 
     /// <summary>
@@ -473,6 +520,15 @@ namespace Drelay.Bootstrap
             new System.Collections.Generic.List<FarmTarget>();
 
         /// <summary>
+        /// The portals in the current world, filled only when the farmer is on (`FarmMode`). The
+        /// LOBBY PILOT's input: `PLAN-AUTOFARM.md` section 5.2's "find the portals, walk to one,
+        /// enter it". Empty is legal -- a realm has no realm entrance and the dungeon exit is the
+        /// nexus, not this list.
+        /// </summary>
+        public readonly System.Collections.Generic.List<PortalTarget> Portals =
+            new System.Collections.Generic.List<PortalTarget>();
+
+        /// <summary>
         /// THE FARMER'S GOAL AS A POINT, WHICH IS THE WHOLE OF WHAT THE FARMER ADDS TO THE SOLVER.
         ///
         /// THE EXISTING GOAL IS A RAY AND A RAY CANNOT EXPRESS ARRIVAL. `GoalSource` is resolved from
@@ -509,6 +565,20 @@ namespace Drelay.Bootstrap
         /// </summary>
         public bool GoalFromRoute;
 
+        /// <summary>
+        /// True when the point goal is a PORTAL the character must stand ON, not a mob it stops
+        /// beside. `PLAN-AUTOFARM.md` section 5.2's entry rule, measured: entering is standing on the
+        /// portal's own `Position`, and the client's `ActivateDistance` is two units.
+        ///
+        /// IT CHANGES EXACTLY ONE NUMBER. The arrival policy of section 4.3 admits `stand` inside
+        /// `FarmStopRadius` (3 units, so the character does not stand inside a mob's contact reach);
+        /// a portal has to be walked all the way onto, so the same policy reads
+        /// `FarmPortalRadius` instead. The solver is where that decision is made, and it is a flag
+        /// on the goal rather than a second goal so the planner, the score terms and the hysteresis
+        /// are untouched.
+        /// </summary>
+        public bool GoalIsPortal;
+
         public CollisionWindow Grid;
 
         /// <summary>True when the sensor could not produce a usable picture this frame.</summary>
@@ -519,10 +589,12 @@ namespace Drelay.Bootstrap
             Threats.Clear();
             Bodies.Clear();
             FarmTargets.Clear();
+            Portals.Clear();
             GoalHasPoint = false;
             GoalX = 0.0f;
             GoalY = 0.0f;
             GoalFromRoute = false;
+            GoalIsPortal = false;
         }
     }
 
@@ -1011,21 +1083,63 @@ namespace Drelay.Bootstrap
         /// ZERO MEANS "KEEP CLOSING UNTIL SOMETHING REFUSES", and the harness's `farmerorbit`
         /// fixture is the measurement of what that does -- see below.
         ///
-        /// IT MUST CLEAR THE ENEMY'S EMITTER DISC, AND THE SHIPPED 1.5 IS THAT NUMBER RATHER THAN A
-        /// ROUND ONE. `PLAN-ENEMY-THREATS.md` gives every enemy body a padded danger radius,
-        /// `enemy.Radius + player.Radius + EnemyDangerPadUnits` -- 1.25 at the shipped values -- and
-        /// `WeightEnemyDanger` (0.5) penalises a candidate that ends inside it. A stop radius INSIDE
-        /// that disc makes the farmer fight its own preference: the goal says "come closer", the
-        /// emitter says "get out", and the measured result is a character that circles at the
-        /// disc's edge and never settles. `--scenario farmer` at `farmstop=1` does exactly that --
-        /// 262 moving frames, 338 with no target, the mob lost -- while `farmstop=1.5` closes in 83
-        /// frames and stands for the remaining 517. 1.5 is 1.25 plus a quarter of a unit of slack.
+        /// IT MUST CLEAR THE ENEMY'S EMITTER DISC. `PLAN-ENEMY-THREATS.md` gives every enemy body a
+        /// padded danger radius, `enemy.Radius + player.Radius + EnemyDangerPadUnits` -- 1.25 at the
+        /// shipped values -- and `WeightEnemyDanger` (0.5) penalises a candidate that ends inside it.
+        /// A stop radius INSIDE that disc makes the farmer fight its own preference: the goal says
+        /// "come closer", the emitter says "get out", and the measured result is a character that
+        /// circles at the disc's edge and never settles. `--scenario farmer` at `farmstop=1` does
+        /// exactly that -- 262 moving frames, 338 with no target, the mob lost -- while the 1.5 it
+        /// shipped with closed in 83 frames and stood for the remaining 517. 1.5 was 1.25 plus a
+        /// quarter of a unit of slack.
+        ///
+        /// THE SHIPPED VALUE IS NOW 3.0, ON THE OPERATOR'S REQUEST AFTER THE FIRST LIVE SESSION:
+        /// *"it needs to not walk too close to enemies, try to keep a 3-tile distance"*. The 1.5
+        /// cleared the emitter disc but stood the character inside a mob's contact reach -- the run
+        /// `20261018-023243-p21896` ended holding a target at **0.85 units**, which is close enough
+        /// that a mob's own collision or contact damage is unavoidable. Three units is still inside
+        /// `FarmEngageRadius` (8) and still clears the disc by more than a unit, so the settle
+        /// behaviour the harness measures is unchanged in kind; the character simply stops earlier.
+        /// It is a setting (`DRELAY_DODGE_FARM_STOP`) because the right distance depends on the mob.
         ///
         /// A DEPLOYMENT WITH A LARGER `EnemyDangerPadUnits` HAS TO RAISE THIS WITH IT, and that is a
         /// real coupling rather than a hidden one: the two numbers are in the same config struct and
         /// the settings line prints both.
         /// </summary>
         public float FarmStopRadius;
+
+        /// <summary>
+        /// Enemies whose `Data.Name` OR `Data.Class` contains one of these (comma-separated,
+        /// case-insensitive) are NOT farm targets, world units free.
+        ///
+        /// IT EXISTS BECAUSE GEOMETRY CANNOT TELL A CRITTER FROM A MOB, and the operator's first live
+        /// session is the measurement: *"it paths to critters, they die by walking over them but
+        /// should be ignored"*. A critter is an ordinary `Enemy` to `World.GetEnemies()`, an ordinary
+        /// body to rule 7, and a valid target to every rule the farmer had -- the one thing that
+        /// distinguishes it is the name the client shows. So the filter is on that name (and on
+        /// `Data.Class`, which is where a category like "critter" would live), read by
+        /// `EnemyReader` and applied by the farmer.
+        ///
+        /// THE DEFAULT IS `critter`, AND A DEFAULT THAT MATCHES NOTHING COSTS NOTHING: if the client
+        /// does not call them that, no enemy is filtered and the behaviour is the old one. If it
+        /// does, the session that produced the complaint is fixed without another run. The operator
+        /// can widen it with `DRELAY_DODGE_FARM_IGNORE=<a,b,c>` or empty it with
+        /// `DRELAY_DODGE_FARM_IGNORE=` (an empty value means "ignore nothing", which is a different
+        /// statement from "unset").
+        /// </summary>
+        public string FarmIgnore;
+
+        /// <summary>
+        /// HOW CLOSE THE LOBBY PILOT HAS TO BE TO A PORTAL BEFORE IT CALLS `Portal.Activate(0)`,
+        /// world units.
+        ///
+        /// THE CLIENT'S OWN `ActivatableObject.ActivateDistance` IS 2 UNITS, measured rather than
+        /// assumed (`PLAN-AUTOFARM.md` section 5.2's third question, and the 2026-10-18 session's
+        /// four walks: the character's last position was 0.16, 0.44, 0.59 and 0.00 units from the
+        /// portal's own `Position`). 1.5 is inside that, so the call runs the client's own gates
+        /// rather than being refused for being too far away.
+        /// </summary>
+        public float FarmPortalRadius;
 
         /// <summary>
         /// How much closer a different enemy must be before the farmer abandons the one it is
@@ -1315,11 +1429,20 @@ namespace Drelay.Bootstrap
             // `--scenario farmer*` in the SolverHarness is where these are exercised.
             c.FarmMode = false;
             c.FarmEngageRadius = 8.0f;
-            // 1.5 AND NOT 1.0: see `FarmStopRadius` -- a stop radius inside the enemy's emitter disc
-            // (1.25 at these pad values) makes the farmer fight `WeightEnemyDanger` and never settle.
-            // This is the one number in this block that is derived from another rather than chosen.
-            c.FarmStopRadius = 1.5f;
+            // 3.0 AND NOT 1.5: see `FarmStopRadius`. It must clear the enemy's emitter disc (1.25 at
+            // these pad values) or the farmer fights `WeightEnemyDanger` and never settles, and the
+            // operator's first live session showed 1.5 stands the character close enough to be inside
+            // a mob's contact reach (it settled at 0.85 units). Three units is still well inside the
+            // acquisition radius, so this is a distance the character chooses to stop at, not a
+            // change to what it will walk to.
+            c.FarmStopRadius = 3.0f;
             c.FarmSwitchMargin = 1.0f;
+            // WHAT TO IGNORE BY NAME, AND `critter` IS A SAFE DEFAULT BECAUSE A MISS MATCHES NOTHING.
+            // See `FarmIgnore`: the live session's ambient creatures are the things this exists for,
+            // and the client's own name for them is the only signal that separates them from a mob.
+            c.FarmIgnore = "critter";
+            // The client's own activation distance is 2 units; 1.5 is inside it. See `FarmPortalRadius`.
+            c.FarmPortalRadius = 1.5f;
             // THE ROUTES, OFF, WITH SECTION 7'S OWN STARTING VALUES. `RouteMode` ships false and
             // `RouteName` ships empty, which is the same switch: one variable names the route and
             // turns the mode on. The deviation is a THIRD of the spacing (1.0 against 3.0), which is
@@ -1528,6 +1651,15 @@ namespace Drelay.Bootstrap
             c.FarmEngageRadius = Float("DRELAY_DODGE_FARM_RANGE", c.FarmEngageRadius);
             c.FarmStopRadius = FloatAllowZero("DRELAY_DODGE_FARM_STOP", c.FarmStopRadius);
             c.FarmSwitchMargin = FloatAllowZero("DRELAY_DODGE_FARM_MARGIN", c.FarmSwitchMargin);
+            // THE IGNORE LIST: A NAME SUBSTRING LIST, AND `null`/unset KEEPS THE DEFAULT.
+            //
+            // The distinction between unset and empty matters and is the same one every other knob
+            // here makes: `DRELAY_DODGE_FARM_IGNORE=` (typed, empty) means "ignore nothing, I want
+            // every enemy", while a variable that is not there at all means "the shipped default".
+            // Without it an operator could not turn the critter filter off without editing a build.
+            string ignore = Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM_IGNORE");
+            if (ignore != null) { c.FarmIgnore = ignore; }
+            c.FarmPortalRadius = FloatAllowZero("DRELAY_DODGE_FARM_PORTAL", c.FarmPortalRadius);
             // THE ROUTE'S KNOBS. `DRELAY_DODGE_ROUTE=<name>` is both the switch and the name, for the
             // reason the field records; the four numbers move one at a time from the command line.
             string routeName = Environment.GetEnvironmentVariable("DRELAY_DODGE_ROUTE");
@@ -1738,8 +1870,9 @@ namespace Drelay.Bootstrap
         public string DescribeFarm()
         {
             return string.Format(CultureInfo.InvariantCulture,
-                "farm on={0} engage={1} stop={2} margin={3}",
-                FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin);
+                "farm on={0} engage={1} stop={2} margin={3} ignore='{4}' portal={5}",
+                FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin,
+                FarmIgnore ?? "", FarmPortalRadius);
         }
 
         /// <summary>

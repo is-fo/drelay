@@ -206,9 +206,7 @@ namespace Drelay.SolverHarness
                 // position is handed to the solver's own emitted moves -- and every fix that depends
                 // on the scripted walk is either disabled here or re-expressed as a scenario
                 // parameter.
-                bool farmFixture = kind == Scenario.Farmer || kind == Scenario.FarmerClose
-                                   || kind == Scenario.FarmerOrbit || kind == Scenario.FarmerPair
-                                   || kind == Scenario.FarmerDodge;
+                bool farmFixture = SyntheticTrace.IsFarm(kind);
                 if (kind == Scenario.FarmerOrbit)
                 {
                     // `farmerorbit` IS DEFINED BY `farmstop=0`, and it sets it itself rather than
@@ -329,6 +327,8 @@ namespace Drelay.SolverHarness
                 case "farmer-orbit": return Scenario.FarmerOrbit;
                 case "farmerpair":
                 case "farmer-pair": return Scenario.FarmerPair;
+                case "farmerignore":
+                case "farmer-ignore": return Scenario.FarmerIgnore;
                 case "farmerdodge":
                 case "farmer-dodge": return Scenario.FarmerDodge;
                 default:
@@ -4190,6 +4190,23 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                        + _farmer.FramesHeld + " held frame(s), " + _farmer.FramesWithTarget
                        + " frame(s) with a target. A forced release on this fixture means the hold was"
                        + " lost while the mob was still there -- an identity that is not an identity.");
+            }
+            if (ScenarioName == "farmerignore" || ScenarioName == "farmer-ignore")
+            {
+                // W1d. THE CRITTER FILTER, and the assertion is three statements in one: the near
+                // target was SEEN and REJECTED (`Ignored > 0`), the far one was CHOSEN
+                // (`TargetGameId == 2`), and nothing was lost along the way (`ForcedReleases == 0`).
+                // A farmer that simply never saw the critter would pass the first two by accident,
+                // so the ignored count is what makes this a test of the filter rather than of the
+                // geometry.
+                Report("W1d the critter filter ignores a named enemy and still picks a real one",
+                       _farmer.Ignored > 0 && _farmer.HasTarget && _farmer.TargetGameId == 2
+                       && _farmer.ForcedReleases == 0,
+                       _farmer.Ignored + " target(s) ignored by name, holding target "
+                       + _farmer.TargetGameId + " at " + F(_farmer.TargetDistance)
+                       + " units, " + _farmer.ForcedReleases + " forced release(s). The near enemy is"
+                       + " a `Baby Critter` and the far one a `Slime`; `DodgeConfig.FarmIgnore` ships"
+                       + " `critter`, and the operator's live session is why.");
             }
             if (ScenarioName == "farmerdodge" || ScenarioName == "farmer-dodge")
             {

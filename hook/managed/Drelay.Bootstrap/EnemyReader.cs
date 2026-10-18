@@ -115,6 +115,25 @@ namespace Drelay.Bootstrap
 
         private static string _gameIdName;
 
+        /// <summary>
+        /// `GameObject.Data`, then `GameObjectData.Name` and `.Class` -- THE CRITTER FILTER'S INPUT.
+        ///
+        /// THE OPERATOR'S FIRST LIVE FARM SESSION IS WHY THIS EXISTS: the character walked at the
+        /// realm's ambient critters, which die when it walks over them. A critter is an ordinary
+        /// `Enemy` to `GetEnemies()`, an ordinary body to rule 7, and a valid target to every rule
+        /// the farmer had, so no geometric test separates it from a mob. The client's own name for
+        /// it does, and the name is two field reads away: `Enemy : Entity : GameObject` carries
+        /// `Data`, and `GameObjectData` carries `Name` and `Class` as public fields.
+        ///
+        /// THEY ARE OPTIONAL LIKE EVERY OTHER ACCESSOR HERE. A build where `Data` moved loses the
+        /// name (and the ignore list becomes a no-op) but keeps the body list and the farmer, which
+        /// is the same discipline `Health` and `GameId` follow.
+        /// </summary>
+        private static Func<object, object> _getData;
+        private static Func<object, object> _getName;
+        private static Func<object, object> _getClass;
+        private static string _nameSource;
+
         /// <summary>The element type's own name, for the farm half's failure line.</summary>
         private static string _enemyTypeName;
 
@@ -277,6 +296,25 @@ namespace Drelay.Bootstrap
                 _farmUsable = gameIdField != null;
                 _enemyTypeName = enemyType.Name;
 
+                // THE CRITTER FILTER'S TWO STRINGS, on the same optional terms. `Data` is on
+                // `GameObject`, so it needs the hierarchy walk `GameId` and `Radius` do.
+                FieldInfo dataField = FieldLookup.Find(enemyType, out _, "Data");
+                if (dataField != null)
+                {
+                    _getData = FieldAccessor.Reference(dataField);
+                    Type dataType = dataField.FieldType;
+                    FieldInfo nameField = dataType.GetField("Name", Any);
+                    FieldInfo classField = dataType.GetField("Class", Any);
+                    _getName = nameField != null ? FieldAccessor.Reference(nameField) : null;
+                    _getClass = classField != null ? FieldAccessor.Reference(classField) : null;
+                    _nameSource = (nameField != null ? dataType.Name + ".Name" : "no Name")
+                                  + (classField != null ? " / " + dataType.Name + ".Class" : " / no Class");
+                }
+                else
+                {
+                    _nameSource = "no GameObject.Data";
+                }
+
                 _getEnemies = getEnemies.MethodHandle.GetFunctionPointer();
 
                 _resolved = true;
@@ -406,11 +444,30 @@ namespace Drelay.Bootstrap
                     // rather than in the farmer so the enumeration stays in one place. The farmer's
                     // filter is this reader's own (`Dead`, `Npc`) plus the range cut; what it adds is
                     // the stickiness rule, which is a fact about the farmer's own state.
+                    //
+                    // THE NAME AND CLASS ARE THE CRITTER FILTER'S INPUT -- see `FarmTarget.Name`.
+                    // They are read even when no ignore list is configured, because the farmer's
+                    // line reports the name of what it is walking at and that is how an operator
+                    // finds a name to ignore. `Data` is null-guarded because a missing data object
+                    // would otherwise be a null dereference inside a patched frame.
+                    string name = null;
+                    string className = null;
+                    if (_getData != null && (_getName != null || _getClass != null))
+                    {
+                        object data = _getData(enemy);
+                        if (data != null)
+                        {
+                            if (_getName != null) { name = _getName(data) as string; }
+                            if (_getClass != null) { className = _getClass(data) as string; }
+                        }
+                    }
                     s.FarmTargets.Add(new FarmTarget
                     {
                         GameId = _getGameId(enemy),
                         X = ex,
                         Y = ey,
+                        Name = name,
+                        Class = className,
                     });
                     _farmTargetsAdded++;
                 }
