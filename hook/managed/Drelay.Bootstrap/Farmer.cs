@@ -123,6 +123,13 @@ namespace Drelay.Bootstrap
         public string PortalFailure;
         public string PortalTitle;
 
+        /// <summary>The travel fallback's counters. Always zero here, and named so the two builds agree.</summary>
+        public long TravelFrames;
+        public long RoamWaypoints;
+
+        /// <summary>False here: the public stub never travels.</summary>
+        public bool Traveling => false;
+
         /// <summary>
         /// Drops the hold. A no-op here, and named anyway so the world-change path compiles
         /// without a conditional.

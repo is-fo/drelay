@@ -168,6 +168,19 @@ namespace Drelay.SolverHarness
         FarmerIgnore,
 
         /// <summary>
+        /// THE TRAVEL FALLBACK: an EMPTY world. No enemies, no portals, no route -- the state the
+        /// operator reported as "when there's no enemies on screen ... it has no where to pathfind".
+        /// The farmer must publish roam waypoints and keep the character moving, with `stand`
+        /// suppressed exactly as a route suppresses it.
+        ///
+        /// IT IS ALSO THE SPAWN-HAVEN FIXTURE IN MINIATURE: "when entering the world it's stuck
+        /// inside a small safe haven, it has to try and breach out of there" is an empty world with
+        /// walls around the character, and the waypoint rotation is what turns "stuck" into "walking
+        /// until a target appears".
+        /// </summary>
+        FarmerTravel,
+
+        /// <summary>
         /// W5: the farmer and a live bullet on the same frame. See `PlanSpawns`'s case for the
         /// geometry -- it is `Scenario.Dodge`'s bullet with a farm target added, so the dodge has
         /// real work to do while the farmer is asking to walk north.
@@ -641,7 +654,8 @@ namespace Drelay.SolverHarness
         {
             return kind == Scenario.Farmer || kind == Scenario.FarmerClose
                    || kind == Scenario.FarmerOrbit || kind == Scenario.FarmerPair
-                   || kind == Scenario.FarmerIgnore || kind == Scenario.FarmerDodge;
+                   || kind == Scenario.FarmerIgnore || kind == Scenario.FarmerTravel
+                   || kind == Scenario.FarmerDodge;
         }
 
         /// <summary>

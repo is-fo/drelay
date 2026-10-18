@@ -144,10 +144,11 @@ picks for you.
 **Where it walks, and what it ignores** ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §14):
 
 ```powershell
-# the three knobs, all environment variables (defaults in brackets)
+# the four knobs, all environment variables (defaults in brackets)
 $env:DRELAY_DODGE_FARM_STOP   = '3'        # [3]   how close it stands to a mob, world units
 $env:DRELAY_DODGE_FARM_IGNORE = 'critter'  # [critter] name/class substrings it will not walk at
 $env:DRELAY_DODGE_FARM_RANGE  = '8'        # [8]   how far away an enemy is still worth walking to
+$env:DRELAY_DODGE_FARM_TRAVEL = '25'       # [25]  the roam waypoint when there is nothing to fight
 ```
 
 The ignore list is matched, case-insensitively, against the client's own `Data.Name` and `Data.Class`
@@ -156,12 +157,16 @@ The ignore list is matched, case-insensitively, against the client's own `Data.N
 rebuild:
 
 ```
-PHASE 3 DODGE FARM | farm frames=… target=418433 at=2.94 name='Slime' ignored=12 lobby=3/2 portal='[US] Cronus (42)'
+PHASE 3 DODGE FARM | farm frames=… target=418433 at=2.94 name='Slime' ignored=12 lobby=3/2 portal='[US] Cronus (42)' travel=980/41
 ```
 
 `lobby=` is the reconnect counter: attempts / the ones the client's own `Portal.Activate(0)` accepted.
-In the Tavern the farmer walks to the nearest realm portal (the one titled `[US] …` / `[EU] …`),
-stands on it and enters, so a death does not end the session in the lobby.
+In the Tavern the farmer walks to the nearest realm portal (the one titled `[US] …` / `[EU] …`), to a
+point just short of it rather than onto its tile, stands on it and enters, so a death does not end
+the session in the lobby. `travel=` is the roam fallback: frames spent walking a waypoint with no
+enemy in range, and how many waypoints were chosen — that is what gets the character out of a realm's
+spawn haven and keeps it moving between packs. A recorded route replaces it once the proxy↔hook
+bridge exists; see [`HANDOFF-ROUTE-BRIDGE.md`](../docs/hook/HANDOFF-ROUTE-BRIDGE.md).
 
 ### Starting it with no arguments (the configuration file)
 

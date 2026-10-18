@@ -1338,3 +1338,45 @@ portal reader is reflection against a live `World.Activatables` that no offline 
 The run's log will say which half resolved -- `portals: World.Activatables -> Portal | x/y Position |
 title Title | enter Activate(0)`, or the named failure -- and the farm line carries
 `lobby=<attempts>/<activations> portal='<title>'`.
+
+**14.4 The second live session: a portal it would not approach, a haven it would not leave**
+
+`20261018-030319-p26800`, and every one of §14.1–14.3's changes is in its log. Two of the operator's
+observations are the same defect seen twice -- **no target means no goal, and no goal means a
+character that stands**.
+
+**(a) The portal approach was the portal's own tile.** The farm line proved the pilot ran
+(`lobby=5/5`, `portal='[US] Foley (45)'`), and the world log shows the character walking to
+(123.6, 105.6) and entering. What it also shows is the character arriving on the portal and then
+standing on it for up to 150 frames. The operator's diagnosis was the fix: *"it could maybe be solved
+by trying to pathfind to a coordinate near the portal"* -- a portal is an object on a tile, and a
+path search whose target cell is occupied refuses the search, which from the outside is a farmer that
+will not walk at a portal it can see. **The goal is now a point `FarmPortalRadius` short of the
+portal on the player's side, recomputed every frame from the portal's current position** -- which is
+the second half of the operator's sentence, *"since they slightly change position every now and
+then"*. The activation test stays measured against the portal itself, so arrival and entry agree.
+
+**(b) The safe haven, and the empty screen, are `TRAVEL`.** After entering a realm the character
+spawns inside a small enclosure with no enemies in it; between packs the screen is empty because the
+farmer killed everything. Both frames published nothing, and the solver's `stand` early-out answered
+`StandSafe` -- the correct answer to "nothing to do". The farmer now has a **roam waypoint**:
+`FarmTravelRadius` (25 units) away, south first (the operator's own "bottom part of the map is the
+best place to start farming"), then the other cardinals and the diagonals, replaced when reached,
+when it is not reached in five seconds, or when a teleport says the map changed. It is published with
+`DodgeSnapshot.GoalKeepWalking`, which suppresses `stand` exactly as a route's `GoalFromRoute` does,
+so the character keeps walking instead of stopping three units short and calling it arrival. The
+25-unit step is deliberate: the planner's window is 64 units, so a short waypoint leaves room to
+route around the haven's wall rather than aiming straight into it.
+
+`--scenario farmertravel` is the fixture: an empty world, 600 frames, two or more waypoints, and
+**no `StandSafe` frame at all** -- the assertion that the goal, not the dodge's early-out, is what
+moves the character. W1 was rewidened for it: a farm goal no longer implies a target, so W1 compares
+target frames against frames where a target AND the farmer's point agreed, and allows the goal-source
+count to exceed them by the travel frames.
+
+**(c) The real answer is a route, and it is a handoff.** The operator's instruction is to record a
+route and to defer it until the proxy↔hook bridge exists. `HANDOFF-ROUTE-BRIDGE.md` is that handoff:
+what §7 already built, the four commands the bridge needs (`route.record.start/stop`,
+`route.play/stop`), why the hook should keep owning the file, and the one open measurement (what a
+recorder should do with a teleport). The roam waypoint is the stopgap and is named as one wherever it
+appears.

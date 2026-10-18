@@ -579,6 +579,24 @@ namespace Drelay.Bootstrap
         /// </summary>
         public bool GoalIsPortal;
 
+        /// <summary>
+        /// True when the point goal is a TRAVEL waypoint -- somewhere to walk when there is nothing
+        /// to fight -- so the arrival policy must not park the character three units short of it.
+        ///
+        /// THE OPERATOR'S SECOND LIVE SESSION IS WHY: *"when there's no enemies on screen (which
+        /// happens often since it kills them), it has no where to pathfind"*, and *"when entering the
+        /// world it's stuck inside a small safe haven, it has to try and breach out of there"*. Both
+        /// are the same state -- `TRAVEL` in `PLAN-AUTOFARM.md` section 5.1 -- and the farmer's answer
+        /// until the recorded routes of section 7 are driven from the bridge is a roam waypoint: a
+        /// point a fixed distance away, rotated until the character is out of the haven and walking.
+        ///
+        /// IT SUPPRESSES `stand` EXACTLY AS A ROUTE DOES (`GoalFromRoute`), and for the same reason:
+        /// a waypoint is a place to ARRIVE at and then replace, not a place to stop near. Keeping it a
+        /// second flag rather than reusing `GoalFromRoute` is what lets the log say which module
+        /// published the point, which is the same argument `GoalFromRoute` itself carries.
+        /// </summary>
+        public bool GoalKeepWalking;
+
         public CollisionWindow Grid;
 
         /// <summary>True when the sensor could not produce a usable picture this frame.</summary>
@@ -595,6 +613,7 @@ namespace Drelay.Bootstrap
             GoalY = 0.0f;
             GoalFromRoute = false;
             GoalIsPortal = false;
+            GoalKeepWalking = false;
         }
     }
 
@@ -1142,6 +1161,23 @@ namespace Drelay.Bootstrap
         public float FarmPortalRadius;
 
         /// <summary>
+        /// HOW FAR the roam waypoint is from the character when there is nothing to fight, world
+        /// units. See `DodgeSnapshot.GoalKeepWalking`.
+        ///
+        /// IT IS SHORT ENOUGH FOR THE PLAN'S WINDOW TO SEE AROUND IT. The planner searches a 128x128
+        /// window (`GridRadius` 64), so a waypoint 25 units away leaves the search room to route
+        /// around a haven's wall instead of aiming into it -- which is exactly the "stuck in the small
+        /// safe haven" the operator reported. `60` or more would put the target's cell outside the
+        /// window on the first frame and fall back to "furthest cell along the direction", which is a
+        /// straight line into the wall.
+        ///
+        /// THE DIRECTION ROTATES WHEN THE WAYPOINT IS NOT REACHED: south first (the operator's own
+        /// "bottom part of the map is the best place to start farming"), then the cardinals and the
+        /// diagonals. A haven with one gap is a haven one of eight directions faces.
+        /// </summary>
+        public float FarmTravelRadius;
+
+        /// <summary>
         /// How much closer a different enemy must be before the farmer abandons the one it is
         /// walking at, world units. `PLAN-AUTOFARM.md` section 4.2.
         ///
@@ -1443,6 +1479,8 @@ namespace Drelay.Bootstrap
             c.FarmIgnore = "critter";
             // The client's own activation distance is 2 units; 1.5 is inside it. See `FarmPortalRadius`.
             c.FarmPortalRadius = 1.5f;
+            // HOW FAR THE ROAM WAYPOINT IS when there is nothing to fight. See `FarmTravelRadius`.
+            c.FarmTravelRadius = 25.0f;
             // THE ROUTES, OFF, WITH SECTION 7'S OWN STARTING VALUES. `RouteMode` ships false and
             // `RouteName` ships empty, which is the same switch: one variable names the route and
             // turns the mode on. The deviation is a THIRD of the spacing (1.0 against 3.0), which is
@@ -1660,6 +1698,7 @@ namespace Drelay.Bootstrap
             string ignore = Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM_IGNORE");
             if (ignore != null) { c.FarmIgnore = ignore; }
             c.FarmPortalRadius = FloatAllowZero("DRELAY_DODGE_FARM_PORTAL", c.FarmPortalRadius);
+            c.FarmTravelRadius = Float("DRELAY_DODGE_FARM_TRAVEL", c.FarmTravelRadius);
             // THE ROUTE'S KNOBS. `DRELAY_DODGE_ROUTE=<name>` is both the switch and the name, for the
             // reason the field records; the four numbers move one at a time from the command line.
             string routeName = Environment.GetEnvironmentVariable("DRELAY_DODGE_ROUTE");
@@ -1870,9 +1909,9 @@ namespace Drelay.Bootstrap
         public string DescribeFarm()
         {
             return string.Format(CultureInfo.InvariantCulture,
-                "farm on={0} engage={1} stop={2} margin={3} ignore='{4}' portal={5}",
+                "farm on={0} engage={1} stop={2} margin={3} ignore='{4}' portal={5} travel={6}",
                 FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin,
-                FarmIgnore ?? "", FarmPortalRadius);
+                FarmIgnore ?? "", FarmPortalRadius, FarmTravelRadius);
         }
 
         /// <summary>

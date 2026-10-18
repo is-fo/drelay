@@ -1040,7 +1040,9 @@ namespace Drelay.Bootstrap
             // this one is reached -- so a route goal is always something to walk at, and suppressing
             // `stand` for it is the same statement section 4.3 makes for the farmer. One flag for the
             // three suppression sites, so they cannot disagree about who is driving.
-            _pointDriven = _farmClosing || (_farmGoalActive && snapshot.GoalFromRoute);
+            _pointDriven = _farmClosing
+                           || (_farmGoalActive
+                               && (snapshot.GoalFromRoute || snapshot.GoalKeepWalking));
 
             // --- THE PATH: ONE SEARCH, ONCE PER FRAME, BEFORE MAYBE-EVALUATING THE FRAME. -----
             //

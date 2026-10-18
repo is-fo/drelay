@@ -329,6 +329,8 @@ namespace Drelay.SolverHarness
                 case "farmer-pair": return Scenario.FarmerPair;
                 case "farmerignore":
                 case "farmer-ignore": return Scenario.FarmerIgnore;
+                case "farmertravel":
+                case "farmer-travel": return Scenario.FarmerTravel;
                 case "farmerdodge":
                 case "farmer-dodge": return Scenario.FarmerDodge;
                 default:
@@ -799,6 +801,15 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         // lost every target both read as "no farm goals"; this is the difference.
         private int _farmFramesWithTarget;
         private int _farmFramesWithGoalSource;
+
+        /// <summary>
+        /// Frames where BOTH statements were true: the farmer held a target AND the solver's goal was
+        /// the farmer's point. W1 compares this against `_farmFramesWithTarget`, because since the
+        /// TRAVEL fallback (`GoalKeepWalking`) a farm goal no longer implies a target -- an empty
+        /// world publishes a roam waypoint and holds nothing, which is the point of it.
+        /// </summary>
+        private int _farmFramesWithTargetGoal;
+
         private List<string> _farmGoalMismatchExamples = new List<string>();
 
         /// <summary>
@@ -2806,10 +2817,15 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             if (farmGoal)
             {
                 _farmFramesWithGoalSource++;
-                if (!_farmer.HasTarget && _farmGoalMismatchExamples.Count < 5)
+                if (_farmer.HasTarget)
+                {
+                    _farmFramesWithTargetGoal++;
+                }
+                else if (!_farmer.Traveling && _farmGoalMismatchExamples.Count < 5)
                 {
                     _farmGoalMismatchExamples.Add("frame " + frame.Frame
-                        + ": the solver's goal is the farmer's point, but the farmer holds no target.");
+                        + ": the solver's goal is the farmer's point, but the farmer holds no target"
+                        + " and is not travelling.");
                 }
             }
             else if (_farmer.HasTarget && _farmClosingOn() && _farmGoalMismatchExamples.Count < 5)
@@ -4046,13 +4062,21 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // whose output never reached the solver all read identically everywhere else. This is the
             // difference -- and the two counts are made by two different objects on purpose.
             Report("W1  the goal is the farmer's target and the farmer's target is the goal",
-                   _farmFramesWithTarget == _farmFramesWithGoalSource,
-                   _farmFramesWithTarget + " frame(s) held a target and " + _farmFramesWithGoalSource
-                   + " frame(s) had the farmer's point as the solver's goal"
+                   _farmFramesWithTarget == _farmFramesWithTargetGoal
+                   && _farmFramesWithGoalSource >= _farmFramesWithTargetGoal,
+                   _farmFramesWithTarget + " frame(s) held a target, "
+                   + _farmFramesWithTargetGoal + " of them had the farmer's point as the solver's"
+                   + " goal, and " + _farmFramesWithGoalSource + " frame(s) in total had a farm"
+                   + " point (the difference is `TRAVEL`, where the point is a roam waypoint and no"
+                   + " target is held)"
                    + (_config.FarmMode
                        ? (_farmFramesWithTarget == 0
-                           ? ". VACUOUS: farm mode is on and this run had no target in range, so"
-                             + " nothing was joined. A `farm*` scenario is the fixture."
+                           ? (_farmFramesWithGoalSource > 0
+                               ? ". NO TARGET: the farmer travelled instead (a roam waypoint, which"
+                                 + " is `W1e`'s subject), so there was nothing to join. A `farm*`"
+                                 + " scenario with an enemy is the fixture."
+                               : ". VACUOUS: farm mode is on and this run had no target in range,"
+                                 + " so nothing was joined. A `farm*` scenario is the fixture.")
                            : ".")
                        : ". VACUOUS: farm mode is off, so both counts must be zero -- which is"
                          + " itself the assertion (`PLAN-AUTOFARM.md` section 4.3's regression guard"
@@ -4207,6 +4231,24 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                        + " units, " + _farmer.ForcedReleases + " forced release(s). The near enemy is"
                        + " a `Baby Critter` and the far one a `Slime`; `DodgeConfig.FarmIgnore` ships"
                        + " `critter`, and the operator's live session is why.");
+            }
+            if (ScenarioName == "farmertravel" || ScenarioName == "farmer-travel")
+            {
+                // W1e. THE TRAVEL FALLBACK, and the second clause is the one that proves it works:
+                // with an EMPTY world a farmer that publishes nothing leaves the solver on its
+                // `stand` early-out every frame (no threats, nothing to do), so a run with NO
+                // `StandSafe` frame is a run whose goal kept the character walking. `RoamWaypoints`
+                // is the third clause: one waypoint is a single step, not a fallback.
+                bool stood = _reasons.ContainsKey(DodgeReason.StandSafe);
+                Report("W1e the travel fallback walks an empty world instead of standing",
+                       _farmer.TravelFrames > 0 && _farmer.RoamWaypoints >= 2 && !stood,
+                       _farmer.TravelFrames + " travel frame(s), " + _farmer.RoamWaypoints
+                       + " roam waypoint(s), " + (stood
+                           ? _reasons[DodgeReason.StandSafe] + " frame(s) on the stand early-out"
+                           : "no frame on the stand early-out")
+                       + ". An empty world is what `stand` is for, so the goal has to be the thing"
+                       + " that keeps the character moving -- the operator's \"when there's no"
+                       + " enemies on screen it has no where to pathfind\".");
             }
             if (ScenarioName == "farmerdodge" || ScenarioName == "farmer-dodge")
             {
