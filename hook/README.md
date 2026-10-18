@@ -152,15 +152,16 @@ $env:DRELAY_DODGE_FARM_TRAVEL = '25'       # [25]  the roam waypoint when there 
 ```
 
 The ignore list is matched, case-insensitively, against the client's own `Data.Name` and `Data.Class`.
-**And an enemy the client itself says cannot be damaged is never a target** — `Entity.Effects.Unhittable()`,
-the same predicate auto-aim uses — which is the rule that excludes the realm's critters (crabs, ducks,
-and the rest): they cannot be shot, they only die when the player walks over them, and no geometric
-test tells them apart from a mob. The farm line in `bootstrap.log` names the target it is walking at,
-so a name can be found and added to the ignore list without a rebuild:
+**And a critter is excluded by a rule, not by its name**: the client has exactly two enemy classes, and
+`EnemyFlat` is the ground creature drawn under the player — the one you walk on rather than shoot — so
+`Data.Class == "EnemyFlat"` and the server-side `Data.NoDie` flag are both refused as farm targets,
+alongside anything the client marks `Effects.Unhittable()`. The name list is the belt for anything
+damageable that is still unwanted. The farm line names what it is walking at, and prints the class and
+the rule counts, so one session can settle whether a given creature is caught:
 
 ```
-PHASE 3 DODGE FARM | farm frames=… target=418433 at=2.94 name='Slime' ignored=12 unhittable=8 | stand held for range 990
-PHASE 3 DODGE PILOT | pilot lobby=3/3 portal='[US] Cronus (42)' travel=980/41
+PHASE 3 DODGE FARM | farm frames=… target=418433 at=2.94 name='Slime' class='Enemy' nodie=False ignored=12 unhittable=0 critters=8
+PHASE 3 DODGE PILOT | pilot lobby=3/3 portal='[US] Cronus (42)' travel=980/41 | stand held for range 990
 ```
 
 `lobby=` is the reconnect counter: attempts / the ones the client's own `Portal.Activate(0)` accepted.

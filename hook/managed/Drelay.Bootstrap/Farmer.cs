@@ -118,6 +118,9 @@ namespace Drelay.Bootstrap
         /// <summary>Targets skipped by the client's `Unhittable()` rule. Always zero here.</summary>
         public long UnhittableSkipped;
 
+        /// <summary>Targets skipped by the critter rule (`EnemyFlat` / `NoDie`). Always zero here.</summary>
+        public long CritterSkipped;
+
         /// <summary>The lobby pilot's counters. Always zero here, and named so the two builds agree.</summary>
         public long LobbyFrames;
         public long PortalAttempts;

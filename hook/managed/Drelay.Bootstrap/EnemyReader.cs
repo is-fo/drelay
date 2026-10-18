@@ -132,6 +132,7 @@ namespace Drelay.Bootstrap
         private static Func<object, object> _getData;
         private static Func<object, object> _getName;
         private static Func<object, object> _getClass;
+        private static Func<object, bool> _getNoDie;
         private static string _nameSource;
 
         /// <summary>
@@ -333,8 +334,15 @@ namespace Drelay.Bootstrap
                     FieldInfo classField = dataType.GetField("Class", Any);
                     _getName = nameField != null ? FieldAccessor.Reference(nameField) : null;
                     _getClass = classField != null ? FieldAccessor.Reference(classField) : null;
+                    // `NoDie` IS ON `EntityData`, A BASE OF THE DATA TYPE, so it needs the hierarchy
+                    // walk `FieldLookup` exists for -- a `declaredOnly` lookup on `EnemyData` finds
+                    // nothing. It is the second half of the critter rule; see `FarmTarget.NoDie`.
+                    FieldInfo noDieField = FieldLookup.Find(dataType, out _, "NoDie");
+                    _getNoDie = noDieField != null ? FieldAccessor.Bool(noDieField) : null;
                     _nameSource = (nameField != null ? dataType.Name + ".Name" : "no Name")
-                                  + (classField != null ? " / " + dataType.Name + ".Class" : " / no Class");
+                                  + (classField != null ? " / " + dataType.Name + ".Class" : " / no Class")
+                                  + (noDieField != null ? " / " + noDieField.DeclaringType.Name + ".NoDie"
+                                                        : " / no NoDie");
                 }
                 else
                 {
@@ -501,13 +509,15 @@ namespace Drelay.Bootstrap
                     // would otherwise be a null dereference inside a patched frame.
                     string name = null;
                     string className = null;
-                    if (_getData != null && (_getName != null || _getClass != null))
+                    bool noDie = false;
+                    if (_getData != null && (_getName != null || _getClass != null || _getNoDie != null))
                     {
                         object data = _getData(enemy);
                         if (data != null)
                         {
                             if (_getName != null) { name = _getName(data) as string; }
                             if (_getClass != null) { className = _getClass(data) as string; }
+                            if (_getNoDie != null) { noDie = _getNoDie(data); }
                         }
                     }
                     // THE CANNOT-BE-DAMAGED PREDICATE. Null effects are treated as hittable, the
@@ -533,6 +543,7 @@ namespace Drelay.Bootstrap
                         Name = name,
                         Class = className,
                         Unhittable = unhittable,
+                        NoDie = noDie,
                     });
                     _farmTargetsAdded++;
                 }

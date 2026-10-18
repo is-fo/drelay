@@ -4229,14 +4229,16 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 // A farmer that simply never saw the critter would pass the first two by accident,
                 // so the ignored count is what makes this a test of the filter rather than of the
                 // geometry.
-                Report("W1d the critter filter ignores a named enemy and still picks a real one",
-                       _farmer.Ignored > 0 && _farmer.HasTarget && _farmer.TargetGameId == 2
+                Report("W1d the critter rule ignores the ground creatures and still picks a real one",
+                       _farmer.Ignored > 0 && _farmer.HasTarget && _farmer.TargetGameId == 3
                        && _farmer.ForcedReleases == 0,
-                       _farmer.Ignored + " target(s) ignored by name, holding target "
-                       + _farmer.TargetGameId + " at " + F(_farmer.TargetDistance)
-                       + " units, " + _farmer.ForcedReleases + " forced release(s). The near enemy is"
-                       + " a `Baby Critter` and the far one a `Slime`; `DodgeConfig.FarmIgnore` ships"
-                       + " `critter`, and the operator's live session is why.");
+                       _farmer.Ignored + " target(s) ignored (" + _farmer.CritterSkipped
+                       + " by the class/NoDie rule), holding target " + _farmer.TargetGameId + " at "
+                       + F(_farmer.TargetDistance) + " units, " + _farmer.ForcedReleases
+                       + " forced release(s). The ignored pair are a `Crab` whose class is"
+                       + " `EnemyFlat` and a `Duck` with `NoDie`; the chosen one is a `Slime`."
+                       + " `GameObjectData.Class` is the client's data TYPE name, and Enemy has"
+                       + " exactly one subclass, so this is a structural test and not a name list.");
             }
             if (ScenarioName == "farmertravel" || ScenarioName == "farmer-travel")
             {

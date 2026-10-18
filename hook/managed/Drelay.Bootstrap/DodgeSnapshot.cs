@@ -323,6 +323,19 @@ namespace Drelay.Bootstrap
         /// leaves it false and the farmer keeps its old behaviour (which is to walk at everything).
         /// </summary>
         public bool Unhittable;
+
+        /// <summary>
+        /// `EntityData.NoDie` -- the server's own "normal damage cannot kill this" flag, and the
+        /// second half of the CRITTER rule.
+        ///
+        /// THE CLIENT PARSES IT AND NEVER READS IT (it appears only in `EntityData.Parse`), which is
+        /// exactly the signature of a flag whose meaning is enforced server-side: projectiles are
+        /// applied locally and reported with `GmHit`, and the server decides whether they count. So a
+        /// critter that cannot be shot can be flagged here without the client ever consulting it.
+        /// That makes the flag INFERRED rather than proven -- see `PLAN-AUTOFARM.md` section 14.5 --
+        /// but it is the only per-object bit in the data that says "this does not die to damage".
+        /// </summary>
+        public bool NoDie;
     }
 
     /// <summary>
@@ -1157,10 +1170,14 @@ namespace Drelay.Bootstrap
         /// `Data.Class`, which is where a category like "critter" would live), read by
         /// `EnemyReader` and applied by the farmer.
         ///
-        /// THE DEFAULT IS `critter`, AND A DEFAULT THAT MATCHES NOTHING COSTS NOTHING: if the client
-        /// does not call them that, no enemy is filtered and the behaviour is the old one. If it
-        /// does, the session that produced the complaint is fixed without another run. The operator
-        /// can widen it with `DRELAY_DODGE_FARM_IGNORE=<a,b,c>` or empty it with
+        /// THE DEFAULT IS `critter,crab,duck`, AND A DEFAULT THAT MATCHES NOTHING COSTS NOTHING: if
+        /// the client does not use a word, no enemy is filtered by it. The operator's third session
+        /// named the kinds they had seen -- crabs and ducks, "and there's different kinds" -- so the
+        /// two names join the generic word, and the farm line's `name='...'` is how the next kind
+        /// gets added. The RULE for them is `FarmTarget.Unhittable`, not this list: a critter is by
+        /// definition something the client says cannot be damaged, and that covers kinds nobody has
+        /// named yet. The list is the belt for anything damageable that is still not worth walking
+        /// at. The operator can widen it with `DRELAY_DODGE_FARM_IGNORE=<a,b,c>` or empty it with
         /// `DRELAY_DODGE_FARM_IGNORE=` (an empty value means "ignore nothing", which is a different
         /// statement from "unset").
         /// </summary>
@@ -1494,7 +1511,7 @@ namespace Drelay.Bootstrap
             // WHAT TO IGNORE BY NAME, AND `critter` IS A SAFE DEFAULT BECAUSE A MISS MATCHES NOTHING.
             // See `FarmIgnore`: the live session's ambient creatures are the things this exists for,
             // and the client's own name for them is the only signal that separates them from a mob.
-            c.FarmIgnore = "critter";
+            c.FarmIgnore = "critter,crab,duck";
             // The client's own activation distance is 2 units; 1.5 is inside it. See `FarmPortalRadius`.
             c.FarmPortalRadius = 1.5f;
             // HOW FAR THE ROAM WAYPOINT IS when there is nothing to fight. See `FarmTravelRadius`.

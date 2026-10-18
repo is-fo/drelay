@@ -695,9 +695,10 @@ namespace Drelay.SolverHarness
                     bodies.Add(FarmPairSecond(frame));
                     break;
                 case Scenario.FarmerIgnore:
-                    // The critter is nearer and off to the east; the mob is north. Both are bodies,
-                    // because the live reader puts the same enemies in both lists.
+                    // Two ground creatures to the east and one ordinary mob to the north. All three
+                    // are bodies, because the live reader puts the same enemies in both lists.
                     bodies.Add(Body(StartX + 4.0f, StartY, FarmBodyRadius));
+                    bodies.Add(Body(StartX + 5.0f, StartY + 1.0f, FarmBodyRadius));
                     bodies.Add(Body(StartX, StartY + 5.0f, FarmBodyRadius));
                     break;
                 case Scenario.FarmerDodge:
@@ -739,28 +740,36 @@ namespace Drelay.SolverHarness
                     targets.Add(new FarmTarget { GameId = 2, X = second.X, Y = second.Y });
                     break;
                 case Scenario.FarmerIgnore:
-                    // THE NAMES ARE THE WHOLE FIXTURE. `DodgeConfig.FarmIgnore` ships `critter`, so
-                    // the near one matches on its class and the far one does not -- which is the
-                    // only difference the farmer is allowed to see.
+                    // THE CRITTER RULE IS THE FIXTURE, and the values are the client's own after the
+                    // 2026-10-18 research: `GameObjectData.Class` is the .NET TYPE name of the data
+                    // class, and `Enemy` has exactly one subclass -- `EnemyFlat`, the ground-layer
+                    // creature you walk on. `NoDie` is the server-side flag the client parses and
+                    // never reads. Two ignored kinds, both structural; the far one is an ordinary
+                    // mob and must be the one chosen.
                     targets.Add(new FarmTarget
                     {
                         GameId = 1,
                         X = StartX + 4.0f,
                         Y = StartY,
-                        Name = "Baby Critter",
-                        Class = "critter",
-                        // BOTH HALVES OF THE FILTER SET, because the fixture must exercise the RULE
-                        // and not only the name list: the operator's critters are "not shootable or
-                        // damageable as normal enemies", which is the client's own `Unhittable()`.
-                        Unhittable = true,
+                        Name = "Crab",
+                        Class = "EnemyFlat",
                     });
                     targets.Add(new FarmTarget
                     {
                         GameId = 2,
+                        X = StartX + 5.0f,
+                        Y = StartY + 1.0f,
+                        Name = "Duck",
+                        Class = "Enemy",
+                        NoDie = true,
+                    });
+                    targets.Add(new FarmTarget
+                    {
+                        GameId = 3,
                         X = StartX,
                         Y = StartY + 5.0f,
                         Name = "Slime",
-                        Class = "enemy",
+                        Class = "Enemy",
                     });
                     break;
                 case Scenario.FarmerDodge:

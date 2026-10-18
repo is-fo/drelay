@@ -1408,27 +1408,60 @@ is worth walking to). `DRELAY_DODGE_FARM_RANGE` moves it, and `farmerorbit` pins
 its characterisation is "the character leaves the acquisition radius", which is a different walk at
 20.
 
-**(c) Critters are a RULE, not a name list.** §14.1's `critter` substring did not catch them,
-because the client does not use that word: the operator names crabs, ducks and "different kinds", and
-the defining fact is mechanical — *"they're not shootable or damageable as normal enemies, the only
-way to subdue them is to walk on top of them"*. That is the class of object the client's own
-`Entity.Effects.Unhittable()` marks, the same predicate `AutoAim` already resolves and uses to exclude
-a target (true for Invincible, Invulnerable and Cutscene). So:
+**(c) Critters are a RULE, not a name list.** §14.1's `critter` substring did not catch them. The
+operator names crabs, ducks and *"different kinds"*, and the defining fact is mechanical:
+*"they're not shootable or damageable as normal enemies, the only way to subdue them is to walk on
+top of them"*. A research pass over the decompiled client found the structure behind that sentence,
+and one of its findings killed the first guess:
 
-- `EnemyReader` resolves `Entity.Effects` and `StatusEffects.Unhittable()` — the same pair
-  `AutoAim` uses — and carries the answer on `FarmTarget.Unhittable`;
-- the farmer skips an unhittable target unconditionally, because a target that cannot be damaged is
-  not something to farm. The dodge deliberately does **not** use the predicate: an invulnerable enemy
-  can still shoot, so rule 7 must still avoid it. It is a farm-half rule only;
-- the name list stays, as a belt for anything that is damageable but still unwanted, and the farm
-  line now carries `unhittable=` beside `ignored=` so the two rules are separable in a session;
-- the arm-time log gained a line naming both members the filter resolved:
-  `farm filter: name GameObjectData.Name / GameObjectData.Class | cannot-be-damaged StatusEffects.Unhittable()`,
-  or what was missing. A filter whose resolution failed must never look like a filter that found
-  nothing.
+- **`GameObjectData.Class` is not a gameplay category — it is the .NET TYPE NAME of the data class.**
+  `GameObject.Create` selects the live type with `_types.TryGetValue(data.Class, ...)` where the keys
+  are `Type.Name`, and `Enemy` has exactly one subclass: `EnemyFlat`. So every object in
+  `World.GetEnemies()` has `Class` ∈ {`"Enemy"`, `"EnemyFlat"`}, and no substring like `critter` can
+  ever match it (it can only match `Data.Name`).
+- **`EnemyFlat : Enemy` is the ground creature.** No shadow, `GlowColor = Transparent`, a
+  ground-flat `SetPosition`, and it is added to the world's flat-ground layer instead of the y-sorted
+  object layer — it is drawn *under* the player, which is what "walk on top of it" looks like. It has
+  a dedicated empty data class, `EnemyFlatData : EnemyData`.
+- **`EntityData.NoDie` is parsed and never read** anywhere in 1897 decompiled files. That is the
+  signature of a flag enforced on the server: projectiles are applied locally and reported with
+  `GmHit`, and the server decides whether they count. It is the only per-object bit in the data that
+  says "this does not die to damage".
+- **`Effects.Unhittable()` is not the same predicate as "not shootable".** The client's projectile
+  hit test skips only `Npc` and two status-effect ids, while `Unhittable()` ORs three — so one of its
+  three does not stop a bullet. Client-side, any non-NPC non-invulnerable enemy eats bullets and
+  shows damage numbers; a critter's immunity *must* be server-authoritative. The aimbot's own
+  refusal is a third thing again: `AimbotSystem.GetEnemyPriority(enemy) == 0` for dead/NPC, for a
+  non-`EnemyData`, and for an empty or unrecognised `EnemyData.Exp` — which is the likeliest reason
+  the operator sees the aimbot ignore them, and it is an *allowlist of twelve `Exp` values*, so it
+  would also drop real mobs and is not used.
 
-`--scenario farmerignore` sets **both** halves on the near target (its name is a critter's and it is
-`Unhittable`), so W1d fails if either rule regresses.
+So the farmer's filter is now two data rules plus the name list:
+
+- `Data.Class == "EnemyFlat"` — structural, covers every kind the client renders as a ground
+  creature;
+- `Data.NoDie == true` — the server-side flag, inferred rather than proven;
+- `Effects.Unhittable()` — kept, because a phase-invulnerable boss is not a farm target while it is
+  invulnerable (and the flag is re-read every frame, so it returns when the phase ends);
+- the name list (`critter,crab,duck`) stays as a belt for anything damageable and still unwanted.
+
+`EnemyReader` carries `Class`, `NoDie` and `Unhittable` on `FarmTarget`, the farm line prints the
+held target's `class='…' nodie=…` and counts the rule separately (`critters=` beside
+`unhittable=`), and the arm-time log names every member the two halves resolved:
+
+```
+farm filter: name GameObjectData.Name / GameObjectData.Class / EntityData.NoDie | cannot-be-damaged StatusEffects.Unhittable()
+```
+
+**`--scenario farmerignore` is the fixture and the two ignored targets are the two rules**: a `Crab`
+whose class is `EnemyFlat`, and a `Duck` with `NoDie`; the chosen one is an ordinary `Slime`.
+W1d fails if either rule regresses.
+
+**What one live session settles.** The rule is a *category* test, not a proven identity for these
+particular creatures (confidence ≈ 0.7 that crabs and ducks are `EnemyFlat`). The farm line is the
+measurement: run `--autofarm`, walk over a crab, and `class='…'` says it outright. `EnemyFlat`
+confirms it; `Enemy` refutes it and points at `nodie=true`, and if both are false the answer is the
+aimbot's `GetEnemyPriority` — which the reader does not resolve today and would need a new accessor.
 
 **And the two lines are separate lines now.** The farm line had reached the 256-byte truncation
 edge with the target name and the lobby/travel counters on it, and the tail it would have lost is

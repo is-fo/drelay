@@ -1592,14 +1592,15 @@ namespace Drelay.Bootstrap
             // absent on every run with the switch off, that it can only ever be nonzero in farm mode.
             if (_config.FarmMode)
             {
-                HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
-                    "PHASE 3 DODGE FARM | {0} | stand held for range {1}",
-                    _farmer.Describe(), _solver.StandHeldForRange));
-                // THE LOBBY AND TRAVEL NUMBERS GET THEIR OWN LINE, because the farm line above is at
-                // the 256-byte edge and these are the numbers a session that never left the spawn
-                // needs. See `Farmer.DescribePilot`.
                 HookEntry.AppendLog("INFO",
-                    "PHASE 3 DODGE PILOT | " + _farmer.DescribePilot());
+                    "PHASE 3 DODGE FARM | " + _farmer.Describe());
+                // THE LOBBY, TRAVEL AND ARRIVAL NUMBERS GET THEIR OWN LINE, because the farm line is
+                // at the 256-byte edge and `stand held for range` -- the one number that says the
+                // arrival policy of `PLAN-AUTOFARM.md` section 4.3 did anything -- would be the tail
+                // it loses. See `Farmer.DescribePilot`.
+                HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
+                    "PHASE 3 DODGE PILOT | {0} | stand held for range {1}",
+                    _farmer.DescribePilot(), _solver.StandHeldForRange));
             }
             HookEntry.FlushLog();
         }
