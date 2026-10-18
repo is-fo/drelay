@@ -749,7 +749,7 @@ written: it is the specification the implementation was measured against, and th
 diff. Rows 5, 7, 8 and 9 of §10's table are **not built**; §12.7 says what each is waiting on, and
 §12.8 is the row-4 session.
 
-### 12.1 Row 2 (§4) is in — `a38de9d`, "the farmer walks"
+### 12.1 Row 2 (§4) is in — `b72077d`, "the farmer walks"
 
 `Farmer.cs` (new, and since §13 a PRIVATE module outside the repository), plus `DodgeSnapshot`,
 `DodgeSolver`, `PathPlanner`, `EnemyReader` and `DodgeAdapter`. `SteeringPilot.cs` is untouched,
@@ -845,7 +845,7 @@ is really at `Radius 0.25` on the live client is unverified — `PLAN-ENEMY-THRE
 `fallbackRadius=11985` on its own live run, so roughly a quarter of live bodies took the fallback.
 `FarmStopRadius`'s 1.5 is derived from a pad that was itself never measured in a realm.
 
-### 12.5 Row 3 (§6) is in — `68233d7`, "the world log"
+### 12.5 Row 3 (§6) is in — `6f1a2f6`, "the world log"
 
 `WorldLog.cs` (new), `EnemyReader.SampleEnemies`, one call site in `StartupHook`.
 
