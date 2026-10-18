@@ -7,8 +7,14 @@ plan, not a record; nothing here is built.
 > work are built on branch `feat/autofarm` — the farmer walks, the `--world-log` collection
 > instrument exists, and a recorded route can be recorded and replayed. §12 names the seven places
 > the plan's own numbers did not survive contact with the harness, all of them measured rather than
-> argued, and the two bugs the world log's offline verifier found before it shipped. Rows 4, 5, 7, 8
-> and 9 are not built; §12.6 says what each is waiting on.
+> argued, and the two bugs the world log's offline verifier found before it shipped. **Row 4, the
+> operator's collection session, has now been run twice**: §12.8 is the first run — half the
+> questions answered, three columns silently zero, the instrument defects behind them fixed — and
+> §12.9 is the re-run, in which every column is filled, both dungeons are named *before* entry, the
+> realm's entrance is pinned to one portal at (125.5, 109.5) titled with a player's name, and leaving
+> a dungeon is measured to return to the lobby rather than to the realm. Rows 5, 7, 8 and 9 are still
+> not built; §12.7 says what each is waiting on, and for 5, 7 and 8 the answer is no longer "a
+> measurement".
 
 Read with: [`PLAN-ENEMY-THREATS.md`](PLAN-ENEMY-THREATS.md) (item 1, and a prerequisite for the
 arrival behaviour in §4), [`PLAN-HOOK-CONTROL.md`](../bridge/PLAN-HOOK-CONTROL.md) (items 3a/3b —
@@ -740,7 +746,8 @@ at zero cost and with no code.
 
 Written after the fact, on branch `feat/autofarm`. The body of this document above is left as
 written: it is the specification the implementation was measured against, and this section is the
-diff. Rows 4, 5, 6, 7, 8 and 9 of §10's table are **not built**; §12.5 says what each is waiting on.
+diff. Rows 5, 7, 8 and 9 of §10's table are **not built**; §12.7 says what each is waiting on, and
+§12.8 is the row-4 session.
 
 ### 12.1 Row 2 (§4) is in — `a38de9d`, "the farmer walks"
 
@@ -971,13 +978,187 @@ replays is a session, not a build.
 
 | row (§10) | state | waiting on |
 |---|---|---|
-| 4 — the operator's collection session | **not run** | the operator, and row 3's instrument, which now exists |
-| 5 — §5 2b, the state machine and lobby navigation | **not built** | row 4: which portal to pick, the lobby's walk coordinates, and whether a realm contains portals |
+| 4 — the operator's collection session | **run twice** — 2026-10-18 (a failed instrument, §12.8) and its re-run (§12.9). Every column filled; the dungeons named; no dungeon cleared | the boss/exit pass of §6.2 item 7 |
+| 5 — §5 2b, the state machine and lobby navigation | **not built** | nothing measured — §12.9 has the lobby's four portals, the realm entrance, and the "stand on its `Position`" rule |
 | 6 — §7 3c, the recorded route | **built** — see §12.6 | — |
-| 7 — §8.1, the full-grid mirror | **not built** | row 4's map-identity measurement |
-| 8 — §8.2–8.4, the dungeon whitelist and clear-and-advance | **not built** | rows 5, 7 and a route to follow, which now exists |
+| 7 — §8.1, the full-grid mirror | **not built, and unblocked** | §12.9's map-identity measurement (name + ref + grid size, all agreeing) — and a `CanTeleport` realm where 1 219-unit jumps occur, which the mirror's invalidation has to tolerate |
+| 8 — §8.2–8.4, the dungeon whitelist and clear-and-advance | **not built, and unblocked** | the key (`MapInfo.Name`) and the entry gate (the portal's `Title` == that name) are measured; the exit-without-boss path is measured. **Blocked on nothing** except a session that kills something, which is the boss research of row 9 |
 | 9 — §8.6, boss behaviour | **not built** | research that is not in this plan |
 
 The plan's §10.1 ordering has not been tested across worktrees: this branch built rows 2, 3 and 6 in
 one worktree, sequentially, and touched `StartupHook.cs` only by adding three statements.
+
+### 12.8 Row 4, run once: what the session answered, and the three columns it could not fill
+
+The run is `%LOCALAPPDATA%\drelay\hook\20261018-011545-p16312`: 302 lines of `worlds.jsonl` (one
+header, 292 frame lines, 9 transitions) covering frames 926–9656, about two and a half minutes of the
+client's clock. It went Tavern → realm → Tavern → realm → Tavern → The Beyond → Tavern → realm →
+Tavern, which is more world changes than §6.2 asked for and exactly what §5.1 needed.
+
+**What it answered.** Four of §5's open questions now have measurements rather than guesses:
+
+- **A realm contains portals.** `Darza's Dominion` reported one and then two `Portal` objects in
+  `World.Activatables` (ids 451313 and 451427), with `portalsOther` between 0 and 2. So §8.4's first
+  exit mechanism — an exit portal, entered by §5.2's preferred path — exists in the place 3d has to
+  leave. §5.4's fourth bullet is answered.
+- **Map identity is the easy half of it.** On all nine transitions the `MapInfo` reference, the name
+  and the collision grid's dimensions moved *together*; the grid alone separates the three maps
+  (Tavern 235×208, The Beyond 81×122, realm 2698×2634). `MapInfo.Name` was byte-identical across
+  three separate entries to the realm. So §5.1's "measured, not assumed" recommendation is now
+  measured, and any of the three signals would do.
+- **`MapInfo.PlayerId` is not an identity, and §6.1's map block should say so.** It changed on every
+  entry, including between two entries to the *same* map: the Tavern reported 3335405, 3335496,
+  3335688, 3335698, 3335940 and the realm 450589, 451133, 614358. It is a per-world-instance number.
+  Nothing keys on it, and nothing should.
+- **The realm's geometry is real numbers now.** The character entered at (660.2, 1427.1) of a
+  2698×2634 map, and the session's own walk reached y = 2120. That is the "bottom part of the map"
+  §5.3 has been waiting for, as a coordinate rather than a heuristic. The full grid §8.1 wants is
+  7.1 M cells — worth the size guard, not worth worrying about.
+
+**And three things §5.1 does not anticipate**, each of which would have been a defect in 2b:
+
+- **`SafeWorld` is not settled on the frame the map changes.** Six of the nine transitions fired the
+  `safeWorld` bit, and in three of the nine the value on the transition line disagrees with the next
+  frame line: The Beyond is `false` then `true` (f 5380 → 5396), the Tavern `false` then `true`
+  (5451 → 5456), and the realm — the one that matters — `true` then `false` (5639 → 5666). It goes
+  wrong in both directions, so it is a transient and not a lag. **A state machine that reads
+  `SafeWorld` on the change frame classifies the realm as the lobby for one frame**, which is
+  precisely the frame §5.1 wants to decide `IN_LOBBY` on. Read it a frame later, or key the lobby on
+  the map name and use `SafeWorld` as a confirmation.
+- **`SafeWorld` is not the same question as "is this the lobby".** *The Beyond* is
+  `SafeWorld == true` — `Utils.SafeWorld` says so — while being an 81×122 map with no portals and no
+  player-vs-world enemies. §5.1's lobby bit is therefore necessary and not sufficient, and 2b has to
+  name the lobby it wants.
+- **The lobby contains things `World.GetEnemies()` calls enemies.** Every Tavern sample carries three
+  rows — two at 69420/69420 HP and one at 1000000/1000000 — with `npc: false`, `dead: false`. So §5.1's
+  `IN_LOBBY = World.SafeWorld && no target available` is false in the room the operator starts in: a
+  target *is* available, it just is not one worth walking to. The acquisition rule of §4.2 has to be
+  gated by the world state, not by whether the target list came back empty. That is a finding about
+  the plan's own state machine, not about the client.
+
+**What it could not fill, and why.** The portal positions were `0`, the portal titles and tags were
+`null`, and the player's `hp`/`maxhp` were `0` — on every one of the 292 frame lines. The header named
+two of those three columns as missing and said nothing about the third, and the offline verifier was
+green on all of it. All three are the same class of defect, and each is now fixed:
+
+| column | why it was empty | what it is now |
+|---|---|---|
+| `Portal.x`/`.y` | the writer looked for a `float X` (then `_x`) on the portal's hierarchy. There is none: a portal's position is `Node.Position`, a `Vector3`, and the client's own convention is `Position.X`/`.Y` in grid units (`StaticObject.LateUpdate` asks `World.Tilemap.GetTile((int)Position.X, (int)Position.Y)`). Neither accessor resolved, `CallFloat(null, …)` answered 0, and **the column was not in `missing` at all** | read through the same `NestedFloat` the player's position uses, with `ExactPosition` as the fallback |
+| `Portal.title`/`.tag` | resolved as *properties on `Portal`*. Both are public **fields on base types** — `ActivatableObject.Title`, `GameObject.Tag` | a field-first, then property, hierarchy walk |
+| `player.hp`/`.maxhp` | `Player` declares `public new int Health`, shadowing `Entity`'s `double`. The hierarchy walk found the int, the accessor returned `double`, and the JIT reinterpreted the bits: **42 read as 2.08E-322**. The header did not name it, because it *had* resolved | `FieldAccessor` now converts any numeric width, refuses a field it cannot read with an exception that names the field, and the header gained a `resolved` block saying which member each column came from |
+
+The third one is not only the log's. `DodgeAdapter`, `SteeringPilot` and `TraceRecorder` all built the
+same mistyped health accessor, so the dodge's `Player.Health` and the trace's health column have been
+2.08E-322 on every live frame. Nothing observable changes today: the escape gate's damage inputs are
+zero by construction (`DodgeAdapter`'s header, note 1), so `ProjectedUnavoidableDamage > Health *
+LethalFraction` is `0 > ~0`, still false; and `SteeringPilot`'s liveness gate happened to be correct
+by accident (a health of 0 reads as 0.0). **The day Deliverable 3.4 arms the damage inputs, the gate
+would have fired on the first unavoidable bullet, because the threshold it compares against was 0.**
+That is the item this run's evidence bought.
+
+Two smaller things the file now says and did not: a frame with no player writes `"ok":false` rather
+than `(0,0)` (every world change produces one, on both sides of the change — the player is torn down
+and rebuilt), and the speed column no longer reports a displacement against that placeholder (the run
+has exactly one such row, `"spd":1917` at f=3146, on a character that walks at 9.3).
+
+**What the run does not do.** No dungeon was entered, so §8.2's whitelist still has no entries and the
+`Title`-as-entry-gate measurement has not been made. The lobby walk was sampled (spawn (117.5, 123.5)
+toward (127.6, 106.1)) but the portal it approached has no position in this file, so that leg is not
+yet a route. And all of it, including the three fixes, is offline-verified only — `WorldLogVerify`
+now asserts each of these columns against a fake game shaped like the client rather than like the
+resolver, which is why it will not pass on a re-run that is still zero. **The re-run is the same one
+flag**, and it is the only thing between §5.2 and a farmer that walks out of the lobby.
+
+### 12.9 The re-run: every column filled, and what a dungeon actually looks like
+
+`20261018-014055-p14892`. The header is v2, `missing` is empty, and `resolved` names every member:
+`Portal.X → Node.Position.X`, `Portal.Title → ActivatableObject.Title`, `Portal.Tag → GameObject.Tag`,
+`Player.Health → Player.Health (Int32)`. 365 lines: 358 frame lines and 7 transition lines over frames
+550–11260. Every number below is a row of that file.
+
+**It answered the two questions §12.8 could not**, and it answered a third that §8 had given up on.
+
+| question (§8.2 / §5.4) | measurement |
+|---|---|
+| is `MapInfo.Name` the whitelist key? | **Yes, and `AssetName` cannot be one.** Both dungeons visited exposed it: `Outback Hunt` reports `asset` as `OutbackHunt1.rmap|OutbackHunt1.rmap|OutbackHunt1.rmap` (a pipe-joined triple) and `River Maze` reports `null.null`. Names are clean single tokens: `Outback Hunt`, `River Maze`. |
+| can the whitelist gate entry *before* entering? | **Yes.** Every realm portal carries a `Title` of the form `<dungeon name>\nLV <n>`, and the name is *exactly* the `MapInfo.Name` the client reports after entry — `Outback Hunt\nLV 25` → `Outback Hunt`, `River Maze\nLV 25` → `River Maze`. Measured on both dungeons, so it is a rule and not one lucky portal. |
+| what is a dungeon, as opposed to a realm? | `MapInfo.Difficulty` is the tier — **0 = lobby, 1 = realm, 2 = dungeon** — and `MapInfo.Levels` is `"Level: 25"` in a dungeon and `""` everywhere else. Either would separate the three worlds; `Name` is still the identity. |
+
+The four worlds, as the file reports them:
+
+| `Name` | `AssetName` | size | `Difficulty` | `Levels` | `SafeWorld` |
+|---|---|---|---|---|---|
+| The Tavern | `TheTavernRemade_Halloween.bmap` | 235×208 | 0 | `""` | true |
+| Darza's Dominion | `NewDominion2048.rmap` | 2698×2634 | 1 | `""` | false |
+| Outback Hunt | `OutbackHunt1.rmap|…|…` | 331×339 | 2 | `Level: 25` | false |
+| River Maze | `null.null` | 1024×1024 | 2 | `Level: 25` | false |
+
+**Entering is standing on the portal.** Not next to it, not in front of it — *on* its `Position`, and
+the file has four walks into three portals:
+
+| portal | `Position` | character's last position before the world changed | distance |
+|---|---|---|---|
+| `[US] pocquette (45)`, The Tavern | (125.5, 109.5) | (125.468, 109.347) at f 730 → realm at f 771 | 0.16 |
+| `[US] pocquette (46)`, The Tavern | (125.5, 109.5) | (125.092, 109.675) at f 2140 → realm at f 2193 | 0.44 |
+| `Outback Hunt\nLV 25`, the realm | (1244.058, 301.597) | (1244.271, 302.152) at f 1900 → Outback Hunt at f 1927 | 0.59 |
+| `River Maze\nLV 25`, the realm | (463.791, 1200.188) | (463.791, 1200.188) at f 11020 → River Maze at f 11037 | 0.00 |
+
+So §5.2's "walk to it, then enter it" is one goal point — the portal's own `Position` — and the
+client's `ActivatableObject.ActivateDistance` (2 units) is the radius that matters, not a click. What
+the file records is a *position*, not an activation, so the attribution rests on the coincidence
+being 0.16 units twice with no other portal inside two units; that is the strongest reading a log can
+give. It also settles §5.2's third question, "which portal leads to the realm", and the answer is the
+one nobody would have guessed from the plan: **the lobby's realm entrance is a portal titled with a
+region, a player name and a level** — `[US] pocquette (45)` — and it names the *realm instance*, not
+the destination, because the destination is always `Darza's Dominion`. §5.2's "with no target
+identifier available, the choice is by position and by rank" therefore stands; the title is a filter
+(`[EU]`/`[US]`) and a log line, not a destination.
+
+**Titles are not identities.** `[US] pocquette (45)` became `(46)` and then `(47)` during the session
+— the host levelling — while the other five titles were byte-identical across every sample. Both
+facts matter: a whitelist may key on a dungeon's title, and nothing may key on a lobby portal's.
+
+**`World.Activatables` is server-fed, not a spatial query.** Three realm portals appeared while the
+character stood still at (1251, 270): one 16 units away, then one 1 284 units away, then one 1 219
+units away. So "find the portals" (§5.2 item 1) is "keep the ones the client has been told about";
+a farmer cannot enumerate a map's portals from one place, and a portal it wants may arrive while it
+is farming somewhere else. Six realm portals were learned in 10 000 frames, in clusters a thousand
+units apart, each with a `Position` that never changed.
+
+**Leaving a dungeon goes to the lobby, not back to the realm**, and not through the portal that names
+the destination. *River Maze*'s only portal is titled `Darza's Dominion` and the character stood on it
+at f 11080–11140; the world change at f 11177 went to **The Tavern**. Same shape from *Outback Hunt*
+(f 1927 → f 2063, The Tavern), which had no portals at all. `hp` never moved off 738/738 and `dead`
+was never true, so this is not a death: it is the nexus, §8.4's mechanism 3, and it is the one that
+needs no per-dungeon knowledge — which is the whitelist's whole safety argument, now measured once.
+
+**The dungeons were looked at, not cleared.** 136 frames in *Outback Hunt* and 140 in *River Maze*
+(~2.3 s each), the character never left the entry point (`spd` 0 on every sample), no enemy was ever
+`dead`, and `hp` never changed. §6.2 item 7's "walk to the boss, kill it, note how the exit works" is
+still not done, so §8.3's clear-and-advance has no data and §8.6's boss lead is untouched.
+
+**And the enemies are still the thing the lobby cannot be defined by.** 51 distinct ids in the realm;
+the same stationary, high-HP, `npc:false` entities in every world — 69420 in the lobby and at both
+dungeon entrances, 1000000 in the lobby, 106000 in *River Maze* — with exactly one of them seen
+moving (Outback Hunt id 265, 69420). §12.8's finding stands unchanged: `!Dead && !Npc` does not
+exclude them, so farm acquisition has to be gated by the world state and not by the target list.
+No enemy in 358 lines was ever `dead`, which is consistent with a session that killed nothing.
+
+**One thing the instrument still owed, now paid.** §12.8's only unanswered question was *which* lobby
+object enters the realm, and the file said `"portalsOther": 23` — a count, not a name. The client has
+**40** direct `ActivatableObject` subclasses, 39 of them not `Portal` (`SoloDungeonStatue`,
+`ChainingPortal`, `NpcShop`, `VaultTerminal`, `DungeonChest`, …), so the entrance could have been any
+of them. The frame line now
+carries an `others` block: the non-`Portal` activatables summarised **by runtime type**, each with its
+count, its nearest instance's `Title` and that instance's position. The next session answers the
+question for good — and, from this run, the answer is probably "none of them": the entrance was a
+`Portal`, it just did not look like one.
+
+Two smaller measurements worth having. The realm reports `CanTeleport = true`, and a 1 219-unit jump
+appears between two samples of a character that was farming (f 10990 → 11020) — so positions in that
+map are not always walks, and a recorder that treats every pair of samples as a step records a
+teleport as one. And the whole lobby is four portals inside a 30-unit square, which makes §5.2's
+"walk down a bit" a route of a few seconds rather than a navigation problem.
+
+
 

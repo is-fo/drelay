@@ -170,7 +170,10 @@ Invoke-Check 'steering report fixture' {
 # `EnemyReader.cs` and parses every line the writer emits, so this is the check that catches a
 # malformed line, an unescaped portal title, or a "8 nearest" that is really "first 8" -- before the
 # operator's one collection session (PLAN-AUTOFARM.md section 6) is spent on it. It found two real
-# defects on its first run; `WorldLogVerify.csproj`'s header names them.
+# defects on its first run, and then missed three in the session it was built for; the fake game was
+# why, and `WorldLogVerify.csproj`'s header names all five. It now asserts the VALUE in each column
+# rather than that the column exists, which is the difference between "the row was written" and "the
+# row says what the client holds".
 Invoke-Check 'world log writer fixture' {
     $verify = Join-Path $hookRoot 'tools\WorldLogVerify\bin\Release\net8.0\WorldLogVerify.exe'
     if (-not (Test-Path -LiteralPath $verify)) {

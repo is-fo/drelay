@@ -123,6 +123,26 @@ namespace Drelay.Bootstrap
         private static Func<object, object> _getGridArray;
         private static bool _gridResolved;
 
+        // --- What each accessor was actually resolved to --------------------------------------
+        //
+        // THE HEADER'S `resolved` BLOCK, AND IT IS THE ANSWER TO THE BUG THAT COST THE 2026-10-18
+        // SESSION. That run wrote `"hp":0` and `"x":0,"y":0` on every portal row of a 292-line
+        // file -- and the file had NO WAY TO SAY WHY, because `missing` only lists columns that
+        // failed to resolve. A column resolved to the WRONG MEMBER is worse than a missing one: it
+        // is present, it is well formed, and it is 0. `FieldLookup`'s own header makes the argument
+        // ("which name was found is returned, not just the field"); this is that argument applied
+        // to the file the operator reads.
+        //
+        // So every accessor whose resolution is a hierarchy walk or a type dispatch records the
+        // member it landed on, and the header prints the lot. `Portal.X` reads `Node.Position.X`;
+        // `Player.Health` reads `Player.Health (Int32)`; a reader can now tell "the client does not
+        // have it" from "the hook walked to the wrong one" without a debugger.
+        private static readonly System.Collections.Generic.List<string> SourceColumn =
+            new System.Collections.Generic.List<string>();
+
+        private static readonly System.Collections.Generic.List<string> SourceMember =
+            new System.Collections.Generic.List<string>();
+
         // --- The world-change state ---------------------------------------------------------
 
         private static object _lastMapInfo;
@@ -139,6 +159,22 @@ namespace Drelay.Bootstrap
         private static float _lastY = float.NaN;
         private static float _lastClockMs = float.NaN;
         private static float _playerSpeed;
+
+        /// <summary>Whether the PREVIOUS frame had a player, so a speed is a displacement.</summary>
+        private static bool _lastHadPlayer;
+
+        // --- The non-Portal activatables, summarised by type ---------------------------------
+        //
+        // See `NoteOther`. Fixed capacity, reset per line, and `_otherTypeCount` is the number of
+        // entries actually filled -- the frame path does not allocate a list for this.
+        private const int OtherTypeCap = 8;
+        private static readonly string[] OtherTypeName = new string[OtherTypeCap];
+        private static readonly int[] OtherTypeCount = new int[OtherTypeCap];
+        private static readonly string[] OtherTypeTitle = new string[OtherTypeCap];
+        private static readonly float[] OtherTypeX = new float[OtherTypeCap];
+        private static readonly float[] OtherTypeY = new float[OtherTypeCap];
+        private static readonly float[] OtherTypeDistance = new float[OtherTypeCap];
+        private static int _otherTypeCount;
 
         private static readonly System.Collections.Generic.List<EnemyReader.EnemySample> Enemies =
             new System.Collections.Generic.List<EnemyReader.EnemySample>();
@@ -287,16 +323,51 @@ namespace Drelay.Bootstrap
                     if (_portalType != null)
                     {
                         Type portalType = _portalType;
-                        // See the note on the tree: `GameId` is on `GameObject` and `X`/`Y` on
-                        // `Nodes.Node`, so both walks are hierarchy walks and a lookup restricted to
-                        // `Portal` would find neither.
-                        _portalGameId = FindIntByHierarchy(portalType, "GameId", "_gameId", "ObjectId");
-                        _portalX = FindFloatByHierarchy(portalType, "X", "_x");
-                        _portalY = FindFloatByHierarchy(portalType, "Y", "_y");
-                        _portalTitle = Property(portalType, "Title");
-                        _portalTag = Property(portalType, "Tag");
-                        _portalCalled = FlagByHierarchy(portalType, "Called");
-                        _portalLocked = FlagByHierarchy(portalType, "locked", "_locked", "Locked");
+                        // See the note on the tree: `GameId` is on `GameObject` and the position is
+                        // `Node.Position`, so both walks are hierarchy walks and a lookup restricted
+                        // to `Portal` would find neither.
+                        string source;
+                        _portalGameId = FindIntByHierarchy(portalType, out source,
+                                                           "GameId", "_gameId", "ObjectId");
+                        Note("Portal.GameId", source);
+
+                        // THE POSITION IS A `Vector3` FIELD ON `Node`, AND THERE IS NO `X` ANYWHERE
+                        // ON A PORTAL. The first version of this looked for a `float` field called
+                        // `X` (then `_x`) up the portal's hierarchy, found neither, and wrote
+                        // `"x":0` for every portal of the whole session -- with the column absent
+                        // from `missing`, because `CallFloat(null, ...)` answers 0 and no accessor
+                        // was ever null-checked in the header.
+                        //
+                        // The client's own convention is `Position.X`/`Position.Y` in the same units
+                        // the collision grid uses (`StaticObject.LateUpdate` asks
+                        // `World.Tilemap.GetTile((int)Position.X, (int)Position.Y)`), so `Position`
+                        // is the field to read and `ExactPosition` -- the scene-space copy, written
+                        // during `SetPosition` -- is the fallback for a build that stops keeping the
+                        // local one.
+                        _portalX = FindVectorComponent(portalType, "X", out source,
+                                                       "Position", "ExactPosition");
+                        Note("Portal.X", source);
+                        _portalY = FindVectorComponent(portalType, "Y", out source,
+                                                       "Position", "ExactPosition");
+                        Note("Portal.Y", source);
+
+                        // `Title` AND `Tag` ARE FIELDS, AND THEY ARE NOT ON `Portal`. `Title` is
+                        // `ActivatableObject.Title` and `Tag` is `GameObject.Tag` -- both public
+                        // fields on base types -- so a lookup that asks the type for a PROPERTY
+                        // finds nothing, and the 2026-10-18 session's header said so
+                        // (`"missing":["Portal.Title","Portal.Tag"]`) while every portal row carried
+                        // a null title. `FindString` takes a field up the hierarchy first and only
+                        // then a property, which covers both spellings of the same idea.
+                        _portalTitle = FindString(portalType, "Title", out source);
+                        Note("Portal.Title", source);
+                        _portalTag = FindString(portalType, "Tag", out source);
+                        Note("Portal.Tag", source);
+
+                        _portalCalled = FindFlagByHierarchy(portalType, out source, "Called");
+                        Note("Portal.Called", source);
+                        _portalLocked = FindFlagByHierarchy(portalType, out source,
+                                                            "locked", "_locked", "Locked");
+                        Note("Portal.locked", source);
                     }
                 }
 
@@ -327,9 +398,22 @@ namespace Drelay.Bootstrap
                         _playerX = FieldAccessor.NestedFloat(positionField, px);
                         _playerY = FieldAccessor.NestedFloat(positionField, py);
                     }
-                    _playerRadius = FindFloatByHierarchy(playerType, "Radius");
-                    _playerHealth = FindDoubleByHierarchy(playerType, "Health");
-                    _playerMaxHealth = FindDoubleByHierarchy(playerType, "MaxHealth");
+                    string source;
+                    _playerRadius = FindFloatByHierarchy(playerType, out source, "Radius");
+                    Note("Player.Radius", source);
+
+                    // THE HEALTH COLUMNS WERE RESOLVED AND STILL ALWAYS ZERO, WHICH IS THE WORST
+                    // OF THE THREE SHAPES AND THE REASON `FieldAccessor` NOW CONVERTS.
+                    //
+                    // `Player` declares `public new int Health`, shadowing `Entity`'s `double`, and
+                    // a hierarchy walk stops at the first match -- so the accessor built here read
+                    // an int through a double-returning delegate and produced the int's bits
+                    // reinterpreted: 2.08E-322 for 42, printed as `0` by `Num`. The header did not
+                    // name the column because it HAD resolved; it just read the wrong width.
+                    _playerHealth = FindNumberByHierarchy(playerType, out source, "Health");
+                    Note("Player.Health", source);
+                    _playerMaxHealth = FindNumberByHierarchy(playerType, out source, "MaxHealth");
+                    Note("Player.MaxHealth", source);
                 }
 
                 int every;
@@ -380,7 +464,10 @@ namespace Drelay.Bootstrap
         private static void WriteHeader()
         {
             Line.Length = 0;
-            Line.Append("{\"t\":\"H\",\"v\":1,\"source\":\"PLAN-AUTOFARM.md section 6 (--world-log)\"")
+            // `v` IS 2 BECAUSE THE HEADER GAINED A KEY. `missing` is unchanged -- same name, same
+            // meaning -- and `resolved` is new: the member each column actually landed on. A reader
+            // that only looks at `missing` reads a v2 file exactly as it read a v1 one.
+            Line.Append("{\"t\":\"H\",\"v\":2,\"source\":\"PLAN-AUTOFARM.md section 6 (--world-log)\"")
                 .Append(",\"every\":").Append(_everyFrames)
                 .Append(",\"grid\":").Append(_gridResolved ? "true" : "false")
                 .Append(",\"missing\":[");
@@ -401,7 +488,13 @@ namespace Drelay.Bootstrap
             AppendMissing(ref first, "World.VaultWorld", _worldVault);
             AppendMissing(ref first, "World.Space", _worldSpace);
             AppendMissing(ref first, "World.Activatables", _getActivatables);
+            AppendMissing(ref first, "Portal (type)", _portalType);
             AppendMissing(ref first, "Portal.GameId", _portalGameId);
+            // THE COLUMN THAT WAS MISSING FROM THIS LIST AND ZERO IN EVERY ROW OF THE SESSION.
+            // A position the log cannot read is not a cosmetic gap: section 5.2's whole lobby
+            // navigation is "walk to that portal", and section 6.2's checklist asks the operator to
+            // stand next to each one. See the `Portal.X` resolve for what happened.
+            AppendMissing(ref first, "Portal.X/Y", _portalX);
             AppendMissing(ref first, "Portal.Title", _portalTitle);
             AppendMissing(ref first, "Portal.Tag", _portalTag);
             AppendMissing(ref first, "Portal.Called", _portalCalled);
@@ -414,7 +507,21 @@ namespace Drelay.Bootstrap
             // (`EnemyReader.Status`), so this row only says whether the log can ask it at all.
             AppendMissing(ref first, "World.GetEnemies()",
                           EnemyReader.Available ? typeof(WorldLog) : null);
-            Line.Append("],\"note\":\"a name in `missing` is a column absent from every line below."
+            Line.Append(']');
+
+            // WHERE EACH COLUMN CAME FROM. See the `SourceColumn` declaration: `missing` names what
+            // could not be found, and this names what was -- which is the only way the file can
+            // distinguish a client that lacks a field from a hook that walked to the wrong one.
+            Line.Append(",\"resolved\":{");
+            for (int i = 0; i < SourceColumn.Count; i++)
+            {
+                if (i > 0) { Line.Append(','); }
+                Line.Append(Json(SourceColumn[i])).Append(':').Append(Json(SourceMember[i]));
+            }
+            Line.Append('}');
+
+            Line.Append(",\"note\":\"a name in `missing` is a column absent from every line below,"
+                        + " and `resolved` names the member each column was read from."
                         + " Enemies are sampled through EnemyReader, so their absence is named in the"
                         + " hook log rather than here.\"}");
             _writer.WriteLine(Line.ToString());
@@ -549,7 +656,13 @@ namespace Drelay.Bootstrap
                 {
                     px = _playerX(player);
                     py = _playerY(player);
-                    if (!float.IsNaN(_lastX) && clockMs > _lastClockMs)
+                    // A DISPLACEMENT NEEDS TWO POSITIONS, AND AFTER A WORLD CHANGE THERE IS ONLY
+                    // ONE. The player object is torn down and rebuilt, so the sample either side of
+                    // the change is a placeholder -- and the first sample after it is a difference
+                    // against (0,0). The 2026-10-18 file has exactly one such row and it reads
+                    // `"spd":1917`, on a character whose walking speed is 9.3. One frame of nonsense
+                    // in a column the operator is asked to read is worth two lines to remove.
+                    if (_lastHadPlayer && !float.IsNaN(_lastX) && clockMs > _lastClockMs)
                     {
                         float dx = px - _lastX;
                         float dy = py - _lastY;
@@ -563,6 +676,7 @@ namespace Drelay.Bootstrap
                     _lastY = py;
                     _lastClockMs = clockMs;
                 }
+                _lastHadPlayer = havePlayer;
 
                 if (transition)
                 {
@@ -673,14 +787,24 @@ namespace Drelay.Bootstrap
             Line.Append('}');
 
             // --- player ----------------------------------------------------------------------
+            //
+            // `ok` IS PART OF THE EVIDENCE, AND IT IS THERE BECAUSE A ZERO IS NOT AN ANSWER. The
+            // session of 2026-10-18 sampled `"x":0,"y":0` on the frames either side of every world
+            // change -- the player object is torn down and rebuilt -- and nothing in the file said
+            // whether that was the map's origin or a player that did not exist yet. It matters to
+            // section 6.2's route work and to section 8.1's "which cell is the player in": a route
+            // recorder that sampled a (0,0) at the entry frame would record a walk from the corner
+            // of the map. `ok` says "this row's position is a position"; `false` says the client had
+            // no player to ask, and every number after it is a placeholder.
             Line.Append(",\"player\":{");
-            Line.Append("\"x\":").Append(Num(px));
-            Line.Append(",\"y\":").Append(Num(py));
+            Line.Append("\"ok\":").Append(FlagBit(havePlayer));
+            Line.Append(",\"x\":").Append(Num(havePlayer ? px : 0.0f));
+            Line.Append(",\"y\":").Append(Num(havePlayer ? py : 0.0f));
             Line.Append(",\"r\":").Append(Num(havePlayer ? CallFloat(_playerRadius, player) : 0.0f));
             Line.Append(",\"hp\":").Append(Num(havePlayer ? CallDouble(_playerHealth, player) : 0.0f));
             Line.Append(",\"maxhp\":").Append(Num(havePlayer
                 ? CallDouble(_playerMaxHealth, player) : 0.0f));
-            Line.Append(",\"spd\":").Append(Num(_playerSpeed));
+            Line.Append(",\"spd\":").Append(Num(havePlayer ? _playerSpeed : 0.0f));
             Line.Append('}');
 
             // --- portals ---------------------------------------------------------------------
@@ -697,6 +821,7 @@ namespace Drelay.Bootstrap
             }
             bool firstPortal = true;
             int otherActivatables = 0;
+            _otherTypeCount = 0;
             if (actives != null)
             {
                 foreach (object portal in actives)
@@ -705,13 +830,25 @@ namespace Drelay.Bootstrap
                     {
                         continue;
                     }
-                    // THE FILTER OF SECTION 5.2, AND THE COUNT IS WHAT MAKES IT HONEST. A list that
+                    // THE FILTER OF SECTION 5.2, AND THE COUNT IS WHAT WAS NOT ENOUGH. A list that
                     // silently drops the chests would read as a lobby with nothing in it; `other` is
                     // the number of activatables that were not portals, so a session's file says
                     // both what was found and what was passed over.
+                    //
+                    // BUT A COUNT IS NOT A NAME, AND THAT COST THE 2026-10-18 RE-RUN THE ONE ANSWER
+                    // IT WENT FOR. The lobby has four `Portal`s -- Storage Vault, Guild Hall and two
+                    // `[REGION] Name (level)` rows -- and nothing in either session says which of
+                    // them leads to the realm, because the realm entrance may not be a `Portal` at
+                    // all: the client has 39 non-`Portal` `ActivatableObject` subclasses
+                    // (SoloDungeonStatue, ChainingPortal, NpcShop, VaultTerminal, ...) and every one
+                    // of them lands in `portalsOther` as a digit. So the non-portals are now
+                    // summarised BY TYPE, with the nearest instance of each named, which is the
+                    // measurement that turns "29 other activatables" into "the thing you walked into
+                    // is a ...".
                     if (_portalType != null && !_portalType.IsInstanceOfType(portal))
                     {
                         otherActivatables++;
+                        NoteOther(portal, px, py);
                         continue;
                     }
                     if (!firstPortal) { Line.Append(','); }
@@ -727,6 +864,7 @@ namespace Drelay.Bootstrap
                 }
             }
             Line.Append("],\"portalsOther\":").Append(otherActivatables);
+            WriteOtherActivatables();
 
             // --- enemies ---------------------------------------------------------------------
             //
@@ -764,6 +902,84 @@ namespace Drelay.Bootstrap
                 .Append("}}");
 
             _writer.WriteLine(Line.ToString());
+        }
+
+        /// <summary>
+        /// Records one NON-`Portal` activatable against its runtime type, keeping the nearest
+        /// instance of each type.
+        ///
+        /// THE TYPE NAME IS THE POINT. `World.Activatables` holds every `StaticObject`-derived
+        /// `ActivatableObject` -- 39 subclasses of it beside `Portal` in the shipped client, from
+        /// `SoloDungeonStatue` to `VaultTerminal` -- and a lobby whose realm entrance is one of them
+        /// is indistinguishable from a lobby of shop furniture while the log counts them. One session
+        /// asked "which object do I walk into"; the file answered "29".
+        ///
+        /// Fixed capacity and no per-frame allocation, the same rule the rest of this file keeps:
+        /// eight distinct types is far more than any single room showed (the lobby's 15-29 extras
+        /// came from five), and anything beyond the cap is still counted in `portalsOther`.
+        /// </summary>
+        private static void NoteOther(object activatable, float px, float py)
+        {
+            string type = activatable.GetType().Name;
+            for (int i = 0; i < _otherTypeCount; i++)
+            {
+                if (OtherTypeName[i] != type)
+                {
+                    continue;
+                }
+                OtherTypeCount[i]++;
+                float ox = CallFloat(_portalX, activatable);
+                float oy = CallFloat(_portalY, activatable);
+                float dx = ox - px;
+                float dy = oy - py;
+                float distance = (dx * dx) + (dy * dy);
+                if (distance < OtherTypeDistance[i])
+                {
+                    OtherTypeDistance[i] = distance;
+                    OtherTypeTitle[i] = Call(_portalTitle, activatable);
+                    OtherTypeX[i] = ox;
+                    OtherTypeY[i] = oy;
+                }
+                return;
+            }
+            if (_otherTypeCount >= OtherTypeCap)
+            {
+                return;
+            }
+            int index = _otherTypeCount++;
+            float ax = CallFloat(_portalX, activatable);
+            float ay = CallFloat(_portalY, activatable);
+            float ddx = ax - px;
+            float ddy = ay - py;
+            OtherTypeName[index] = type;
+            OtherTypeCount[index] = 1;
+            OtherTypeTitle[index] = Call(_portalTitle, activatable);
+            OtherTypeX[index] = ax;
+            OtherTypeY[index] = ay;
+            OtherTypeDistance[index] = (ddx * ddx) + (ddy * ddy);
+        }
+
+        /// <summary>
+        /// `others`, the non-`Portal` activatables BY TYPE -- see <see cref="NoteOther"/>.
+        ///
+        /// It is written after the portal list rather than inside it so that a reader who only wants
+        /// portals is unaffected, and it is a summary rather than a list for the reason the enemy
+        /// block is capped at eight: a room's furniture is not evidence at 30 lines a second.
+        /// </summary>
+        private static void WriteOtherActivatables()
+        {
+            Line.Append(",\"others\":[");
+            for (int i = 0; i < _otherTypeCount; i++)
+            {
+                if (i > 0) { Line.Append(','); }
+                Line.Append("{\"type\":").Append(Json(OtherTypeName[i]))
+                    .Append(",\"n\":").Append(Int(OtherTypeCount[i]))
+                    .Append(",\"title\":").Append(Json(OtherTypeTitle[i]))
+                    .Append(",\"x\":").Append(Num(OtherTypeX[i]))
+                    .Append(",\"y\":").Append(Num(OtherTypeY[i]))
+                    .Append('}');
+            }
+            Line.Append(']');
         }
 
         // ===================================================================================
@@ -873,17 +1089,70 @@ namespace Drelay.Bootstrap
 
         // ===================================================================================
         // The accessor helpers, one per shape
+        //
+        // EVERY ONE OF THESE THAT WALKS THE HIERARCHY REPORTS WHERE IT LANDED, because the run that
+        // produced `worlds.jsonl` on 2026-10-18 is the demonstration of what happens when it does
+        // not: two columns were resolved to members that do not carry the value (a `float X` that
+        // no `Portal` has, and a `Title` that is a field on a base type rather than a property on
+        // `Portal`), and one was resolved to the int that shadows a double. All three wrote a
+        // well-formed row of zeroes or nulls, and the header said nothing.
         // ===================================================================================
+
+        /// <summary>
+        /// Records which member a column was read from, for the header's `resolved` block.
+        ///
+        /// A null source means the column was not resolved at all -- and it is already in `missing`
+        /// by name, so there is nothing to add here.
+        /// </summary>
+        private static void Note(string column, string source)
+        {
+            if (source == null)
+            {
+                return;
+            }
+            SourceColumn.Add(column);
+            SourceMember.Add(source);
+        }
 
         private static Func<object, string> String(Type owner, string name)
         {
-            FieldInfo field = FieldLookup.Find(owner, out _, name);
+            return FindString(owner, name, out _);
+        }
+
+        /// <summary>
+        /// A `string` member, FIELD FIRST AND UP THE HIERARCHY, then a property.
+        ///
+        /// THE FIELD-FIRST ORDER IS THE FIX FOR THE PORTAL COLUMNS. `ActivatableObject.Title` and
+        /// `GameObject.Tag` are public fields on base classes, so `owner.GetProperty("Title")` on
+        /// `Portal` finds nothing -- which is exactly what the 2026-10-18 header reported, for a
+        /// lobby whose portals all carry a title. `MapInfo`'s fields were always found because both
+        /// spellings happen to be fields; the two shapes are handled in one place so the next
+        /// column does not have to know which it is.
+        /// </summary>
+        private static Func<object, string> FindString(Type owner, string name, out string source)
+        {
+            source = null;
+            FieldInfo field = FieldLookup.Find(owner, out string fieldOwner, name);
             if (field != null && field.FieldType == typeof(string))
             {
                 Func<object, object> read = FieldAccessor.Reference(field);
+                source = fieldOwner;
                 return target => read(target) as string;
             }
-            return Property(owner, name);
+
+            for (Type current = owner; current != null && current != typeof(object);
+                 current = current.BaseType)
+            {
+                PropertyInfo property = current.GetProperty(
+                    name, BindingFlags.Public | BindingFlags.NonPublic
+                          | BindingFlags.Instance | BindingFlags.DeclaredOnly);
+                if (property != null && property.PropertyType == typeof(string))
+                {
+                    source = current.Name + "." + name;
+                    return target => property.GetValue(target, null) as string;
+                }
+            }
+            return null;
         }
 
         private static Func<object, int> Number(Type owner, string name)
@@ -898,38 +1167,88 @@ namespace Drelay.Bootstrap
             return field == null ? null : FieldAccessor.Bool(field);
         }
 
-        private static Func<object, string> Property(Type owner, string name)
+        private static Func<object, bool> FindFlagByHierarchy(Type owner, out string source,
+                                                              params string[] names)
         {
-            PropertyInfo property = owner.GetProperty(name, BindingFlags.Public
-                                                            | BindingFlags.NonPublic
-                                                            | BindingFlags.Instance);
-            return property == null || property.PropertyType != typeof(string)
-                ? null
-                : (Func<object, string>)(target => property.GetValue(target, null) as string);
-        }
-
-        private static Func<object, bool> FlagByHierarchy(Type owner, params string[] names)
-        {
-            FieldInfo field = FieldLookup.Find(owner, out _, names);
+            FieldInfo field = FieldLookup.Find(owner, out source, names);
             return field == null ? null : FieldAccessor.Bool(field);
         }
 
-        private static Func<object, int> FindIntByHierarchy(Type owner, params string[] names)
+        private static Func<object, int> FindIntByHierarchy(Type owner, out string source,
+                                                            params string[] names)
         {
-            FieldInfo field = FieldLookup.Find(owner, out _, names);
+            FieldInfo field = FieldLookup.Find(owner, out source, names);
             return field == null ? null : FieldAccessor.Int(field);
         }
 
-        private static Func<object, float> FindFloatByHierarchy(Type owner, params string[] names)
+        private static Func<object, float> FindFloatByHierarchy(Type owner, out string source,
+                                                                params string[] names)
         {
-            FieldInfo field = FieldLookup.Find(owner, out _, names);
+            FieldInfo field = FieldLookup.Find(owner, out source, names);
             return field == null ? null : FieldAccessor.Float(field);
         }
 
-        private static Func<object, double> FindDoubleByHierarchy(Type owner, params string[] names)
+        /// <summary>
+        /// A number a build may have declared at ANY numeric width, read as a `double`.
+        ///
+        /// `FieldAccessor.Double` now converts instead of reinterpreting, so an `int` field is read
+        /// correctly here; the reason this helper exists rather than a caller reaching for
+        /// `FindDoubleByHierarchy` is that the name is the documentation. `Player.Health` is an
+        /// `int` on the shipped client, and "find the double" was a promise the hierarchy could not
+        /// keep -- it returned the int and the read produced 2.08E-322.
+        /// </summary>
+        private static Func<object, double> FindNumberByHierarchy(Type owner, out string source,
+                                                                  params string[] names)
         {
-            FieldInfo field = FieldLookup.Find(owner, out _, names);
-            return field == null ? null : FieldAccessor.Double(field);
+            FieldInfo field = FieldLookup.Find(owner, out source, names);
+            if (field == null)
+            {
+                return null;
+            }
+            // The width belongs in the evidence, because the two fields this name can land on --
+            // `Player.Health` (Int32) and `Entity.Health` (Double) -- are the same name and
+            // different fields, and only one of them is the health the client displays.
+            source = source + " (" + field.FieldType.Name + ")";
+            return FieldAccessor.Double(field);
+        }
+
+        /// <summary>
+        /// One `float` component of a vector-valued field, up the hierarchy -- `Node.Position.X`.
+        ///
+        /// THIS IS THE SHAPE A MAP OBJECT'S POSITION ACTUALLY HAS. A `Portal` is a `Node`, and a
+        /// `Node` carries `public Vector3 Position`; it has no `X`. The first version of this file
+        /// asked for a float called `X` and then `_x`, found neither, and wrote `0` for every portal
+        /// in the session. `NestedFloat` is the accessor it should have used from the start -- the
+        /// same one the player's own position goes through -- and the component must be a `float`
+        /// (or another numeric width, which is converted) for it to work.
+        /// </summary>
+        private static Func<object, float> FindVectorComponent(Type owner, string component,
+                                                               out string source,
+                                                               params string[] vectorNames)
+        {
+            source = null;
+            FieldInfo vector = FieldLookup.Find(owner, out string vectorOwner, vectorNames);
+            if (vector == null)
+            {
+                return null;
+            }
+            FieldInfo part = vector.FieldType.GetField(
+                component, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+            if (part == null)
+            {
+                return null;
+            }
+            try
+            {
+                Func<object, float> read = FieldAccessor.NestedFloat(vector, part);
+                source = vectorOwner + "." + component;
+                return read;
+            }
+            catch (ArgumentException)
+            {
+                // A non-numeric component is not a column this log can fill, and `missing` names it.
+                return null;
+            }
         }
 
         // ===================================================================================

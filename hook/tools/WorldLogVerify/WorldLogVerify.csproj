@@ -29,6 +29,16 @@
         Every portal row would have carried a null title and `locked: false` for a whole session,
         with the row present and the file well formed.
 
+    AND IT MISSED THREE MORE, WHICH IS THE MORE USEFUL THING IT TEACHES. The collection run of
+    2026-10-18 produced 292 frame lines whose every portal row was `"x":0,"y":0` and whose every
+    player row was `"hp":0`, while this check was green, because the fake game declared `X`/`Y`
+    fields and `Title`/`Tag` properties that the client does not have, and a `double Health` that
+    the client shadows with an `int`. **A fake shaped like the resolver verifies the resolver, not
+    the client.** So `FakeGame.cs` is now built to the client's own hierarchy (`Node.Position` as a
+    `Vector3`, `Title`/`Tag` as public fields on base types, `Player.Health` as an `int` shadowing
+    `Entity`'s `double`), and the assertions check the VALUES those columns carry rather than
+    whether the row exists.
+
     IT WRITES NOTHING INTO THE REPOSITORY. The log goes to `bin/<config>/net8.0/verify-run`, which
     is gitignored with the rest of the build output.
   -->
