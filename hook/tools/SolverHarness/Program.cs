@@ -1593,7 +1593,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             return (float)Math.Sqrt((fx * fx) + (fy * fy));
         }
 
-        /// <summary>The last window fed to `MapRoute`, and where the character started on this map.</summary>
+        /// <summary>The last window fed to the traced dungeon solver, and where its walk started.</summary>
         private GridWindow _mapFed;
         private float _mapSeedX = float.NaN;
         private float _mapSeedY = float.NaN;
@@ -1602,20 +1602,27 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private bool _mapSeeded;
 
         /// <summary>
-        /// The identity `MapRoute` binds a cache to. THE LIVE ADAPTER PASSES THE `byte[,]` ITSELF, so a
-        /// map change reallocates and the cache follows. A trace has no such reference, so the replay
-        /// makes one per map: the character teleporting more than `MapChangeJump` units is a portal, a
-        /// death or a dungeon exit (`20261020-183555-p37604` has them at frames 986, 1277, 2889,
-        /// 5582, 5706 and 7239), and it is the only evidence a recording carries.
+        /// The dungeon solver the trace replay runs. It is created fresh per map, exactly as the
+        /// live adapter's instance is rebound per collision array: the cache must never carry one
+        /// map's floor into another.
+        /// </summary>
+        private DungeonSolver _traceDungeon = new DungeonSolver();
+
+        /// <summary>
+        /// The identity the traced cache binds to. THE LIVE ADAPTER PASSES THE `byte[,]` ITSELF, so
+        /// a map change reallocates and the cache follows. A trace has no such reference, so the
+        /// replay makes one per map: the character teleporting more than `MapChangeJump` units is a
+        /// portal, a death or a dungeon exit (`20261020-183555-p37604` has them at frames 986, 1277,
+        /// 2889, 5582, 5706 and 7239), and it is the only evidence a recording carries.
         /// </summary>
         private object _mapEpochKey = new object();
 
         /// <summary>
         /// The 1-based index of the map whose cache the replay keeps, or 0 for the last one. A
         /// recording holds several maps (the 2026-10-20 sessions have a lobby, a realm, two dungeons
-        /// and the tavern), and the map route's cache is per map, so a measurement of "the route to
-        /// the River Maze boss" has to name the map it is measuring. `--map N` feeds only that map's
-        /// windows; the trace line at the end then reports that map and not whatever came after it.
+        /// and the tavern), and a cache is per map, so a measurement of "the route to the River Maze
+        /// boss" has to name the map it is measuring. `--map N` feeds only that map's windows; the
+        /// trace line at the end then reports that map and not whatever came after it.
         /// </summary>
         public int MapIndexOfInterest;
 
@@ -1633,21 +1640,22 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
 
         /// <summary>
         /// The square the replayed map cache is sized to. A trace carries the window and not the
-        /// map's dimensions, and `MapRoute` caps a cache at two million cells, so 1 400 is the
-        /// largest square both can agree on -- enough for a 1 024 x 1 024 dungeon, which is the shape
-        /// this verification is for.
+        /// map's dimensions, and `DungeonMap` caps a cache at two million cells, so 1 400 is the
+        /// largest square both can agree on -- enough for a 1 024 x 1 024 dungeon, which is the
+        /// shape this verification is for.
         /// </summary>
-        private const int TraceMapRouteSize = 1400;
+        private const int TraceDungeonSize = 1400;
 
         /// <summary>
-        /// Hands one recorded window to `MapRoute`, once per window rather than once per frame.
+        /// Hands one recorded window to the traced dungeon solver, once per window rather than once
+        /// per frame.
         ///
         /// THE LIVE ADAPTER DOES THE SAME THING FROM THE SAME DATA, and the trace's `src` array is
         /// what makes the replay possible: `0` is unpainted, `1` the server's collision, `2` a
-        /// `NoWalk` tile, `3` floor and `4` outside the map -- the same codes `MapRoute.Observe` takes,
-        /// so a window is fed whole and the cache's own rule does the rest.
+        /// `NoWalk` tile, `3` floor and `4` outside the map -- the same codes `DungeonMap.Observe`
+        /// takes, so a window is fed whole and the map's own rule does the rest.
         /// </summary>
-        private void FeedMapRoute(RecordedFrame frame)
+        private void FeedDungeonTrace(RecordedFrame frame)
         {
             // A MAP CHANGE, FROM THE ONLY EVIDENCE A TRACE HAS.
             if (!float.IsNaN(_lastFrameX))
@@ -1659,6 +1667,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     _mapEpoch++;
                     _mapFed = null;
                     _mapEpochKey = new object();
+                    _traceDungeon = new DungeonSolver();
                     _mapSeedX = float.NaN;
                     _mapSeedY = float.NaN;
                 }
@@ -1684,11 +1693,11 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             {
                 return;
             }
-            int before = MapRoute.Available ? 0 : 1;
-            // A TRACE RECORDS THE WINDOW, NOT THE MAP'S DIMENSIONS, so the replayed cache is given a
-            // fixed square that holds a dungeon (a realm is refused by `MapRoute`'s own cap anyway).
-            MapRoute.EnsureMap(_mapEpochKey, TraceMapRouteSize, TraceMapRouteSize);
-            if (before == 1 || float.IsNaN(_mapSeedX))
+            bool before = _traceDungeon.Available;
+            // A TRACE RECORDS THE WINDOW, NOT THE MAP'S DIMENSIONS, so the replayed cache is given
+            // a fixed square that holds a dungeon (a realm is refused by the map's own cap anyway).
+            _traceDungeon.Bind(_mapEpochKey, TraceDungeonSize, TraceDungeonSize);
+            if (!before || float.IsNaN(_mapSeedX))
             {
                 // A NEW CACHE (a new map, or the first window of this one): the walk starts where
                 // the character was when the cache was created.
@@ -1701,26 +1710,26 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             }
             for (int i = 0; i < g.Source.Length; i++)
             {
-                // EVERY CELL'S SOURCE, not just the floor. The cache needs the difference between a
-                // wall and a hole the map has not painted (`MapRoute`'s header); the recorded `src`
-                // array is exactly the adapter's classification, and the codes are shared.
-                MapRoute.Observe(g.OriginX + (i % g.Width), g.OriginY + (i / g.Width), g.Source[i]);
+                // EVERY CELL'S SOURCE, not just the floor. The map needs the difference between a
+                // wall and a hole the streamer has not painted; the recorded `src` array is exactly
+                // the adapter's classification, and the codes are shared.
+                _traceDungeon.Observe(g.OriginX + (i % g.Width), g.OriginY + (i / g.Width), g.Source[i]);
             }
         }
 
         /// <summary>
-        /// Walks the map route over everything a recording explored, from the first frame's position
-        /// to the frame's goal, and says how far it got.
+        /// Walks the traced dungeon over everything a recording explored, from the first frame's
+        /// position to the fixed goal, and says how far it got.
         ///
-        /// IT IS NOT A PASS/FAIL CHECK, AND THE REASON IS THE POINT. Whether a route exists depends on
-        /// how much of the map the session saw, which is a property of the recording and not of the
-        /// code; what this prints is the measurement -- the known floor, the waypoints walked, and
-        /// the distance to the goal -- so a dungeon recording can be read for "the route was there
-        /// and the planner could not see it" instead of guessed at. `G4` is the assertion.
+        /// IT IS NOT A PASS/FAIL CHECK, AND THE REASON IS THE POINT. Whether a route exists depends
+        /// on how much of the map the session saw, which is a property of the recording and not of
+        /// the code; what this prints is the measurement -- the known floor, the waypoints walked,
+        /// and the distance to the goal -- so a dungeon recording can be read for "the route was
+        /// there and the planner could not see it" instead of guessed at.
         /// </summary>
-        private void ReportMapRouteTrace()
+        private void ReportDungeonTrace()
         {
-            if (!_mapSeeded || !MapRoute.Available || float.IsNaN(FixedGoalX))
+            if (!_mapSeeded || !_traceDungeon.Available || float.IsNaN(FixedGoalX))
             {
                 return;
             }
@@ -1732,7 +1741,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             {
                 float wx;
                 float wy;
-                if (!MapRoute.TryWaypoint(cx, cy, FixedGoalX, FixedGoalY, out wx, out wy))
+                if (!_traceDungeon.TryWaypoint(cx, cy, FixedGoalX, FixedGoalY, out wx, out wy))
                 {
                     break;
                 }
@@ -1755,7 +1764,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             }
             float remaining = (float)Math.Sqrt(((cx - FixedGoalX) * (cx - FixedGoalX))
                                                + ((cy - FixedGoalY) * (cy - FixedGoalY)));
-            Console.WriteLine("  map route (trace, map " + _mapReportedEpoch + "): " + MapRoute.Status() + "; "
+            Console.WriteLine("  dungeon (trace, map " + _mapReportedEpoch + "): " + _traceDungeon.Status() + "; "
                               + steps + " waypoint(s) walked from (" + F(_mapReportedX) + ","
                               + F(_mapReportedY) + ") to (" + F(cx) + "," + F(cy) + "), "
                               + F(remaining) + " unit(s) from the goal ("
@@ -1763,65 +1772,111 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         }
 
         /// <summary>
-        /// G4: the map-scale route takes the long way round, and it walks the map's FRONTIER rather
-        /// than the goal's direction.
+        /// D1: the map's four cell states, and the identities that keep one dungeon out of another.
         ///
-        /// THE FIRST MEASUREMENT. `20261020-181445-p4196` (River Maze): the boss is 32 units east of
-        /// the character, behind a wall, and the floor that reaches it runs south, then east, then
-        /// north again -- 78 steps over known floor between two cells 32 apart. The planner's window
-        /// cannot see that and answered `unreachable`/`nodecap`; the character wandered. This fixture
-        /// is the same shape with the geometry made undeniable: a U of single-width corridor, a wall
-        /// straight between the character and the goal, and nothing else known. The route must start
-        /// EAST along the U -- not south into the wall -- and walking it must arrive.
+        /// THE RULE IS THE DUNGEON. `NoWalk` is a PROVISIONAL wall because a streamed map fills
+        /// unknown space with that placeholder before the real tiles arrive (measured in River Maze:
+        /// one boss-room cell read `NoWalk` for seventy frames and then became floor). A nonzero
+        /// collision byte is PERMANENT. A cell with no tile is UNKNOWN, not a wall, because
+        /// `GetTile` answers null for everything the streamer has not reached and the old
+        /// `null -> wall` rule sealed every dungeon. A FLOOR cell is never downgraded.
         ///
-        /// THE SECOND MEASUREMENT, AND IT IS WHY THE THIRD BLOCK EXISTS. `20261020-183555-p37604`
-        /// (Infested Cellar): the boss 41 units EAST of the spawn room and the only floor that leaves
-        /// the room a corridor to the SOUTH. The previous rule -- "route to the reachable cell nearest
-        /// the goal" -- made the room's east wall the target, and the recorded position shuttled
-        /// between x 507.4 and x 520.6 at y 511.6 for the session's last 6 039 frames. The third
-        /// block is that room: floor, `NoWalk` walls, the goal east beyond them, and ONE unpainted
-        /// opening to the south. With a cache that knows a wall from an unpainted cell the east wall
-        /// is not a frontier, so the first waypoint must go SOUTH through the opening. A cache that
-        /// treats every non-floor cell as unexplored goes east at the wall and fails here.
-        ///
-        /// AND THE HONESTY. `TryWaypoint` on a map where no floor beside the character has been
-        /// observed returns false, so a caller keeps the ordinary goal instead of publishing a
-        /// waypoint on top of the character.
+        /// The second half is the state-isolation claim: a new grid array or a new size is a new map
+        /// and must not inherit this one's floor, and a map over the cap is refused by name instead
+        /// of allocating a gigabyte off a varint.
         /// </summary>
-        private void ReportMapRoute()
+        private void ReportDungeonMap()
         {
-            // (1) A GOAL THE KNOWN FLOOR CONNECTS TO IS WALKED, THE LONG WAY ROUND.
-            MapRoute.Reset();
-            MapRoute.EnsureMap("g4-map", 60, 60);
-            // THE U: east along y=10, south along x=40, west along y=40. Nothing else is observed,
-            // so nothing else can be walked on -- which is the rule the module is built on.
+            var map = new DungeonMap();
+            bool bound = map.Bind("d1-a", 20, 20);
+            map.Observe(2, 2, DungeonMap.SourceFloor);      // floor
+            map.Observe(2, 2, DungeonMap.SourceNoWalk);     // floor is final
+            map.Observe(3, 2, DungeonMap.SourceNoWalk);     // provisional wall
+            map.Observe(3, 2, DungeonMap.SourceFloor);      // the placeholder becomes floor
+            map.Observe(4, 2, DungeonMap.SourceCollision);  // permanent wall
+            map.Observe(4, 2, DungeonMap.SourceFloor);      // a hard wall never becomes floor
+            map.Observe(5, 2, DungeonMap.SourceUnknown);    // no information
+            map.Observe(6, 2, DungeonMap.SourceNoWalk);     // provisional
+            map.Observe(6, 2, DungeonMap.SourceCollision);  // the server upgrades it to hard wall
+            map.Observe(7, 2, DungeonMap.SourceNoWalk);     // provisional
+            map.Observe(7, 2, DungeonMap.SourceUnknown);    // no information, stays provisional
+            map.Observe(8, 2, DungeonMap.SourceOutOfMap);   // the map's own border is a wall
+
+            bool classify = bound
+                            && map.KindAt(2, 2) == DungeonMap.Floor
+                            && map.KindAt(3, 2) == DungeonMap.Floor
+                            && map.KindAt(4, 2) == DungeonMap.Wall
+                            && map.KindAt(5, 2) == DungeonMap.Unknown
+                            && map.KindAt(6, 2) == DungeonMap.Wall
+                            && map.KindAt(7, 2) == DungeonMap.ProvisionalWall
+                            && map.KindAt(8, 2) == DungeonMap.Wall
+                            && map.FloorCells == 2 && map.WallCells == 3 && map.ProvisionalCells == 1;
+
+            // THE SAME ARRAY IS THE SAME MAP AND KEEPS ITS CELLS.
+            bool sameMap = !map.Bind("d1-a", 20, 20) && map.FloorCells == 2 && map.IsFloor(2, 2);
+            // A NEW ARRAY IS A NEW MAP. A route from the old one would be a route through another
+            // dungeon's walls at the same coordinates.
+            map.Bind("d1-b", 20, 20);
+            bool newMap = map.FloorCells == 0 && map.KindAt(2, 2) == DungeonMap.Unknown;
+            // A MAP OVER THE CAP IS REFUSED BY NAME, NOT ALLOCATED.
+            map.Bind("d1-huge", 2000, 2000);
+            bool capped = !map.Available && map.Reason.Contains("cap");
+            map.Bind("d1-c", 20, 20);
+            bool recovered = map.Available;
+
+            Report("D1  dungeon cells: floor, provisional wall, hard wall, unknown, and per-map state",
+                   classify && sameMap && newMap && capped && recovered,
+                   "floor beats a later NoWalk and a NoWalk placeholder becomes floor; collision is "
+                   + "permanent and out-of-map is a wall; an absent tile is unknown, not a wall "
+                   + "(floor=" + map.FloorCells + " after rebind); same array kept the map: "
+                   + (sameMap ? "yes" : "NO") + "; a new array cleared it: "
+                   + (newMap ? "yes" : "NO") + "; a 4 000 000-cell map was "
+                   + (capped ? "refused by the cap" : "ALLOCATED") + " and a valid map recovered: "
+                   + (recovered ? "yes" : "NO") + ".");
+        }
+
+        /// <summary>
+        /// D2: a goal the known floor connects to is walked the long way round.
+        ///
+        /// `20261020-181445-p4196` (River Maze): the boss is 32 units east of the character, behind a
+        /// wall, and the floor that reaches it runs south, east, then north -- a route whose two ends
+        /// are close and whose middle is not. The local planner answered `unreachable`/`nodecap`; the
+        /// map-scale route is the answer. This fixture makes the geometry undeniable: a U of
+        /// single-width corridor, a wall straight between the character and the goal, and nothing
+        /// else known. The first waypoint must go EAST along the U, not south into the wall.
+        /// </summary>
+        private void ReportDungeonRoute()
+        {
+            var floor = new System.Collections.Generic.HashSet<int>();
             for (int x = 10; x <= 40; x++)
             {
-                MapRoute.Observe(x, 10, MapRoute.CellFloor);
-                MapRoute.Observe(x, 40, MapRoute.CellFloor);
+                floor.Add(CellKey(x, 10));
+                floor.Add(CellKey(x, 40));
             }
             for (int y = 10; y <= 40; y++)
             {
-                MapRoute.Observe(40, y, MapRoute.CellFloor);
+                floor.Add(CellKey(40, y));
             }
-            // A decoy: a few isolated floor cells on the direct line, not connected to anything, so
-            // a route that snapped to the nearest known cell rather than the nearest REACHABLE one
-            // would head south and be caught.
-            MapRoute.Observe(12, 22, MapRoute.CellFloor);
-            MapRoute.Observe(12, 26, MapRoute.CellFloor);
+            // A decoy: isolated floor on the direct line, not connected to the route.
+            floor.Add(CellKey(12, 22));
+            floor.Add(CellKey(12, 26));
+
+            var solver = new DungeonSolver();
+            solver.Bind("d2", 60, 60);
+            foreach (int key in floor)
+            {
+                solver.Observe(key >> 12, key & 0xFFF, DungeonMap.SourceFloor);
+            }
 
             const float px = 12.5f;
             const float py = 10.5f;
             const float gx = 12.5f;
             const float gy = 40.5f;
-
             float wx;
             float wy;
-            bool found = MapRoute.TryWaypoint(px, py, gx, gy, out wx, out wy);
+            bool found = solver.TryWaypoint(px, py, gx, gy, out wx, out wy);
             bool firstEast = found && wx > px + 2.0f && Math.Abs(wy - py) < 1.5f;
 
-            // WALK IT: each iteration moves the character to the waypoint, exactly as the dodge
-            // would drive it, and asks again.
             float cx = px;
             float cy = py;
             int steps = 0;
@@ -1830,7 +1885,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             {
                 float tx;
                 float ty;
-                if (!MapRoute.TryWaypoint(cx, cy, gx, gy, out tx, out ty))
+                if (!solver.TryWaypoint(cx, cy, gx, gy, out tx, out ty))
                 {
                     break;
                 }
@@ -1840,8 +1895,22 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 {
                     break;
                 }
-                cx = tx;
-                cy = ty;
+                // MOVE ONE AXIS AT A TIME THROUGH TRUE FLOOR, as the client's own refusal would.
+                bool moved;
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                {
+                    moved = TryStep(floor, ref cx, ref cy, Math.Sign(dx) * Math.Min(0.5f, Math.Abs(dx)), 0.0f)
+                            || TryStep(floor, ref cx, ref cy, 0.0f, Math.Sign(dy) * Math.Min(0.5f, Math.Abs(dy)));
+                }
+                else
+                {
+                    moved = TryStep(floor, ref cx, ref cy, 0.0f, Math.Sign(dy) * Math.Min(0.5f, Math.Abs(dy)))
+                            || TryStep(floor, ref cx, ref cy, Math.Sign(dx) * Math.Min(0.5f, Math.Abs(dx)), 0.0f);
+                }
+                if (!moved)
+                {
+                    continue;
+                }
                 steps++;
                 float ex = cx - gx;
                 float ey = cy - gy;
@@ -1852,118 +1921,64 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 }
             }
 
-            // (2) AN EMPTY CACHE PUBLISHES NOTHING.
-            MapRoute.Reset();
-            MapRoute.EnsureMap("g4-empty", 40, 40);
-            MapRoute.Observe(5, 5, MapRoute.CellFloor);
-            float unusedX;
-            float unusedY;
-            bool emptyRefused = !MapRoute.TryWaypoint(5.5f, 5.5f, 30.5f, 30.5f, out unusedX, out unusedY);
-
-            // (3) THE INFESTED CELLAR'S SPAWN ROOM: KNOWN WALLS, THE GOAL BEYOND THEM, AND ONE
-            // UNPAINTED OPENING TO THE SOUTH. The goal is EAST so "toward the goal" and "out of the
-            // room" are different directions -- which is the whole defect.
-            MapRoute.Reset();
-            MapRoute.EnsureMap("g4-frontier", 60, 60);
-            for (int y = 10; y <= 19; y++)
-            {
-                for (int x = 10; x <= 19; x++)
-                {
-                    MapRoute.Observe(x, y, MapRoute.CellFloor);
-                }
-            }
-            // The streamed wall: a `NoWalk` ring around the room, with a three-cell gap at y=20,
-            // x 13..15 left UNOBSERVED (that is the corridor the map has not painted yet).
-            for (int y = 9; y <= 21; y++)
-            {
-                for (int x = 9; x <= 21; x++)
-                {
-                    bool inside = x >= 10 && x <= 19 && y >= 10 && y <= 19;
-                    bool gap = y == 20 && x >= 13 && x <= 15;
-                    if (!inside && !gap)
-                    {
-                        MapRoute.Observe(x, y, MapRoute.CellNoWalkTile);
-                    }
-                }
-            }
-            float frontierX;
-            float frontierY;
-            bool frontierFound = MapRoute.TryWaypoint(12.5f, 12.5f, 30.5f, 14.5f,
-                                                      out frontierX, out frontierY);
-            bool frontierSouth = frontierFound && frontierY > 12.5f + 4.0f
-                                 && Math.Abs(frontierX - 12.5f) < 3.0f;
-
-            Report("G4  the map route takes the long way round and walks a frontier, not the goal",
-                   found && firstEast && arrived && emptyRefused && frontierSouth,
+            Report("D2  a dungeon goal on known floor is walked the long way round",
+                   found && firstEast && arrived && solver.GoalPlans > 0,
                    "first waypoint " + F(wx) + "," + F(wy) + " (from " + F(px) + "," + F(py)
                    + ", a straight line to the goal is SOUTH) -- "
                    + (firstEast ? "east along the U, correct" : "NOT east, so it aimed at the wall")
-                   + "; " + steps + " step(s) of walking arrived "
-                   + (arrived ? "at the goal" : "NOWHERE")
-                   + "; an empty cache " + (emptyRefused ? "refused (correct)" : "invented a route")
-                   + "; the Infested Cellar room (goal EAST, walls `NoWalk`, opening SOUTH) gave "
-                   + (frontierFound ? "its first waypoint at " + F(frontierX) + "," + F(frontierY) : "NO waypoint")
-                   + " -- " + (frontierSouth ? "south, out of the room, correct"
-                                             : "NOT south: the known wall is still attracting the route")
-                   + ". The third block is the measurement: the old cache stored floor and not-floor,"
-                   + " so the east wall was a frontier nearer the goal than the opening, and the"
-                   + " recorded character walked at it for 6 039 frames.");
-            MapRoute.Reset();
+                   + "; the walk arrived " + (arrived ? "at the goal" : "NOWHERE")
+                   + " after " + steps + " step(s) and " + solver.GoalPlans + " goal plan(s). "
+                   + solver.Status());
         }
 
         /// <summary>
-        /// G5: a dungeon is DISCOVERED -- the map is walked, a dead end is spent, and the character
+        /// D3: a dungeon is DISCOVERED -- the map is walked, a dead end is spent, and the character
         /// backtracks out of it and arrives.
         ///
         /// WHY THIS IS A WALK AND NOT ANOTHER GRAPH QUESTION. The Infested Cellar's defect was not a
         /// wrong route; it was a route that never moved (`20261020-183555-p37604`: the character
         /// shuttles between x 507.4 and x 520.6 at y 511.6 for 6 039 frames, and the corridor at
-        /// (513..515, 553..555) is KNOWN floor it never visited). So this fixture runs the module the
-        /// way the adapter does -- a frame at a time, from the position it actually moved to -- over a
-        /// map that is revealed around the character, the way `GmTiles` reveals it live.
+        /// (513..515, 553..555) is KNOWN floor it never visited). So this fixture runs the solver the
+        /// way the adapter does -- a frame at a time, from the position it actually moved to -- over
+        /// a map that is revealed around the character, the way `GmTiles` reveals it live.
         ///
-        /// THE TWO HALVES, AND THEY TEST TWO DIFFERENT FAILURES:
-        ///
-        ///  (a) A FRONTIER THAT REVEALS NOTHING IS SPENT. An isolated known room with unpainted space
+        ///  (a) A FRONTIER THAT REVEALS NOTHING IS SPENT. An isolated room with unpainted space
         ///      around it: the character is walked to the chosen frontier and left there, and after
         ///      `DwellFrames` the module must mark it (dead end counter up) and publish a DIFFERENT
-        ///      point. Without this the character stands at the edge of the map for ever;
-        ///  (b) A CORRIDOR WITH A DEAD END IS WALKED TO THE GOAL. The true map is a straight run east
-        ///      with a blind stub to the north, then north and east to the goal. The stub must be
-        ///      entered (the nearest frontier is up it), found to be a stub, and ABANDONED -- and the
-        ///      walk must then reach the goal, with no cell revisited more than a handful of times.
-        ///      A cache that re-targets from the goal distance every frame fails the revisit bound;
-        ///      a cache that cannot spend a frontier never leaves the stub.
+        ///      point. Without this the character stands at the edge of the map for ever.
+        ///  (b) A CORRIDOR WITH A DEAD END IS WALKED TO THE GOAL. The true map is a straight run
+        ///      east with a blind stub to the north, then south and east to the goal. The stub must
+        ///      be entered, found closed and ABANDONED -- that is the operator's "there might be
+        ///      paths that are dead ends" -- and no cell may be revisited more than a handful of
+        ///      times. A per-frame goal-distance retarget fails the revisit bound.
         /// </summary>
         private void ReportDungeonWalk()
         {
-            // ---- (a) A DRY FRONTIER IS SPENT, AND THE NEXT POINT IS A DIFFERENT ONE -------------
-            MapRoute.Reset();
-            MapRoute.EnsureMap("g5-dry", 40, 40);
+            // ---- (a) A DRY FRONTIER IS SPENT ------------------------------------------------
+            var solverDry = new DungeonSolver();
+            solverDry.Bind("d3-dry", 40, 40);
             for (int y = 10; y <= 14; y++)
             {
                 for (int x = 10; x <= 14; x++)
                 {
-                    MapRoute.Observe(x, y, MapRoute.CellFloor);
+                    solverDry.Observe(x, y, DungeonMap.SourceFloor);
                 }
             }
             float dryX = 12.5f;
             float dryY = 12.5f;
             float firstX;
             float firstY;
-            bool dryFirst = MapRoute.TryWaypoint(dryX, dryY, 35.5f, 35.5f, out firstX, out firstY);
-            // THE WALK: stand on the published point and keep asking, exactly as the dodge does when
-            // the waypoint is under its feet.
+            bool dryFirst = solverDry.TryWaypoint(dryX, dryY, 35.5f, 35.5f, out firstX, out firstY);
             float lastX = firstX;
             float lastY = firstY;
             int retargets = 0;
-            for (int i = 0; i < 200; i++)
+            for (int i = 0; i < 300; i++)
             {
                 dryX = lastX;
                 dryY = lastY;
                 float tx;
                 float ty;
-                if (!MapRoute.TryWaypoint(dryX, dryY, 35.5f, 35.5f, out tx, out ty))
+                if (!solverDry.TryWaypoint(dryX, dryY, 35.5f, 35.5f, out tx, out ty))
                 {
                     break;
                 }
@@ -1974,16 +1989,11 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 lastX = tx;
                 lastY = ty;
             }
-            bool drySpent = dryFirst && MapRoute.DeadEnds >= 1 && retargets >= 1;
-            // THE (a) COUNTERS ARE READ NOW: the (b) run below resets the cache, and a message that
-            // quotes the second run's dead-end count for the first run's claim is the kind of report
-            // that reads "0" beside a pass.
-            long dryDeadEnds = MapRoute.DeadEnds;
-            string dryStatus = MapRoute.Status();
+            bool drySpent = dryFirst && solverDry.DeadEnds >= 1 && retargets >= 1;
+            long dryDeadEnds = solverDry.DeadEnds;
+            string dryStatus = solverDry.Status();
 
-            // ---- (b) THE CORRIDOR WITH A DEAD END -----------------------------------------------
-            //
-            // The true floor is a U with a BLIND STUB TOWARD THE GOAL at its first junction:
+            // ---- (b) THE CORRIDOR WITH A DEAD END, REVEALED AS THE CHARACTER WALKS -------------
             //
             //      start (10,10) -- east to the junction (14,10)
             //      junction -- north into a six-cell stub that ends at (14,4)   <-- toward the goal
@@ -1991,7 +2001,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             //
             // A nearest-frontier walk enters the stub first because it is nearer the goal than the
             // south leg; the stub is closed, and the only way on is to BACKTRACK through the
-            // junction. That is the operator's "there might be paths that are dead ends".
+            // junction.
             var floor = new System.Collections.Generic.HashSet<int>();
             for (int x = 10; x <= 14; x++)
             {
@@ -2014,8 +2024,8 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 floor.Add(CellKey(24, y));
             }
 
-            MapRoute.Reset();
-            MapRoute.EnsureMap("g5-dungeon", 60, 60);
+            var solver = new DungeonSolver();
+            solver.Bind("d3-dungeon", 60, 60);
             float px = 10.5f;
             float py = 10.5f;
             const float goalX = 24.5f;
@@ -2025,10 +2035,10 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             int frames = 0;
             int maxVisits = 0;
             var visits = new System.Collections.Generic.Dictionary<int, int>();
-            for (int i = 0; i < 1500; i++)
+            for (int i = 0; i < 2000; i++)
             {
                 frames++;
-                RevealAround(floor, px, py);
+                RevealAround(solver, floor, px, py);
                 int key = CellKey((int)px, (int)py);
                 int seen;
                 visits.TryGetValue(key, out seen);
@@ -2041,9 +2051,6 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 {
                     enteredStub = true;
                 }
-                // ARRIVAL IS CHECKED BEFORE THE NEXT QUESTION. The module is only asked about a goal
-                // that is more than `AdvanceRadius` away -- the live adapter asks at 10 units, and a
-                // goal under the character is not a route -- so the walk stops when it is near.
                 float gex = px - goalX;
                 float gey = py - goalY;
                 if ((gex * gex) + (gey * gey) <= 6.0f)
@@ -2053,47 +2060,34 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 }
                 float wx2;
                 float wy2;
-                if (!MapRoute.TryWaypoint(px, py, goalX, goalY, out wx2, out wy2))
+                if (!solver.TryWaypoint(px, py, goalX, goalY, out wx2, out wy2))
                 {
                     break;
                 }
-                // MOVE LIKE THE DODGE MOVES: the larger axis first, and never off the true floor.
-                // A straight line to a waypoint six units along the route would cut the corner of
-                // the L at (20,10), which the real admission rule would refuse; this reproduces that
-                // refusal without re-implementing the solver.
                 float dx = wx2 - px;
                 float dy = wy2 - py;
                 const float step = 0.5f;
-                bool moved = false;
+                bool moved;
                 if (Math.Abs(dx) >= Math.Abs(dy))
                 {
                     moved = TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f)
-                            || TryStep(floor, ref px, ref py, 0.0f,
-                                       Math.Sign(dy) * Math.Min(step, Math.Abs(dy)));
+                            || TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)));
                 }
                 else
                 {
-                    moved = TryStep(floor, ref px, ref py, 0.0f,
-                                    Math.Sign(dy) * Math.Min(step, Math.Abs(dy)))
+                    moved = TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)))
                             || TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f);
                 }
                 if (!moved)
                 {
-                    // The waypoint is under the character (the dwell at a frontier): that is a wait,
-                    // which is a frame the module counts, not a defect.
+                    // The waypoint is under the character (the dwell at a frontier): a wait, which
+                    // the solver counts, not a defect.
                     continue;
-                }
-                float ex = px - goalX;
-                float ey = py - goalY;
-                if ((ex * ex) + (ey * ey) <= 4.0f)
-                {
-                    arrived = true;
-                    break;
                 }
             }
 
-            Report("G5  a dungeon is walked: frontiers are spent, a dead end is backtracked, the goal reached",
-                   drySpent && arrived && enteredStub && maxVisits <= 24,
+            Report("D3  a dungeon is walked: a dead end is spent, backtracked out of, and the goal reached",
+                   drySpent && arrived && enteredStub && solver.Backtracks >= 1 && maxVisits <= 24,
                    "a dry frontier " + (dryFirst ? "was walked and " : "was NOT ")
                    + (dryDeadEnds >= 1
                        ? dryDeadEnds + " dead end(s) marked, " + retargets + " retarget(s)"
@@ -2101,20 +2095,143 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                    + " (" + dryStatus + "); the corridor with a blind stub: "
                    + (enteredStub ? "the stub was entered" : "the stub was NEVER entered")
                    + ", the goal was " + (arrived ? "reached" : "NOT reached")
-                   + " in " + frames + " frame(s), and the most-visited cell was entered " + maxVisits
-                   + " time(s). " + MapRoute.Status()
+                   + " in " + frames + " frame(s), " + solver.Backtracks + " backtrack(s) were counted,"
+                   + " and the most-visited cell was entered " + maxVisits + " time(s). "
+                   + solver.Status()
                    + ". The revisit bound is what a per-frame goal-distance retarget fails: that is"
-                   + " the Infested Cellar's 6 039-frame shuttle, and the stub is the dead end the"
-                   + " operator said the pathfinder has to back out of.");
-            MapRoute.Reset();
+                   + " the Infested Cellar's 6 039-frame shuttle.");
+        }
+
+        /// <summary>
+        /// D4: a room with ONE entrance is walked out of and the goal beyond it is reached.
+        ///
+        /// This is the operator's "if a room only has one entrance, it is a dead end and the solver
+        /// will need to back track" made literal. The character starts inside a walled room whose
+        /// only opening is the south corridor; the goal is east beyond the room's wall. The first
+        /// waypoint must be toward the opening, the character must leave the room, and the goal must
+        /// be reached -- and the solver's map must not still call the room's east wall a frontier.
+        /// </summary>
+        private void ReportDungeonRoom()
+        {
+            var floor = new System.Collections.Generic.HashSet<int>();
+            for (int y = 10; y <= 19; y++)
+            {
+                for (int x = 10; x <= 19; x++)
+                {
+                    floor.Add(CellKey(x, y));
+                }
+            }
+            for (int y = 20; y <= 27; y++)
+            {
+                floor.Add(CellKey(14, y));
+            }
+            for (int x = 14; x <= 30; x++)
+            {
+                floor.Add(CellKey(x, 27));
+            }
+
+            var solver = new DungeonSolver();
+            solver.Bind("d4-room", 50, 50);
+            float px = 12.5f;
+            float py = 12.5f;
+            const float goalX = 30.5f;
+            const float goalY = 27.5f;
+            bool arrived = false;
+            bool leftRoom = false;
+            int frames = 0;
+            for (int i = 0; i < 1500; i++)
+            {
+                frames++;
+                RevealAround(solver, floor, px, py);
+                if (py > 21.0f)
+                {
+                    leftRoom = true;
+                }
+                float gex = px - goalX;
+                float gey = py - goalY;
+                if ((gex * gex) + (gey * gey) <= 6.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+                float wx;
+                float wy;
+                if (!solver.TryWaypoint(px, py, goalX, goalY, out wx, out wy))
+                {
+                    break;
+                }
+                float dx = wx - px;
+                float dy = wy - py;
+                const float step = 0.5f;
+                bool moved;
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                {
+                    moved = TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f)
+                            || TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)));
+                }
+                else
+                {
+                    moved = TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)))
+                            || TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f);
+                }
+            }
+
+            Report("D4  a room with one entrance is left, and the goal beyond it is reached",
+                   arrived && leftRoom,
+                   "the character " + (leftRoom ? "left the room" : "NEVER left the room")
+                   + " and " + (arrived ? "reached the goal" : "did NOT reach the goal")
+                   + " after " + frames + " frame(s). " + solver.Status()
+                   + ". The room's only opening is the south corridor; the goal is east beyond its"
+                   + " wall, so a goal-distance gradient presses the east wall instead of leaving.");
+        }
+
+        /// <summary>
+        /// D5: the solver's state is per map. A new array cannot inherit the old route, and the
+        /// exploration memory belongs to the map that produced it.
+        /// </summary>
+        private void ReportDungeonState()
+        {
+            var solver = new DungeonSolver();
+            solver.Bind("d5-a", 30, 30);
+            for (int x = 5; x <= 10; x++)
+            {
+                solver.Observe(x, 5, DungeonMap.SourceFloor);
+            }
+            float wx;
+            float wy;
+            bool first = solver.TryWaypoint(5.5f, 5.5f, 10.5f, 5.5f, out wx, out wy);
+            long oldPlans = solver.Plans;
+
+            solver.Bind("d5-b", 30, 30);
+            bool cleared = solver.Map.FloorCells == 0;
+            bool refusedWhenEmpty = !solver.TryWaypoint(5.5f, 5.5f, 10.5f, 5.5f, out wx, out wy);
+            for (int y = 5; y <= 10; y++)
+            {
+                solver.Observe(5, y, DungeonMap.SourceFloor);
+            }
+            bool second = solver.TryWaypoint(5.5f, 5.5f, 5.5f, 10.5f, out wx, out wy);
+            bool countersKept = solver.Plans > oldPlans;
+            solver.Reset();
+            bool reset = !solver.Available && solver.Plans == 0;
+
+            Report("D5  dungeon state is per map: a new array starts empty and a reset starts over",
+                   first && cleared && refusedWhenEmpty && second && countersKept && reset,
+                   "first map routed: " + (first ? "yes" : "NO")
+                   + "; a new array cleared the floor: " + (cleared ? "yes" : "NO")
+                   + "; an empty map refused rather than inventing a route: "
+                   + (refusedWhenEmpty ? "yes" : "NO")
+                   + "; the second map routed: " + (second ? "yes" : "NO")
+                   + "; counters survived the rebind: " + (countersKept ? "yes" : "NO")
+                   + "; Reset cleared everything: " + (reset ? "yes" : "NO") + ".");
         }
 
         /// <summary>
         /// One frame of `GmTiles` streaming, as the live window sees it: floor within three cells of
-        /// the character, and the wall next to the character painted as `NoWalk`. Beyond that the
-        /// map is unpainted -- which is a frontier, not a wall.
+        /// the character, and the rock next to the character painted as `NoWalk`. Beyond that the
+        /// map is unpainted -- a frontier, not a wall.
         /// </summary>
-        private static void RevealAround(System.Collections.Generic.HashSet<int> floor, float px, float py)
+        private static void RevealAround(DungeonSolver solver, System.Collections.Generic.HashSet<int> floor,
+                                         float px, float py)
         {
             int cx = (int)px;
             int cy = (int)py;
@@ -2126,12 +2243,11 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     int y = cy + dy;
                     if (floor.Contains(CellKey(x, y)))
                     {
-                        MapRoute.Observe(x, y, MapRoute.CellFloor);
+                        solver.Observe(x, y, DungeonMap.SourceFloor);
                     }
                     else if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1)
                     {
-                        // The rock beside the character is painted by the same streamer.
-                        MapRoute.Observe(x, y, MapRoute.CellNoWalkTile);
+                        solver.Observe(x, y, DungeonMap.SourceNoWalk);
                     }
                 }
             }
@@ -2378,12 +2494,19 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // AND THE GOAL RAY'S OWN TARGETING RULE, which is what a farm goal outside the window
             // becomes. See `ReportRayTarget`.
             ReportRayTarget();
+            // AND THE DUNGEON'S MAP: the four cell states and the per-map identity. See
+            // `ReportDungeonMap`.
+            ReportDungeonMap();
             // AND THE MAP-SCALE ROUTE, which is the answer when the local window cannot see the
-            // way to the goal at all. See `ReportMapRoute`.
-            ReportMapRoute();
+            // way to the goal at all. See `ReportDungeonRoute`.
+            ReportDungeonRoute();
             // AND THE DUNGEON WALK ITSELF: a frontier walk that spends a dead end and backtracks out
             // of it, over a map that is revealed around the character. See `ReportDungeonWalk`.
             ReportDungeonWalk();
+            // AND THE ROOM WITH ONE ENTRANCE, plus the per-map state that keeps one dungeon out of
+            // the next. See `ReportDungeonRoom` and `ReportDungeonState`.
+            ReportDungeonRoom();
+            ReportDungeonState();
             Console.WriteLine();
 
             float previousX = float.NaN;
@@ -2682,8 +2805,8 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
 
             Console.WriteLine();
             // THE MAP ROUTE OVER WHATEVER THIS RECORDING EXPLORED. Informational, not an assertion;
-            // see `ReportMapRouteTrace`.
-            ReportMapRouteTrace();
+            // see `ReportDungeonTrace`.
+            ReportDungeonTrace();
             if (_warningsFatal)
             {
                 Failures++;
@@ -3177,10 +3300,10 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             {
                 snapshot.Grid = frame.Grid.ToSolverWindow();
                 // AND THE MAP-SCALE ROUTE'S CACHE, FROM THE SAME RECORD. The live adapter feeds
-                // `MapRoute` from every window it reads; the trace has those windows, including the
+                // `DungeonMap` from every window it reads; the trace has those windows, including the
                 // per-cell `src` field that says which cells were FLOOR, so a replay can be handed
-                // the map the live run had. `ReportMapRouteTrace` walks it after the loop.
-                FeedMapRoute(frame);
+                // the map the live run had. `ReportDungeonTrace` walks it after the loop.
+                FeedDungeonTrace(frame);
             }
 
             foreach (RecordedThreat recorded in frame.Threats)

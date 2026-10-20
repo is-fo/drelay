@@ -401,29 +401,37 @@ namespace Drelay.Bootstrap
 
         /// <summary>
         /// The pathfinder's answer from the frame before, so this frame knows whether the local
-        /// window could aim at the goal at all. See the map-route call site in `FillSnapshot`.
+        /// window could aim at the goal at all. See the dungeon call site in `FillSnapshot`.
         /// </summary>
         private static PathReason _lastPathReason = PathReason.Disabled;
 
-        /// <summary>Goals closer than this keep the ordinary point; the map route is for a walk.</summary>
-        private const float MinMapRouteGoalUnits = 10.0f;
+        /// <summary>
+        /// THE DUNGEON'S OWN SOLVER. One instance for the process, because its state IS the walk:
+        /// the map, the committed frontier and the exploration memory. It is instance state rather
+        /// than a static class on purpose -- a test can run two dungeons without resetting the
+        /// process, and `Bind` is the only way a new map can inherit anything.
+        /// </summary>
+        private static readonly DungeonSolver _dungeon = new DungeonSolver();
+
+        /// <summary>Goals closer than this keep the ordinary point; the dungeon is for a walk.</summary>
+        private const float MinDungeonGoalUnits = 10.0f;
 
         /// <summary>
-        /// Frames the map route keeps the goal after it last published one.
+        /// Frames the dungeon keeps the goal after it last published one.
         ///
         /// WITHOUT THIS THE TWO GOAL SOURCES ALTERNATE EVERY FEW FRAMES. The takeover is decided from
         /// the PREVIOUS frame's planner answer, and once the published goal IS a waypoint the planner
         /// has a route to it -- so `blind` goes false, the boss's own position is published again, the
-        /// planner refuses it, the route takes over... A hold is the same hysteresis the dodge applies
-        /// to a heading and the follower applies to a waypoint, for the same reason: two answers to
-        /// one question alternating frame by frame is not a decision.
+        /// planner refuses it, the dungeon takes over... A hold is the same hysteresis the dodge
+        /// applies to a heading and the follower applies to a waypoint, for the same reason: two
+        /// answers to one question alternating frame by frame is not a decision.
         /// </summary>
-        private const int MapRouteHoldFrames = 45;
+        private const int DungeonHoldFrames = 45;
 
-        private static int _mapRouteHold;
+        private static int _dungeonHold;
 
-        /// <summary>Frames the published goal came from the map route, for the report.</summary>
-        private static long _mapRouteGoalFrames;
+        /// <summary>Frames the published goal came from the dungeon solver, for the report.</summary>
+        private static long _dungeonGoalFrames;
 
         /// <summary>
         /// The first report arrives at 300 frames and every 900 after that.
@@ -495,6 +503,14 @@ namespace Drelay.Bootstrap
             // two frame-path methods are named -- `Resolve` and `ResolveWorld` run at arm time.
             Prepare(typeof(EnemyReader), "Fill", BindingFlags.Public | BindingFlags.Static);
             Prepare(typeof(EnemyReader), "Describe", BindingFlags.Public | BindingFlags.Static);
+            // THE DUNGEON SOLVER IS ON THE FRAME PATH: `TryWaypoint` runs on every frame with a
+            // quest goal, and `Observe` runs in the grid refresh. Warming them here is what keeps
+            // the first call from being JIT-compiled inside a patched game frame.
+            Prepare(typeof(DungeonSolver), "TryWaypoint", BindingFlags.Public | BindingFlags.Instance);
+            Prepare(typeof(DungeonSolver), "Observe", BindingFlags.Public | BindingFlags.Instance);
+            Prepare(typeof(DungeonSolver), "Bind", BindingFlags.Public | BindingFlags.Instance);
+            Prepare(typeof(DungeonSolver), "Status", BindingFlags.Public | BindingFlags.Instance);
+            Prepare(typeof(DungeonMap), "Observe", BindingFlags.Public | BindingFlags.Instance);
             // THE QUEST READER IS ON THE FRAME PATH FOR THE SAME REASON. `Fill` is called every
             // frame; `TryActivate` is a reflective invoke that the private module makes at most
             // once per retry window, and it is warmed with the method it calls.
@@ -1180,25 +1196,25 @@ namespace Drelay.Bootstrap
                 // one was refused by its map block, or when the farmer already answered.
                 RouteRuntime.ApplyGoal(world, _config, s);
 
-                // AND THE MAP-SCALE ROUTE, WHICH IS THE ANSWER FOR A GOAL THE LOCAL WINDOW CANNOT
+                // THE DUNGEON SOLVER, WHICH IS THE ANSWER FOR A GOAL THE LOCAL WINDOW CANNOT
                 // REACH. `20261020-181445-p4196` (River Maze) is the measurement: the boss 32 units
-                // east, behind a wall, reachable in 78 steps over a route that leaves the
-                // planner's 128-unit window, `unreachable` on the frames the local search could
-                // finish and `nodecap` on the frames it could not. So when the last decision's
-                // planner had no route (or the goal is beyond the window by itself), the point the
-                // character is given becomes the next waypoint of the map route instead of the
-                // boss's own position. It writes the same `GoalX`/`GoalY` the farmer does and
-                // nothing else: the planner, admission, the score and the escape floor are
-                // untracked, and the arrival policy keeps walking because a waypoint is a place to
-                // pass through, not a place to stop at.
+                // east, behind a wall, reachable over a route that leaves the planner's 128-unit
+                // window, `unreachable` on the frames the local search could finish and `nodecap` on
+                // the frames it could not. `20261020-183555-p37604` (Infested Cellar) is the other
+                // half: the only exit was KNOWN FLOOR and the character spent 6 039 frames pacing
+                // its spawn room. So when the last decision's planner had no route (or the goal is
+                // beyond the window by itself), the point the character is given becomes the next
+                // waypoint of the dungeon's own map route instead of the boss's own position. It
+                // writes the same `GoalX`/`GoalY` the farmer does and nothing else: the planner,
+                // admission, the score and the escape floor are untouched, and the arrival policy
+                // keeps walking because a waypoint is a place to pass through, not a place to stop.
                 //
                 // A QUEST GOAL ONLY, AND THE ARRIVAL RADIUS IS WHY. An enemy goal stops the farmer
                 // three units out and lets the auto-fire work; a chain of waypoints would keep
                 // replacing that place with the next one, so the character would walk *through* the
                 // mob it was supposed to shoot. A quest marker is a journey -- a boss in the next
-                // room, a doorway across a dungeon -- which is the shape this module is for. The
-                // measured cases (River Maze, Frost Cavern) are both quest goals.
-                if (s.GoalHasPoint && s.GoalIsQuest)
+                // room, a doorway across a dungeon -- which is the shape this module is for.
+                if (_config.FarmMode && s.GoalHasPoint && s.GoalIsQuest)
                 {
                     float gdx = s.GoalX - s.Player.X;
                     float gdy = s.GoalY - s.Player.Y;
@@ -1206,24 +1222,24 @@ namespace Drelay.Bootstrap
                     bool blind = _lastPathReason == PathReason.NoTarget
                                  || _lastPathReason == PathReason.Unreachable
                                  || _lastPathReason == PathReason.NodeCap
-                                 || _mapRouteHold > 0;
+                                 || _dungeonHold > 0;
                     float wx;
                     float wy;
-                    if (goalDistance > MinMapRouteGoalUnits
-                        && MapRoute.ShouldTakeOver(blind, goalDistance)
-                        && MapRoute.TryWaypoint(s.Player.X, s.Player.Y, s.GoalX, s.GoalY,
+                    if (goalDistance > MinDungeonGoalUnits
+                        && _dungeon.ShouldTakeOver(blind, goalDistance)
+                        && _dungeon.TryWaypoint(s.Player.X, s.Player.Y, s.GoalX, s.GoalY,
                                                 out wx, out wy))
                     {
                         s.GoalX = wx;
                         s.GoalY = wy;
                         s.GoalKeepWalking = true;
-                        _mapRouteGoalFrames++;
-                        _mapRouteHold = MapRouteHoldFrames;
+                        _dungeonGoalFrames++;
+                        _dungeonHold = DungeonHoldFrames;
                     }
                 }
-                if (_mapRouteHold > 0)
+                if (_dungeonHold > 0)
                 {
-                    _mapRouteHold--;
+                    _dungeonHold--;
                 }
 
                 long t0 = Stopwatch.GetTimestamp();
@@ -1433,11 +1449,15 @@ namespace Drelay.Bootstrap
                 int mapW = dimensions != null && dimensions.Rank == 2 ? dimensions.GetLength(0) : 0;
                 int mapH = dimensions != null && dimensions.Rank == 2 ? dimensions.GetLength(1) : 0;
 
-                // THE MAP-SCALE ROUTE'S CACHE IS BOUND TO THE MAP THE SAME WAY THIS WINDOW IS: by the
-                // grid ARRAY's identity and its dimensions. A new `byte[,]` is a new world, and a
-                // route from the old one would be a route through another realm's walls. See
-                // `MapRoute`; this is also the call that refuses a map too large to keep a cache for.
-                MapRoute.EnsureMap(array, mapW, mapH);
+                // THE DUNGEON'S MAP IS BOUND TO THE SAME IDENTITY THIS WINDOW IS: the grid ARRAY's
+                // reference and its dimensions. A new `byte[,]` is a new world, and a route from the
+                // old one would be a route through another realm's walls. See `DungeonMap.Bind`;
+                // this is also the call that refuses a map too large to keep a cache for. It is fed
+                // only on a farm run, because that is the only run with a dungeon walker.
+                if (_config.FarmMode)
+                {
+                    _dungeon.Bind(array, mapW, mapH);
+                }
 
                 for (int gy = 0; gy < size; gy++)
                 {
@@ -1467,26 +1487,26 @@ namespace Drelay.Bootstrap
                         // opposite reading sealed every dungeon (see `CollisionWindow.MergeCell` for
                         // the 1 027-cell closed room and the 620 `1 -> 0` cells that came with it).
                         //
-                        // AND THE SAME TWO HALVES CLASSIFY THE CELL FOR THE MAP CACHE, which needs
-                        // the difference between a wall and a hole the map has not painted: its
-                        // frontier is "an open cell with an unpainted neighbour", and the Infested
-                        // Cellar's east wall was a frontier for six thousand frames when a wall and a
-                        // hole were one byte. The codes are `TraceRecorder`'s own so the offline
-                        // replay feeds the same vocabulary; see `MapRoute.Observe`.
+                        // AND THE SAME TWO HALVES CLASSIFY THE CELL FOR THE DUNGEON'S MAP, which
+                        // needs the difference between a wall and a hole the map has not painted:
+                        // its frontier is "a floor cell with an unpainted neighbour", and the
+                        // Infested Cellar's east wall was a frontier for six thousand frames when a
+                        // wall and a hole were one byte. The codes are the trace's own so the
+                        // offline replay feeds the same vocabulary; see `DungeonMap.Observe`.
                         byte mapSource;
                         if (!inMap)
                         {
-                            mapSource = MapRoute.CellOutOfMap;
+                            mapSource = DungeonMap.SourceOutOfMap;
                         }
                         else if (cell != 0)
                         {
-                            mapSource = MapRoute.CellCollision;
+                            mapSource = DungeonMap.SourceCollision;
                         }
                         else if (tilemap == null || _getTileData == null)
                         {
                             // NO TILE MAP YET: no information beyond the collision byte, which said
                             // zero. That is unpainted, not floor.
-                            mapSource = MapRoute.CellUnknown;
+                            mapSource = DungeonMap.SourceUnknown;
                         }
                         else
                         {
@@ -1495,10 +1515,13 @@ namespace Drelay.Bootstrap
                                           && _getTileNoWalk(tileData);
                             cell = CollisionWindow.MergeCell(cell, tileData != null, noWalk);
                             mapSource = tileData == null
-                                ? MapRoute.CellUnknown
-                                : (noWalk ? MapRoute.CellNoWalkTile : MapRoute.CellFloor);
+                                ? DungeonMap.SourceUnknown
+                                : (noWalk ? DungeonMap.SourceNoWalk : DungeonMap.SourceFloor);
                         }
-                        MapRoute.Observe(wx, wy, mapSource);
+                        if (_config.FarmMode)
+                        {
+                            _dungeon.Observe(wx, wy, mapSource);
+                        }
 
                         GridCells[index] = cell;
                     }
@@ -1956,23 +1979,19 @@ namespace Drelay.Bootstrap
                     path.NoTargetFrames, path.NoGoalFrames));
             }
 
-            // AND THE MAP-SCALE ROUTE'S OWN LINE. It is the answer to the line above: `unreachable`
+            // AND THE DUNGEON SOLVER'S OWN LINE. It is the answer to the line above: `unreachable`
             // and `nodecap` are the local window saying "not here", and this says how much map the
-            // route had to work with and whether the goal was being published from it. A run whose
-            // `floor cell(s)` stops growing while the character is stuck is a map that is not
-            // revealing, which is a different defect from a route that cannot be found.
+            // walk had to work with and whether the goal was being published from it. A run whose
+            // `floor` stops growing while the character is stuck is a map that is not revealing,
+            // which is a different defect from a route that cannot be found.
             //
-            // `frontier left` IS THE NUMBER THAT SAYS WHETHER THE DUNGEON HAS BEEN MAPPED.
-            // `20261020-183555-p37604` spent 6 039 frames in Infested Cellar's spawn room with the
-            // cache at 1 054 floor cells and the route pacing between two points; the frontier count
-            // separates "there is somewhere left to walk" from "every opening has been visited".
-            // `dead end` is a frontier that was walked to and revealed nothing (the operator's
-            // backtracking), and `timeout` is one the character could not reach -- two different
-            // failures that would look identical in `refused`. See `MapRoute`'s header and
-            // `PLAN-AUTOFARM.md` section 14.13.
+            // `frontier` IS THE NUMBER THAT SAYS WHETHER THE DUNGEON HAS BEEN MAPPED. `dead end` is
+            // a frontier that was walked to and revealed nothing (the operator's backtracking), and
+            // `timeout` is one the character could not reach -- two different failures that would
+            // look identical in `refused`. `backtrack` counts the route that leaves a spent stub.
             HookEntry.AppendLog("INFO",
-                "PHASE 3 DODGE MAPROUTE | " + MapRoute.Status()
-                + " | goal from the route " + _mapRouteGoalFrames + " frame(s)");
+                "PHASE 3 DODGE DUNGEON | " + _dungeon.Status()
+                + " | goal from the dungeon " + _dungeonGoalFrames + " frame(s)");
 
             // AND THE FARMER'S OWN LINE, ON ITS OWN FOR THE SAME REASON, AND ONLY WHEN IT RAN. It
             // carries the plan's `stand held for range` counter, which is the one number that says

@@ -2118,3 +2118,58 @@ and no route to the marker is a dungeon this module cannot solve, and the answer
 but the decision to leave (§8.4's nexus) -- deliberately still unwritten. And the only proof that
 matters is the next run: one Infested Cellar session whose `MAPROUTE` line shows the floor growing
 while the character is moving, and a boss reached.
+
+### 15. The rewrite: `DungeonMap` + `DungeonSolver` replace `MapRoute`
+
+Written on branch `feat/dungeon-solver`, after the operator's decision that §14.12-14.13's
+`MapRoute.cs` was not worth repairing:
+
+> This code might be unsalvageable. Make a worktree and we are starting from scratch. Tiledata is
+> streamed from GmTile. There needs to be a special class/solver for dungeons, it needs to build a
+> map based on incoming tile data. Every dungeon is solveable, there are dead ends it will need to
+> backtrack from. There's code that identifies walkable tiles and unwalkable (like walls, void or
+> other terrain). If a room only has one entrance, it is a dead end and the solver will need to back
+> track. Inside a dungeon, there's a marker for the quest/boss, I think the code correctly identifies
+> it so it can be used as a goal. You can re-use code, but things regarding state has to be redone.
+
+**What was reused, deliberately.** `QuestReader` (the marker), `CollisionWindow.MergeCell` and the
+adapter's tile/collision classification (walkability), the trace recorder's `src` alphabet, and the
+point-goal plumbing in `DodgeSnapshot`/`DodgeSolver`/`PathPlanner`. All of those were measured and
+correct; none of them is dungeon state.
+
+**What was rewritten.** The dungeon's knowledge, search, commitment, exploration memory and route
+now live in two instance classes, `DungeonMap.cs` and `DungeonSolver.cs`. There is no static cache,
+no global mode flag, no path shared across maps, and no re-derivation of the frontier from the goal
+distance. `Bind` is the only map transition, keyed on the collision array's reference and
+dimensions; a map over two million cells is refused by name.
+
+**The four rules that changed, and why each has a measurement behind it:**
+
+1. **Four cell states, not two.** `Unknown`, `Floor`, `Wall`, and `ProvisionalWall` (a `NoWalk`
+   tile). A later floor tile overrides the provisional state; a hard wall never does. This is the
+   River Maze boss-room cell that read `NoWalk` for seventy frames and then became floor.
+2. **A hard wall is final.** The previous draft let a `NoWalk` or collision cell be overwritten by
+   a later `Floor` observation; `D1` caught it before the first run because a collision cell
+   upgraded to floor, which would route through a wall the server had painted.
+3. **Exploration is a committed frontier walk.** The nearest untried frontier by BFS depth is
+   chosen, with the goal distance only as a tie-break, and the choice survives the goal moving. The
+   old rule re-derived the target from the goal distance every frame, which is the Infested Cellar's
+   6 039-frame shuttle between x 507.4 and x 520.6.
+4. **A closed stub is a dead end, not an exploration.** When a committed frontier stops being a
+   frontier, the solver asks whether the map opened there (a floor neighbour other than the way in)
+   or closed (only the way back). `MarkTried` then makes the next choice the way back to the
+   junction. `D3` is the fixture: the stub is entered, found closed, one dead end and one backtrack
+   are counted, and the goal beyond it is reached in 86 frames with no cell entered more than five
+   times.
+
+**The report line is renamed** `PHASE 3 DODGE DUNGEON`, and its counters are `floor`, `wall`,
+`provisional`, `frontier`, `plan (goal)`, `waypoint`, `refused`, `dead end`, `timeout`, `backtrack`
+and `explored`. `MAPROUTE` no longer exists, and a run that reads it is reading an older build.
+
+**Offline verification.** `SolverHarness` now runs `D1` (cell states and per-map identity), `D2`
+(the U-corridor route), `D3` (a dry frontier, a blind stub, a backtrack and the goal), `D4` (a room
+with one entrance) and `D5` (state per map) on every invocation; `Test-HookOffline.ps1` passes all
+nine checks with them. **No live run.** The next dungeon session's `DUNGEON` line -- `floor` growing
+while the character moves, `frontier` falling, `dead end` only where the map really ends -- is the
+measurement that turns this from an offline result into a solved dungeon. The design and the full
+limit list are in [`DUNGEON-SOLVER.md`](DUNGEON-SOLVER.md).

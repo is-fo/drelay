@@ -155,10 +155,11 @@ namespace Drelay.Bootstrap
 
         // The `src` RLE's alphabet. See `_gridSource`.
         //
-        // THE VALUES ARE `MapRoute.CellUnknown`..`CellOutOfMap` AND MUST STAY SO. The map-scale route
-        // takes these numbers directly--`SolverHarness` feeds a recorded `src` array whole into
-        // `MapRoute.Observe`--so a recording whose alphabet drifted would be a cache built from
-        // another vocabulary: floor would be read as unpainted and every dungeon would look empty.
+        // THE VALUES ARE `DungeonMap.SourceUnknown`..`SourceOutOfMap` AND MUST STAY SO. The dungeon
+        // solver takes these numbers directly--`SolverHarness` feeds a recorded `src` array whole
+        // into `DungeonMap.Observe`--so a recording whose alphabet drifted would be a map built
+        // from another vocabulary: floor would be read as unpainted and every dungeon would look
+        // empty.
         private const byte SourceUnpainted = 0;
         private const byte SourceCollision = 1;
         private const byte SourceNoWalkTile = 2;

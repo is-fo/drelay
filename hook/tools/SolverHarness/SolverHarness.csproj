@@ -76,11 +76,12 @@
          is what keeps the split honest. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\Route.cs" Link="Solver\Route.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\RouteFollower.cs" Link="Solver\RouteFollower.cs" />
-    <!-- THE MAP-SCALE ROUTE (`PLAN-AUTOFARM.md` section 14.12). Integers, a byte cache and a queue,
-         so it compiles here with no game in sight, and the `G4` check exercises the real module
-         rather than a copy of its rule: the whole question, whether the route leaves the room the
-         way the map's floor does, is answerable without the client. -->
-    <Compile Include="..\..\managed\Drelay.Bootstrap\MapRoute.cs" Link="Solver\MapRoute.cs" />
+    <!-- THE DUNGEON (`PLAN-AUTOFARM.md` sections 8 and 14). Integers, a byte map and a queue, so
+         it compiles here with no game in sight, and the `D1`..`D6` checks exercise the real classes
+         rather than a copy of their rules: the whole question, whether a dungeon is mapped, a dead
+         end spent and the boss reached, is answerable without the client. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\DungeonMap.cs" Link="Solver\DungeonMap.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\DungeonSolver.cs" Link="Solver\DungeonSolver.cs" />
   </ItemGroup>
 
   <!--
