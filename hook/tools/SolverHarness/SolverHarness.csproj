@@ -62,7 +62,13 @@
          which is the same contract as the five around it: it resolves nothing until it is handed an
          assembly, and the harness never hands it one. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\PortalReader.cs" Link="Solver\PortalReader.cs" />
+    <!-- The quest marker reader, on the same terms. The private farmer calls `QuestReader` from its
+         quest branch, so the module cannot compile without it; and it is reflection-only, which is
+         what lets the harness compile it with no game assembly in sight. `FieldLookup` is here for
+         its `World.Quest`/`EventQuests` hierarchy walks. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\QuestReader.cs" Link="Solver\QuestReader.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\FieldAccessor.cs" Link="Solver\FieldAccessor.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\FieldLookup.cs" Link="Solver\FieldLookup.cs" />
     <!-- THE ROUTES (`PLAN-AUTOFARM.md` section 7). Same contract, same reason: the simplifier, the
          resampler, the snap, the deviation and the file format must all be pure functions of plain
          data, and a change that reaches for a game accessor has to break THIS build rather than the
@@ -70,6 +76,11 @@
          is what keeps the split honest. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\Route.cs" Link="Solver\Route.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\RouteFollower.cs" Link="Solver\RouteFollower.cs" />
+    <!-- THE MAP-SCALE ROUTE (`PLAN-AUTOFARM.md` section 14.12). Integers, a byte cache and a queue,
+         so it compiles here with no game in sight, and the `G4` check exercises the real module
+         rather than a copy of its rule: the whole question, whether the route leaves the room the
+         way the map's floor does, is answerable without the client. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\MapRoute.cs" Link="Solver\MapRoute.cs" />
   </ItemGroup>
 
   <!--

@@ -978,9 +978,17 @@ namespace Drelay.Bootstrap
             // measured from the player to the POINT and not to the enemy's edge, because the point
             // IS the enemy's centre and the edge radius belongs to rule 7, which is a different
             // question.
+            //
+            // THE OPERATOR'S HANDS WIN OVER THE POINT GOAL. While the player is holding a movement
+            // input, the farmer/route/quest goal is not asked at all: the ordinary ladder answers
+            // from `player.IntentRadians`, so the operator takes the pathing back the moment they
+            // touch the keyboard. `playerWalking` is `Moving && IntentValid`, i.e. a live request
+            // rather than the stale intent this file already refuses to follow. This is a goal
+            // selection, not an admission rule -- the dodge's safety boundary is untouched, and
+            // releasing the input resumes the point goal on the next frame.
             _farmGoalActive = false;
             _farmGoalDistance = 0.0f;
-            if (_config.PointGoal && snapshot.GoalHasPoint)
+            if (_config.PointGoal && snapshot.GoalHasPoint && !playerWalking)
             {
                 float gx = snapshot.GoalX - player.X;
                 float gy = snapshot.GoalY - player.Y;
@@ -1032,9 +1040,17 @@ namespace Drelay.Bootstrap
             // and the other is not is a frame that closes the distance by the goal term and then
             // throws the answer away -- the exact "two answers in one frame" shape the plan's
             // section 2 refuses to build.
-            _farmClosing = _farmGoalActive
-                           && _farmGoalDistance
-                              > (snapshot.GoalIsPortal ? _config.FarmPortalRadius : _config.FarmStopRadius);
+            // WHICH RADIUS COUNTS AS "ARRIVED" IS THE PUBLISHER'S ANSWER, NOT THE SOLVER'S. A mob
+            // is stopped beside (`FarmStopRadius`), a portal is stood ON (`FarmPortalRadius`), and
+            // an ACTIVATABLE quest marker is stood ON too (`FarmQuestRadius` -- the client's own
+            // `ActivateDistance`), while a quest ENEMY is a mob and keeps the stop radius. The
+            // distinction is carried by `GoalQuestActivate` rather than by a second goal point.
+            float arrivalRadius = snapshot.GoalIsPortal
+                ? _config.FarmPortalRadius
+                : (snapshot.GoalIsQuest && snapshot.GoalQuestActivate
+                    ? _config.FarmQuestRadius
+                    : _config.FarmStopRadius);
+            _farmClosing = _farmGoalActive && _farmGoalDistance > arrivalRadius;
             // AND THE WIDER FLAG THE ARRIVAL POLICY ACTUALLY READS. A farmer stops once it is in
             // range; a ROUTE never does, because the follower advances to the next waypoint the moment
             // this one is reached -- so a route goal is always something to walk at, and suppressing
@@ -1129,8 +1145,19 @@ namespace Drelay.Bootstrap
             // there anything in this frame the evaluation could act on" -- and the frame is
             // evaluated if either says yes. Nothing here can admit, refuse or move anything; the
             // only hard word a body has is still rule 7's refusal, against its own unpadded radius.
-            if (!AnyThreatNearPlayer(snapshot, player.X, player.Y, playerRadius,
-                                     _config.WarningRadiusPad, budget)
+            // AND A POINT GOAL OPENS IT TOO, WHICH IS WHAT MAKES THE FARMER WALK ON A QUIET FRAME.
+            //
+            // `_pointDriven` is true when a point goal still has distance to close (or is a route /
+            // keep-walking waypoint), and without this clause the gate above would answer `NoThreat`
+            // and return BEFORE the candidate set -- so a farmer with a quest marker across an empty
+            // room would publish its goal every frame and never take a step. The travel fallback
+            // and a route have the same shape. It still cannot admit, refuse or move anything: the
+            // frame is merely evaluated, and the emitted move is drawn from the same admissible set.
+            // With no point goal -- every non-farm run, and farm mode off -- `_pointDriven` is false
+            // and the gate is byte-identical to what it was.
+            if (!_pointDriven
+                && !AnyThreatNearPlayer(snapshot, player.X, player.Y, playerRadius,
+                                        _config.WarningRadiusPad, budget)
                 && !AnyBodyAcrossTheRoute(snapshot, player.X, player.Y, playerRadius, budget))
             {
                 decision.Reason = DodgeReason.NoThreat;
@@ -1266,6 +1293,35 @@ namespace Drelay.Bootstrap
             // --- Stage 5: scoring, over the admissible set only. ---------------------------
             ScoreAll(snapshot, player, playerRadius, budget);
             StageMark(StageScore);
+
+            // THE STAND CANDIDATE IS OFF THE MENU WHILE A POINT GOAL IS STILL BEING WALKED.
+            //
+            // THIS IS THE LIVE FREEZE, AND IT IS ONE LINE OF ARITHMETIC. Suppressing the `stand`
+            // EARLY-OUT above is not the same thing as suppressing `stand`: index 0 is a candidate
+            // like any other, it is admissible whenever the player is not inside a disc, and with
+            // no bullets in the air it collects the maximum clearance and durability terms, pays no
+            // move penalty, and gets `WeightStandBias` for free. Measured on
+            // `20261019-220335-p16416` frame 2000, the operator's stuck spot: `stand` scored **2.95**
+            // (clearance 1.2 + durability 0.6 + heading 1.0 + stand 0.15) and the best MOVE scored
+            // **1.713**. So every frame whose path direction was momentarily refused -- a wall, a
+            // tree, a corner -- was answered with `Move | heading=<stand's> | SpeedScale=0`: a
+            // command that looks like walking in the log and writes `MoveSpeed = 0` to the client.
+            // The character stood still for 40 seconds, `blocked` counted 65 % of the session, and
+            // the operator walked it out by hand. The `stand`-declined counter below fired on
+            // exactly those frames, which is why the report said the arrival policy was working.
+            //
+            // IT ADMITS NOTHING. The candidate set, the admission rules and the score are unchanged;
+            // this only says the farmer's answer cannot be "do nothing" while it still has ground to
+            // cover, which is `PLAN-AUTOFARM.md` section 4.3 stated where the choice is actually
+            // made. If every move is refused, `BestAdmissible` returns -1 and the frame reports
+            // `NoAdmissible` -- the honest answer, and the one the log can be read for.
+            if (_pointDriven && standIndex >= 0)
+            {
+                CandidateResult noStand = _results[standIndex];
+                noStand.Score = float.NegativeInfinity;
+                _results[standIndex] = noStand;
+            }
+
             int best = BestAdmissible();
 
             // Step 3 of the ladder, and the one early-out the whole common case rests on: the
@@ -2274,6 +2330,22 @@ namespace Drelay.Bootstrap
             // refuse, which presents in the live run as the player standing still while a bullet
             // arrives (PHASE3-HANDOFF.md section 3.3: three of eight sweep phases ended pinned
             // against scenery, with the command landing and the read-back matching).
+            //
+            // "WALKABLE" NOW MEANS THE PLAYER'S FOOTPRINT FITS, NOT JUST ITS CENTRE, BECAUSE THAT IS
+            // THE CLIENT'S OWN MOVE TEST. `CollisionWindow.Walkable` carries the measurement: the
+            // client's resolver refuses a step whose 0.4-unit footprint touches a nonzero collision
+            // cell, so a centre-only test admitted steps that could never move the character and
+            // read as a body pressed against a wall it never quite reached.
+            //
+            // IT IS NOT THE CAUSE OF THE 40-SECOND FREEZE (section 14.8: a `stand` candidate was
+            // winning the score and published as `Move` with a zero scale), and the difference
+            // matters to a reader: this rule makes the dodge agree with the game about a STEP, and
+            // the stand exclusion below is what stops it from choosing "no step" at all.
+            //
+            // THERE IS DELIBERATELY NO "ESCAPE" CLAUSE FOR A PLAYER ALREADY INSIDE THE FOOTPRINT:
+            // a step that only shrinks the violation is still a step the client refuses, and
+            // admitting it changes `NoAdmissible` into a `Move` the game discards. What IS handled is
+            // the sweep in rule 3, which cannot be satisfied from a violating start -- see there.
             if (!grid.Walkable(cx, cy))
             {
                 return (int)AdmissionRule.Walkable;
@@ -2284,7 +2356,19 @@ namespace Drelay.Bootstrap
             // Rule 3: path clear -- the swept segment does not cross a blocker. Endpoint-only
             // checks let a candidate through a thin wall, and a step here is a meaningful
             // fraction of a tile.
-            if (grid.Present)
+            //
+            // IT IS NOT ASKED WHEN THE PLAYER'S OWN FOOTPRINT IS ALREADY BLOCKED, AND THAT IS A
+            // CORRECTNESS FIX RATHER THAN A LENIENCY. A knockback, a teleport, a server correction or
+            // a sliding tile can put the character 0.01 inside the footprint without a step of ours;
+            // every one of those frames is one where the live character is frozen until the operator
+            // walks it out (the 2026-10-19 session has 938 of them, and `NoAdmissible` on all of
+            // them). The sweep starts AT the player, so from that state it is unsatisfiable for every
+            // candidate including the one that steps out -- which is a rule that can only ever hold
+            // the character still. Rule 2 above is the client's own test and it still refuses every
+            // destination whose footprint is blocked, so skipping the sweep admits nothing the game
+            // would discard: it only stops the SWEEP from being the thing that keeps the player in.
+            bool startClear = !grid.Present || grid.Walkable(player.X, player.Y);
+            if (grid.Present && startClear)
             {
                 for (int s = 0; s < _sweepCount; s++)
                 {

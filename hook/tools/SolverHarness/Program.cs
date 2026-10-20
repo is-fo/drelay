@@ -86,6 +86,9 @@ namespace Drelay.SolverHarness
             int traceFrame = -1;
             int repeat = 1;
             bool strict = false;
+            float fixedGoalX = float.NaN;
+            float fixedGoalY = float.NaN;
+            int mapIndexOfInterest = 0;
             int debugThreatId = -1;
             System.Collections.Generic.HashSet<int> framesToExplain = null;
 
@@ -130,6 +133,30 @@ namespace Drelay.SolverHarness
                     case "--repeat": repeat = int.Parse(Next(args, ref i), CultureInfo.InvariantCulture); break;
                     case "--strict": strict = true; break;
                     case "--debug-threat": debugThreatId = int.Parse(Next(args, ref i), CultureInfo.InvariantCulture); break;
+                    case "--goal":
+                    {
+                        // `x,y` -- a FIXED POINT GOAL for the whole replay. See `Harness.FixedGoalX`:
+                        // a recorded trace carries no farm goal, so a live session that walked to a
+                        // quest cannot be replayed as itself without one.
+                        string[] parts = Next(args, ref i).Split(',');
+                        if (parts.Length != 2)
+                        {
+                            Console.Error.WriteLine("--goal wants x,y");
+                            return 2;
+                        }
+                        fixedGoalX = float.Parse(parts[0], CultureInfo.InvariantCulture);
+                        fixedGoalY = float.Parse(parts[1], CultureInfo.InvariantCulture);
+                        break;
+                    }
+                    case "--map":
+                    {
+                        // WHICH MAP'S CACHE THE TRACE REPLAY KEEPS, 1-based, in the order the
+                        // recording changed maps (a teleport of more than `MapChangeJump`). 0 -- the
+                        // default -- keeps the LAST map, which is the session the operator reported.
+                        // See `Harness.MapIndexOfInterest`.
+                        mapIndexOfInterest = int.Parse(Next(args, ref i), CultureInfo.InvariantCulture);
+                        break;
+                    }
                     case "--quiet": quiet = true; break;
                     case "-h":
                     case "--help":
@@ -156,6 +183,13 @@ namespace Drelay.SolverHarness
             if (!string.IsNullOrEmpty(configArgs))
             {
                 ApplyConfig(configArgs, ref config);
+            }
+
+            // A FIXED GOAL IS A FARM GOAL: `DodgeConfig.PointGoal` is `FarmMode || RouteMode`, and a
+            // point the solver refuses to look at would make the switch measure nothing.
+            if (!float.IsNaN(fixedGoalX))
+            {
+                config.FarmMode = true;
             }
 
             DodgeTrace trace;
@@ -292,6 +326,9 @@ namespace Drelay.SolverHarness
             harness.Strict = strict;
             harness.DebugThreatId = debugThreatId;
             harness.DecisionsPath = decisionsPath;
+            harness.FixedGoalX = fixedGoalX;
+            harness.FixedGoalY = fixedGoalY;
+            harness.MapIndexOfInterest = mapIndexOfInterest;
             harness.Run(!quiet);
             return harness.Failures == 0 ? 0 : 1;
         }
@@ -337,6 +374,10 @@ namespace Drelay.SolverHarness
                 case "farmer-ignore": return Scenario.FarmerIgnore;
                 case "farmertravel":
                 case "farmer-travel": return Scenario.FarmerTravel;
+                case "farmertravelwall":
+                case "farmer-travel-wall": return Scenario.FarmerTravelWall;
+                case "farmersealed":
+                case "farmer-sealed": return Scenario.FarmerSealed;
                 case "farmerdodge":
                 case "farmer-dodge": return Scenario.FarmerDodge;
                 default:
@@ -507,6 +548,13 @@ namespace Drelay.SolverHarness
                       rather than a diff of two files. See tools/decisions_report.py.
   --strict            treat the trace reader's warnings (a half-written last line, an unknown
                       record type) as a failure instead of a report line.
+  --goal X,Y          a fixed point goal for the whole replay. A trace carries no farm goal, so a
+                      quest walk cannot be replayed as itself without one; the map route's trace line
+                      is what this is for. See `Harness.FixedGoalX`.
+  --map N             which map's cache the replay keeps, 1-based in the order the recording
+                      teleported (a jump of more than 40 units). 0, the default, is the LAST map --
+                      the session the operator reported. A recording holds a lobby, a realm and
+                      dungeons at the same coordinates, so measuring one of them means naming it.
   --debug-threat ID   dump every recorded observation of the bullet with this GameId, with the
                       distance from its samples to the player on each frame. For T7 disagreements.
 
@@ -689,6 +737,26 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private long _adjacentReversals;
         private List<string> _adjacentReversalExamples = new List<string>();
         private long _moveFrames;
+
+        /// <summary>
+        /// Emitted moves the CLIENT would refuse: both the destination footprint and both axis
+        /// slides are blocked, which is the state `World.hehe...EF73` answers with "do not move".
+        ///
+        /// IT IS THE LIVE FREEZE, COUNTED. The 2026-10-19 session had 3 700 consecutive frames of a
+        /// `Move` command and a player that did not move, because rule 2 tested the destination's
+        /// single cell and the client tests the whole 0.4-unit footprint. The harness's closed loop
+        /// now applies the same refusal, so this counter is the difference between "the farmer
+        /// reached the target" and "the farmer's log says it walked while the game held it still".
+        /// </summary>
+        private long _simRefusedSteps;
+
+        /// <summary>
+        /// `Move` decisions whose distance is zero -- the command that looks like walking and writes
+        /// `MoveSpeed = 0`. See W8: on `20261019-220335-p16416` this was every frame of a 40-second
+        /// freeze, because the `stand` candidate won the score while the farmer was closing and
+        /// `Filled` turned it into `Move | SpeedScale = 0`.
+        /// </summary>
+        private long _zeroLengthMoves;
 
         /// <summary>
         /// Frames the player was holding a direction on, straight off the recorded input.
@@ -950,6 +1018,26 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         /// So the `farm*` scenarios hand the player's position to the solver's own emitted moves,
         /// exactly as `SteeringPilot` does live, and only they do.
         /// </summary>
+        /// <summary>
+        /// A FIXED POINT GOAL FOR A REPLAY, or NaN. `--goal x,y`.
+        ///
+        /// A RECORDED TRACE DOES NOT CARRY THE FARMER'S GOAL, and that is the one thing missing from
+        /// a live session that did something interesting: the recorder writes the player, the grid
+        /// and the threats, and the goal the solver saw is reconstructed only by running the farmer.
+        /// The farmer needs the enemy list, which the recorder does not write either (see
+        /// `RecordedFrame.FarmTargets`). So when the question is "what did the solver do with THIS
+        /// point on THIS frame" -- the operator's quest marker, a portal, a stuck spot -- the honest
+        /// tool is to hand it the point and replay. It is set AFTER `ChooseTarget`, so it is the
+        /// goal the solver is asked about and not a second source of it.
+        /// </summary>
+        public float FixedGoalX = float.NaN;
+        public float FixedGoalY = float.NaN;
+
+        /// <summary>
+        /// Why T7 could not be evaluated, or null when it was. See `CheckT7`.
+        /// </summary>
+        private string _t7NotApplicableWhy;
+
         private float _simX = float.NaN;
         private float _simY = float.NaN;
 
@@ -1505,6 +1593,745 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             return (float)Math.Sqrt((fx * fx) + (fy * fy));
         }
 
+        /// <summary>The last window fed to `MapRoute`, and where the character started on this map.</summary>
+        private GridWindow _mapFed;
+        private float _mapSeedX = float.NaN;
+        private float _mapSeedY = float.NaN;
+        private float _mapReportedX = float.NaN;
+        private float _mapReportedY = float.NaN;
+        private bool _mapSeeded;
+
+        /// <summary>
+        /// The identity `MapRoute` binds a cache to. THE LIVE ADAPTER PASSES THE `byte[,]` ITSELF, so a
+        /// map change reallocates and the cache follows. A trace has no such reference, so the replay
+        /// makes one per map: the character teleporting more than `MapChangeJump` units is a portal, a
+        /// death or a dungeon exit (`20261020-183555-p37604` has them at frames 986, 1277, 2889,
+        /// 5582, 5706 and 7239), and it is the only evidence a recording carries.
+        /// </summary>
+        private object _mapEpochKey = new object();
+
+        /// <summary>
+        /// The 1-based index of the map whose cache the replay keeps, or 0 for the last one. A
+        /// recording holds several maps (the 2026-10-20 sessions have a lobby, a realm, two dungeons
+        /// and the tavern), and the map route's cache is per map, so a measurement of "the route to
+        /// the River Maze boss" has to name the map it is measuring. `--map N` feeds only that map's
+        /// windows; the trace line at the end then reports that map and not whatever came after it.
+        /// </summary>
+        public int MapIndexOfInterest;
+
+        /// <summary>The map the replay is currently inside, counted from 1 at the first frame.</summary>
+        private int _mapEpoch = 1;
+
+        /// <summary>The map whose cache the trace line reports. Set when a cache is seeded.</summary>
+        private int _mapReportedEpoch;
+
+        /// <summary>A teleport further than this is a different map, not a dodge.</summary>
+        private const float MapChangeJump = 40.0f;
+
+        private float _lastFrameX = float.NaN;
+        private float _lastFrameY = float.NaN;
+
+        /// <summary>
+        /// The square the replayed map cache is sized to. A trace carries the window and not the
+        /// map's dimensions, and `MapRoute` caps a cache at two million cells, so 1 400 is the
+        /// largest square both can agree on -- enough for a 1 024 x 1 024 dungeon, which is the shape
+        /// this verification is for.
+        /// </summary>
+        private const int TraceMapRouteSize = 1400;
+
+        /// <summary>
+        /// Hands one recorded window to `MapRoute`, once per window rather than once per frame.
+        ///
+        /// THE LIVE ADAPTER DOES THE SAME THING FROM THE SAME DATA, and the trace's `src` array is
+        /// what makes the replay possible: `0` is unpainted, `1` the server's collision, `2` a
+        /// `NoWalk` tile, `3` floor and `4` outside the map -- the same codes `MapRoute.Observe` takes,
+        /// so a window is fed whole and the cache's own rule does the rest.
+        /// </summary>
+        private void FeedMapRoute(RecordedFrame frame)
+        {
+            // A MAP CHANGE, FROM THE ONLY EVIDENCE A TRACE HAS.
+            if (!float.IsNaN(_lastFrameX))
+            {
+                float jx = frame.PlayerX - _lastFrameX;
+                float jy = frame.PlayerY - _lastFrameY;
+                if ((jx * jx) + (jy * jy) > MapChangeJump * MapChangeJump)
+                {
+                    _mapEpoch++;
+                    _mapFed = null;
+                    _mapEpochKey = new object();
+                    _mapSeedX = float.NaN;
+                    _mapSeedY = float.NaN;
+                }
+            }
+            _lastFrameX = frame.PlayerX;
+            _lastFrameY = frame.PlayerY;
+
+            // ONLY THE MAP UNDER MEASUREMENT IS FED. Skipping the others is what keeps their floor
+            // out of this map's cache -- the rooms across a recording sit at the same coordinates,
+            // and a cache that accumulated them would route through a wall of another map.
+            if (MapIndexOfInterest > 0 && _mapEpoch != MapIndexOfInterest)
+            {
+                return;
+            }
+
+            GridWindow g = frame.Grid;
+            if (g == null || ReferenceEquals(g, _mapFed))
+            {
+                return;
+            }
+            _mapFed = g;
+            if (g.Source == null || g.Width <= 0 || g.Height <= 0)
+            {
+                return;
+            }
+            int before = MapRoute.Available ? 0 : 1;
+            // A TRACE RECORDS THE WINDOW, NOT THE MAP'S DIMENSIONS, so the replayed cache is given a
+            // fixed square that holds a dungeon (a realm is refused by `MapRoute`'s own cap anyway).
+            MapRoute.EnsureMap(_mapEpochKey, TraceMapRouteSize, TraceMapRouteSize);
+            if (before == 1 || float.IsNaN(_mapSeedX))
+            {
+                // A NEW CACHE (a new map, or the first window of this one): the walk starts where
+                // the character was when the cache was created.
+                _mapSeedX = frame.PlayerX;
+                _mapSeedY = frame.PlayerY;
+                _mapReportedX = frame.PlayerX;
+                _mapReportedY = frame.PlayerY;
+                _mapReportedEpoch = _mapEpoch;
+                _mapSeeded = true;
+            }
+            for (int i = 0; i < g.Source.Length; i++)
+            {
+                // EVERY CELL'S SOURCE, not just the floor. The cache needs the difference between a
+                // wall and a hole the map has not painted (`MapRoute`'s header); the recorded `src`
+                // array is exactly the adapter's classification, and the codes are shared.
+                MapRoute.Observe(g.OriginX + (i % g.Width), g.OriginY + (i / g.Width), g.Source[i]);
+            }
+        }
+
+        /// <summary>
+        /// Walks the map route over everything a recording explored, from the first frame's position
+        /// to the frame's goal, and says how far it got.
+        ///
+        /// IT IS NOT A PASS/FAIL CHECK, AND THE REASON IS THE POINT. Whether a route exists depends on
+        /// how much of the map the session saw, which is a property of the recording and not of the
+        /// code; what this prints is the measurement -- the known floor, the waypoints walked, and
+        /// the distance to the goal -- so a dungeon recording can be read for "the route was there
+        /// and the planner could not see it" instead of guessed at. `G4` is the assertion.
+        /// </summary>
+        private void ReportMapRouteTrace()
+        {
+            if (!_mapSeeded || !MapRoute.Available || float.IsNaN(FixedGoalX))
+            {
+                return;
+            }
+            float cx = _mapReportedX;
+            float cy = _mapReportedY;
+            int steps = 0;
+            bool arrived = false;
+            for (int i = 0; i < 600; i++)
+            {
+                float wx;
+                float wy;
+                if (!MapRoute.TryWaypoint(cx, cy, FixedGoalX, FixedGoalY, out wx, out wy))
+                {
+                    break;
+                }
+                float dx = wx - cx;
+                float dy = wy - cy;
+                if ((dx * dx) + (dy * dy) < 1e-4f)
+                {
+                    break;
+                }
+                cx = wx;
+                cy = wy;
+                steps++;
+                float ex = cx - FixedGoalX;
+                float ey = cy - FixedGoalY;
+                if ((ex * ex) + (ey * ey) <= 9.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+            }
+            float remaining = (float)Math.Sqrt(((cx - FixedGoalX) * (cx - FixedGoalX))
+                                               + ((cy - FixedGoalY) * (cy - FixedGoalY)));
+            Console.WriteLine("  map route (trace, map " + _mapReportedEpoch + "): " + MapRoute.Status() + "; "
+                              + steps + " waypoint(s) walked from (" + F(_mapReportedX) + ","
+                              + F(_mapReportedY) + ") to (" + F(cx) + "," + F(cy) + "), "
+                              + F(remaining) + " unit(s) from the goal ("
+                              + (arrived ? "arrived" : "SHORT") + ")");
+        }
+
+        /// <summary>
+        /// G4: the map-scale route takes the long way round, and it walks the map's FRONTIER rather
+        /// than the goal's direction.
+        ///
+        /// THE FIRST MEASUREMENT. `20261020-181445-p4196` (River Maze): the boss is 32 units east of
+        /// the character, behind a wall, and the floor that reaches it runs south, then east, then
+        /// north again -- 78 steps over known floor between two cells 32 apart. The planner's window
+        /// cannot see that and answered `unreachable`/`nodecap`; the character wandered. This fixture
+        /// is the same shape with the geometry made undeniable: a U of single-width corridor, a wall
+        /// straight between the character and the goal, and nothing else known. The route must start
+        /// EAST along the U -- not south into the wall -- and walking it must arrive.
+        ///
+        /// THE SECOND MEASUREMENT, AND IT IS WHY THE THIRD BLOCK EXISTS. `20261020-183555-p37604`
+        /// (Infested Cellar): the boss 41 units EAST of the spawn room and the only floor that leaves
+        /// the room a corridor to the SOUTH. The previous rule -- "route to the reachable cell nearest
+        /// the goal" -- made the room's east wall the target, and the recorded position shuttled
+        /// between x 507.4 and x 520.6 at y 511.6 for the session's last 6 039 frames. The third
+        /// block is that room: floor, `NoWalk` walls, the goal east beyond them, and ONE unpainted
+        /// opening to the south. With a cache that knows a wall from an unpainted cell the east wall
+        /// is not a frontier, so the first waypoint must go SOUTH through the opening. A cache that
+        /// treats every non-floor cell as unexplored goes east at the wall and fails here.
+        ///
+        /// AND THE HONESTY. `TryWaypoint` on a map where no floor beside the character has been
+        /// observed returns false, so a caller keeps the ordinary goal instead of publishing a
+        /// waypoint on top of the character.
+        /// </summary>
+        private void ReportMapRoute()
+        {
+            // (1) A GOAL THE KNOWN FLOOR CONNECTS TO IS WALKED, THE LONG WAY ROUND.
+            MapRoute.Reset();
+            MapRoute.EnsureMap("g4-map", 60, 60);
+            // THE U: east along y=10, south along x=40, west along y=40. Nothing else is observed,
+            // so nothing else can be walked on -- which is the rule the module is built on.
+            for (int x = 10; x <= 40; x++)
+            {
+                MapRoute.Observe(x, 10, MapRoute.CellFloor);
+                MapRoute.Observe(x, 40, MapRoute.CellFloor);
+            }
+            for (int y = 10; y <= 40; y++)
+            {
+                MapRoute.Observe(40, y, MapRoute.CellFloor);
+            }
+            // A decoy: a few isolated floor cells on the direct line, not connected to anything, so
+            // a route that snapped to the nearest known cell rather than the nearest REACHABLE one
+            // would head south and be caught.
+            MapRoute.Observe(12, 22, MapRoute.CellFloor);
+            MapRoute.Observe(12, 26, MapRoute.CellFloor);
+
+            const float px = 12.5f;
+            const float py = 10.5f;
+            const float gx = 12.5f;
+            const float gy = 40.5f;
+
+            float wx;
+            float wy;
+            bool found = MapRoute.TryWaypoint(px, py, gx, gy, out wx, out wy);
+            bool firstEast = found && wx > px + 2.0f && Math.Abs(wy - py) < 1.5f;
+
+            // WALK IT: each iteration moves the character to the waypoint, exactly as the dodge
+            // would drive it, and asks again.
+            float cx = px;
+            float cy = py;
+            int steps = 0;
+            bool arrived = false;
+            for (int i = 0; i < 200; i++)
+            {
+                float tx;
+                float ty;
+                if (!MapRoute.TryWaypoint(cx, cy, gx, gy, out tx, out ty))
+                {
+                    break;
+                }
+                float dx = tx - cx;
+                float dy = ty - cy;
+                if ((dx * dx) + (dy * dy) < 1e-4f)
+                {
+                    break;
+                }
+                cx = tx;
+                cy = ty;
+                steps++;
+                float ex = cx - gx;
+                float ey = cy - gy;
+                if ((ex * ex) + (ey * ey) <= 4.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+            }
+
+            // (2) AN EMPTY CACHE PUBLISHES NOTHING.
+            MapRoute.Reset();
+            MapRoute.EnsureMap("g4-empty", 40, 40);
+            MapRoute.Observe(5, 5, MapRoute.CellFloor);
+            float unusedX;
+            float unusedY;
+            bool emptyRefused = !MapRoute.TryWaypoint(5.5f, 5.5f, 30.5f, 30.5f, out unusedX, out unusedY);
+
+            // (3) THE INFESTED CELLAR'S SPAWN ROOM: KNOWN WALLS, THE GOAL BEYOND THEM, AND ONE
+            // UNPAINTED OPENING TO THE SOUTH. The goal is EAST so "toward the goal" and "out of the
+            // room" are different directions -- which is the whole defect.
+            MapRoute.Reset();
+            MapRoute.EnsureMap("g4-frontier", 60, 60);
+            for (int y = 10; y <= 19; y++)
+            {
+                for (int x = 10; x <= 19; x++)
+                {
+                    MapRoute.Observe(x, y, MapRoute.CellFloor);
+                }
+            }
+            // The streamed wall: a `NoWalk` ring around the room, with a three-cell gap at y=20,
+            // x 13..15 left UNOBSERVED (that is the corridor the map has not painted yet).
+            for (int y = 9; y <= 21; y++)
+            {
+                for (int x = 9; x <= 21; x++)
+                {
+                    bool inside = x >= 10 && x <= 19 && y >= 10 && y <= 19;
+                    bool gap = y == 20 && x >= 13 && x <= 15;
+                    if (!inside && !gap)
+                    {
+                        MapRoute.Observe(x, y, MapRoute.CellNoWalkTile);
+                    }
+                }
+            }
+            float frontierX;
+            float frontierY;
+            bool frontierFound = MapRoute.TryWaypoint(12.5f, 12.5f, 30.5f, 14.5f,
+                                                      out frontierX, out frontierY);
+            bool frontierSouth = frontierFound && frontierY > 12.5f + 4.0f
+                                 && Math.Abs(frontierX - 12.5f) < 3.0f;
+
+            Report("G4  the map route takes the long way round and walks a frontier, not the goal",
+                   found && firstEast && arrived && emptyRefused && frontierSouth,
+                   "first waypoint " + F(wx) + "," + F(wy) + " (from " + F(px) + "," + F(py)
+                   + ", a straight line to the goal is SOUTH) -- "
+                   + (firstEast ? "east along the U, correct" : "NOT east, so it aimed at the wall")
+                   + "; " + steps + " step(s) of walking arrived "
+                   + (arrived ? "at the goal" : "NOWHERE")
+                   + "; an empty cache " + (emptyRefused ? "refused (correct)" : "invented a route")
+                   + "; the Infested Cellar room (goal EAST, walls `NoWalk`, opening SOUTH) gave "
+                   + (frontierFound ? "its first waypoint at " + F(frontierX) + "," + F(frontierY) : "NO waypoint")
+                   + " -- " + (frontierSouth ? "south, out of the room, correct"
+                                             : "NOT south: the known wall is still attracting the route")
+                   + ". The third block is the measurement: the old cache stored floor and not-floor,"
+                   + " so the east wall was a frontier nearer the goal than the opening, and the"
+                   + " recorded character walked at it for 6 039 frames.");
+            MapRoute.Reset();
+        }
+
+        /// <summary>
+        /// G5: a dungeon is DISCOVERED -- the map is walked, a dead end is spent, and the character
+        /// backtracks out of it and arrives.
+        ///
+        /// WHY THIS IS A WALK AND NOT ANOTHER GRAPH QUESTION. The Infested Cellar's defect was not a
+        /// wrong route; it was a route that never moved (`20261020-183555-p37604`: the character
+        /// shuttles between x 507.4 and x 520.6 at y 511.6 for 6 039 frames, and the corridor at
+        /// (513..515, 553..555) is KNOWN floor it never visited). So this fixture runs the module the
+        /// way the adapter does -- a frame at a time, from the position it actually moved to -- over a
+        /// map that is revealed around the character, the way `GmTiles` reveals it live.
+        ///
+        /// THE TWO HALVES, AND THEY TEST TWO DIFFERENT FAILURES:
+        ///
+        ///  (a) A FRONTIER THAT REVEALS NOTHING IS SPENT. An isolated known room with unpainted space
+        ///      around it: the character is walked to the chosen frontier and left there, and after
+        ///      `DwellFrames` the module must mark it (dead end counter up) and publish a DIFFERENT
+        ///      point. Without this the character stands at the edge of the map for ever;
+        ///  (b) A CORRIDOR WITH A DEAD END IS WALKED TO THE GOAL. The true map is a straight run east
+        ///      with a blind stub to the north, then north and east to the goal. The stub must be
+        ///      entered (the nearest frontier is up it), found to be a stub, and ABANDONED -- and the
+        ///      walk must then reach the goal, with no cell revisited more than a handful of times.
+        ///      A cache that re-targets from the goal distance every frame fails the revisit bound;
+        ///      a cache that cannot spend a frontier never leaves the stub.
+        /// </summary>
+        private void ReportDungeonWalk()
+        {
+            // ---- (a) A DRY FRONTIER IS SPENT, AND THE NEXT POINT IS A DIFFERENT ONE -------------
+            MapRoute.Reset();
+            MapRoute.EnsureMap("g5-dry", 40, 40);
+            for (int y = 10; y <= 14; y++)
+            {
+                for (int x = 10; x <= 14; x++)
+                {
+                    MapRoute.Observe(x, y, MapRoute.CellFloor);
+                }
+            }
+            float dryX = 12.5f;
+            float dryY = 12.5f;
+            float firstX;
+            float firstY;
+            bool dryFirst = MapRoute.TryWaypoint(dryX, dryY, 35.5f, 35.5f, out firstX, out firstY);
+            // THE WALK: stand on the published point and keep asking, exactly as the dodge does when
+            // the waypoint is under its feet.
+            float lastX = firstX;
+            float lastY = firstY;
+            int retargets = 0;
+            for (int i = 0; i < 200; i++)
+            {
+                dryX = lastX;
+                dryY = lastY;
+                float tx;
+                float ty;
+                if (!MapRoute.TryWaypoint(dryX, dryY, 35.5f, 35.5f, out tx, out ty))
+                {
+                    break;
+                }
+                if (Math.Abs(tx - lastX) > 0.6f || Math.Abs(ty - lastY) > 0.6f)
+                {
+                    retargets++;
+                }
+                lastX = tx;
+                lastY = ty;
+            }
+            bool drySpent = dryFirst && MapRoute.DeadEnds >= 1 && retargets >= 1;
+            // THE (a) COUNTERS ARE READ NOW: the (b) run below resets the cache, and a message that
+            // quotes the second run's dead-end count for the first run's claim is the kind of report
+            // that reads "0" beside a pass.
+            long dryDeadEnds = MapRoute.DeadEnds;
+            string dryStatus = MapRoute.Status();
+
+            // ---- (b) THE CORRIDOR WITH A DEAD END -----------------------------------------------
+            //
+            // The true floor is a U with a BLIND STUB TOWARD THE GOAL at its first junction:
+            //
+            //      start (10,10) -- east to the junction (14,10)
+            //      junction -- north into a six-cell stub that ends at (14,4)   <-- toward the goal
+            //      junction -- south to (14,16), east to (24,16), north to the goal at (24,2)
+            //
+            // A nearest-frontier walk enters the stub first because it is nearer the goal than the
+            // south leg; the stub is closed, and the only way on is to BACKTRACK through the
+            // junction. That is the operator's "there might be paths that are dead ends".
+            var floor = new System.Collections.Generic.HashSet<int>();
+            for (int x = 10; x <= 14; x++)
+            {
+                floor.Add(CellKey(x, 10));
+            }
+            for (int y = 4; y <= 9; y++)
+            {
+                floor.Add(CellKey(14, y));
+            }
+            for (int y = 11; y <= 16; y++)
+            {
+                floor.Add(CellKey(14, y));
+            }
+            for (int x = 15; x <= 24; x++)
+            {
+                floor.Add(CellKey(x, 16));
+            }
+            for (int y = 2; y <= 15; y++)
+            {
+                floor.Add(CellKey(24, y));
+            }
+
+            MapRoute.Reset();
+            MapRoute.EnsureMap("g5-dungeon", 60, 60);
+            float px = 10.5f;
+            float py = 10.5f;
+            const float goalX = 24.5f;
+            const float goalY = 2.5f;
+            bool arrived = false;
+            bool enteredStub = false;
+            int frames = 0;
+            int maxVisits = 0;
+            var visits = new System.Collections.Generic.Dictionary<int, int>();
+            for (int i = 0; i < 1500; i++)
+            {
+                frames++;
+                RevealAround(floor, px, py);
+                int key = CellKey((int)px, (int)py);
+                int seen;
+                visits.TryGetValue(key, out seen);
+                visits[key] = seen + 1;
+                if (seen + 1 > maxVisits)
+                {
+                    maxVisits = seen + 1;
+                }
+                if ((int)px == 14 && (int)py <= 5)
+                {
+                    enteredStub = true;
+                }
+                // ARRIVAL IS CHECKED BEFORE THE NEXT QUESTION. The module is only asked about a goal
+                // that is more than `AdvanceRadius` away -- the live adapter asks at 10 units, and a
+                // goal under the character is not a route -- so the walk stops when it is near.
+                float gex = px - goalX;
+                float gey = py - goalY;
+                if ((gex * gex) + (gey * gey) <= 6.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+                float wx2;
+                float wy2;
+                if (!MapRoute.TryWaypoint(px, py, goalX, goalY, out wx2, out wy2))
+                {
+                    break;
+                }
+                // MOVE LIKE THE DODGE MOVES: the larger axis first, and never off the true floor.
+                // A straight line to a waypoint six units along the route would cut the corner of
+                // the L at (20,10), which the real admission rule would refuse; this reproduces that
+                // refusal without re-implementing the solver.
+                float dx = wx2 - px;
+                float dy = wy2 - py;
+                const float step = 0.5f;
+                bool moved = false;
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                {
+                    moved = TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f)
+                            || TryStep(floor, ref px, ref py, 0.0f,
+                                       Math.Sign(dy) * Math.Min(step, Math.Abs(dy)));
+                }
+                else
+                {
+                    moved = TryStep(floor, ref px, ref py, 0.0f,
+                                    Math.Sign(dy) * Math.Min(step, Math.Abs(dy)))
+                            || TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f);
+                }
+                if (!moved)
+                {
+                    // The waypoint is under the character (the dwell at a frontier): that is a wait,
+                    // which is a frame the module counts, not a defect.
+                    continue;
+                }
+                float ex = px - goalX;
+                float ey = py - goalY;
+                if ((ex * ex) + (ey * ey) <= 4.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+            }
+
+            Report("G5  a dungeon is walked: frontiers are spent, a dead end is backtracked, the goal reached",
+                   drySpent && arrived && enteredStub && maxVisits <= 24,
+                   "a dry frontier " + (dryFirst ? "was walked and " : "was NOT ")
+                   + (dryDeadEnds >= 1
+                       ? dryDeadEnds + " dead end(s) marked, " + retargets + " retarget(s)"
+                       : "NOT spent -- the character would stand at the edge for ever")
+                   + " (" + dryStatus + "); the corridor with a blind stub: "
+                   + (enteredStub ? "the stub was entered" : "the stub was NEVER entered")
+                   + ", the goal was " + (arrived ? "reached" : "NOT reached")
+                   + " in " + frames + " frame(s), and the most-visited cell was entered " + maxVisits
+                   + " time(s). " + MapRoute.Status()
+                   + ". The revisit bound is what a per-frame goal-distance retarget fails: that is"
+                   + " the Infested Cellar's 6 039-frame shuttle, and the stub is the dead end the"
+                   + " operator said the pathfinder has to back out of.");
+            MapRoute.Reset();
+        }
+
+        /// <summary>
+        /// One frame of `GmTiles` streaming, as the live window sees it: floor within three cells of
+        /// the character, and the wall next to the character painted as `NoWalk`. Beyond that the
+        /// map is unpainted -- which is a frontier, not a wall.
+        /// </summary>
+        private static void RevealAround(System.Collections.Generic.HashSet<int> floor, float px, float py)
+        {
+            int cx = (int)px;
+            int cy = (int)py;
+            for (int dy = -3; dy <= 3; dy++)
+            {
+                for (int dx = -3; dx <= 3; dx++)
+                {
+                    int x = cx + dx;
+                    int y = cy + dy;
+                    if (floor.Contains(CellKey(x, y)))
+                    {
+                        MapRoute.Observe(x, y, MapRoute.CellFloor);
+                    }
+                    else if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1)
+                    {
+                        // The rock beside the character is painted by the same streamer.
+                        MapRoute.Observe(x, y, MapRoute.CellNoWalkTile);
+                    }
+                }
+            }
+        }
+
+        private static int CellKey(int x, int y) => (x << 12) | y;
+
+        /// <summary>
+        /// Moves by (dx,dy) only when the destination cell is true floor. The live admission rule
+        /// refuses a step into a wall, so the walk must too or it would take a route the game never
+        /// allows and the fixture would prove nothing.
+        /// </summary>
+        private static bool TryStep(System.Collections.Generic.HashSet<int> floor, ref float px, ref float py,
+                                    float dx, float dy)
+        {
+            if (dx == 0.0f && dy == 0.0f)
+            {
+                return false;
+            }
+            float nx = px + dx;
+            float ny = py + dy;
+            if (!floor.Contains(CellKey((int)nx, (int)ny)))
+            {
+                return false;
+            }
+            px = nx;
+            py = ny;
+            return true;
+        }
+
+        /// <summary>
+        /// G3: a goal RAY whose end lands in a wall still produces a route.
+        ///
+        /// THE MEASUREMENT THAT FORCED IT. A farm goal outside the planner's window is aimed at as a
+        /// RAY (the point is too far to search to), and when the goal is in the next room that ray
+        /// points straight at a wall. The planner used to answer `NoTarget` and search nothing --
+        /// `20261020-175713-p15344` reads `8054 search: 1576 found ... notarget 6478`, i.e. **80% of
+        /// a stuck session's frames had no path term at all**, and its replay
+        /// (`--trace <run> --goal 426.5,654.5`) refused 3684 of 8385 frames the same way. The ray's
+        /// end is now snapped to the nearest walkable cell within `PathPointSnapCells`, exactly as a
+        /// point goal's is, because "the end is a wall" means "end beside it" there too.
+        ///
+        /// TWO HALVES, AND THE SECOND ONE MATTERS. The first block is one cell thick, so a three-cell
+        /// ring finds open ground and a route exists; the second is thick enough that the whole ring
+        /// is solid, and the refusal must survive -- a ray names a direction, and snapping it across
+        /// the window would let it jump behind the player and invent a route that has nothing to do
+        /// with the goal.
+        /// </summary>
+        private void ReportRayTarget()
+        {
+            bool near = RayTargetFound(blockFromX: 22, blockHalfWidth: 1, out string nearWhy);
+            bool far = !RayTargetFound(blockFromX: 19, blockHalfWidth: 6, out string farWhy);
+            Report("G3  a goal ray whose end is in a wall is aimed beside it -- and only beside it",
+                   near && far,
+                   "one-cell wall: " + nearWhy + "; six-cell wall: " + farWhy + ". The ray's end is "
+                   + "12.3 units out at the measured speed, so the first is a target one cell inside "
+                   + "the wall and the second is seven cells inside it.");
+        }
+
+        /// <summary>
+        /// One `PathPlanner.Plan` on a hand-made window: open ground, a solid block due east of the
+        /// player, and a ray aimed east with no point goal. True when a path came back.
+        /// </summary>
+        private static bool RayTargetFound(int blockFromX, int blockHalfWidth, out string detail)
+        {
+            const int side = 41;
+            const int playerX = 10;
+            const int playerY = 20;
+            var cells = new byte[side * side];
+            for (int y = 0; y < side; y++)
+            {
+                for (int x = 0; x < side; x++)
+                {
+                    bool inBlock = x >= blockFromX
+                                   && y >= playerY - blockHalfWidth && y <= playerY + blockHalfWidth;
+                    cells[(y * side) + x] = inBlock ? (byte)1 : (byte)0;
+                }
+            }
+            CollisionWindow grid = default(CollisionWindow);
+            grid.Present = true;
+            grid.OriginX = 0;
+            grid.OriginY = 0;
+            grid.Width = side;
+            grid.Height = side;
+            grid.Cells = cells;
+
+            DodgeConfig config = DodgeConfig.Default();
+            // NEITHER FARM NOR ROUTE MODE, so `PointGoal` is false and the planner takes the RAY
+            // branch -- which is the branch under test.
+            config.FarmMode = false;
+            config.RouteMode = false;
+            var planner = new PathPlanner(config);
+            var snapshot = new DodgeSnapshot();
+            snapshot.Grid = grid;
+            snapshot.Player.X = playerX + 0.5f;
+            snapshot.Player.Y = playerY + 0.5f;
+            snapshot.Player.Radius = 0.25f;
+            snapshot.Player.SpeedPerSecond = 8.2f;
+            snapshot.FrameSeconds = 1.0f / 60.0f;
+            snapshot.GoalHasPoint = false;
+
+            float budget = 8.2f / 60.0f;
+            planner.Plan(snapshot, 0.0f, true, budget, budget, 0.25f);
+            detail = planner.Reason + ", " + planner.Stats.PathsFound + " path(s), "
+                     + planner.Stats.NoTargetFrames + " notarget refusal(s)";
+            return planner.Reason == PathReason.Found;
+        }
+
+        /// <summary>
+        /// G1 and G2: the rule that turns the client's collision bytes and its streamed tile map
+        /// into the window the planner and rule 2 read.
+        ///
+        /// WHY THIS IS A CHECK AND NOT A COMMENT. `CollisionWindow.MergeCell` is the difference
+        /// between a dungeon the farmer can walk into and a dungeon that reads as a sealed box, and
+        /// it had already been written twice (the live window in `DodgeAdapter.RefreshGrid` and the
+        /// recording in `TraceRecorder.RefreshGrid`) with two different answers. The operator's
+        /// report -- "the quest/boss locator works in the world, it does not work inside dungeons,
+        /// the pathfinder falls back to the circular discovery movement" -- is exactly this function
+        /// returning "wall" for a cell whose tile had not streamed in yet.
+        /// </summary>
+        private void ReportGridMath()
+        {
+            // G1. THE TRUTH TABLE, CELL BY CELL. A nonzero collision byte survives untouched (the
+            // server sends 1 and 2 and both are walls); an existing `NoWalk` tile with a zero byte is
+            // a wall; an existing walkable tile is open; and AN ABSENT TILE IS NOT A WALL -- it is
+            // no information, and the collision byte answers.
+            bool collision1 = CollisionWindow.MergeCell(1, false, false) == 1
+                              && CollisionWindow.MergeCell(1, true, true) == 1;
+            bool collision2 = CollisionWindow.MergeCell(2, false, false) == 2
+                              && CollisionWindow.MergeCell(2, true, false) == 2;
+            bool noWalkTile = CollisionWindow.MergeCell(0, true, true) == 1;
+            bool walkTile = CollisionWindow.MergeCell(0, true, false) == 0;
+            bool missingTile = CollisionWindow.MergeCell(0, false, false) == 0;
+            Report("G1  a wall is a collision byte or an existing NoWalk tile -- not a missing tile",
+                   collision1 && collision2 && noWalkTile && walkTile && missingTile,
+                   "collision 1 " + (collision1 ? "kept" : "LOST") + ", collision 2 "
+                   + (collision2 ? "kept" : "LOST") + ", an existing NoWalk tile over a zero byte is "
+                   + (noWalkTile ? "a wall (correct)" : "OPEN (wrong)")
+                   + ", an existing walkable tile is " + (walkTile ? "open (correct)" : "A WALL (wrong)")
+                   + ", and a cell whose tile has not streamed in (collision 0, no tile) is "
+                   + (missingTile ? "open (correct -- the dungeon fix)"
+                                  : "A WALL (this is the sealed-dungeon defect)"));
+
+            // G2. THE DUNGEON, AS A WINDOW. A 40-unit circular room with `collision 0` inside and
+            // `collision 1` rock outside -- which is what the server's array holds for a dungeon the
+            // character has just entered -- read three ways. The measured session is
+            // `20261020-171352-p40648`: the merged window covered 1 027 walkable cells that never
+            // touched the window's edge, while the same cells went 620 x `1 -> 0` as their tiles
+            // arrived. So the middle column is the run the operator saw and the last one is the fix.
+            const int side = 41;
+            const int radius = 10;
+            var collision = new byte[side * side];
+            int roomCells = 0;
+            for (int y = 0; y < side; y++)
+            {
+                for (int x = 0; x < side; x++)
+                {
+                    int dx = x - (side / 2);
+                    int dy = y - (side / 2);
+                    bool inside = (dx * dx) + (dy * dy) <= radius * radius;
+                    collision[(y * side) + x] = inside ? (byte)0 : (byte)1;
+                    roomCells += inside ? 1 : 0;
+                }
+            }
+
+            // (a) the server's collision grid ALONE -- the build before the tile half existed:
+            //     every room cell is open and the rock is solid.
+            // (b) the first version of the tile fix: a missing tile counted as a wall. The tile map
+            //     has not streamed in at all here, so EVERY room cell becomes a wall and the room is
+            //     a closed island.
+            // (c) the rule now: a missing tile is no information, so the collision byte answers.
+            int alone = 0;
+            int missingAsWall = 0;
+            int asImplemented = 0;
+            for (int i = 0; i < collision.Length; i++)
+            {
+                byte raw = collision[i];
+                if (raw == 0)
+                {
+                    alone++;
+                    missingAsWall--;  // (b) would have closed it
+                }
+                if (CollisionWindow.MergeCell(raw, false, false) == 0)
+                {
+                    asImplemented++;
+                }
+            }
+            missingAsWall += roomCells;  // ...and every one of them, so the count is exact
+            Report("G2  a dungeon whose tiles have not streamed in is navigable, not a sealed box",
+                   roomCells > 200 && alone == roomCells && asImplemented == roomCells
+                   && missingAsWall == 0,
+                   roomCells + " room cell(s) of " + collision.Length + ": the collision bytes alone"
+                   + " give " + alone + " walkable, the rule now gives " + asImplemented + ", and the"
+                   + " old `tileData == null -> wall` rule gave " + missingAsWall + " -- it turned every"
+                   + " unpainted floor cell into a wall and closed the room, which is the 1 027-cell"
+                   + " sealed component measured in Frost Cavern (`20261020-171352-p40648`, boss"
+                   + " marker 130 units east, farmer on its roam waypoints) and the operator's \"it"
+                   + " does not work inside dungeons\".");
+        }
+
         /// <summary>
         /// THE SHAPE OF THE SETTINGS STRING IS AN INVARIANT, AND IT BROKE A TRACE.
         ///
@@ -1544,6 +2371,19 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // checked here on every invocation rather than by a fixture that would have to build a
             // world to ask about them.
             ReportRouteMath();
+            // AND THE WALKABILITY MERGE, WHICH IS THE DUNGEON. `CollisionWindow.MergeCell` is one
+            // pure function of three plain values, and it decides whether a dungeon whose tile map
+            // is still streaming reads as a room or as a sealed box; see `ReportGridMath`.
+            ReportGridMath();
+            // AND THE GOAL RAY'S OWN TARGETING RULE, which is what a farm goal outside the window
+            // becomes. See `ReportRayTarget`.
+            ReportRayTarget();
+            // AND THE MAP-SCALE ROUTE, which is the answer when the local window cannot see the
+            // way to the goal at all. See `ReportMapRoute`.
+            ReportMapRoute();
+            // AND THE DUNGEON WALK ITSELF: a frontier walk that spends a dead end and backtracks out
+            // of it, over a map that is revealed around the character. See `ReportDungeonWalk`.
+            ReportDungeonWalk();
             Console.WriteLine();
 
             float previousX = float.NaN;
@@ -1689,6 +2529,11 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 {
                     _moveFrames++;
                     _durabilityMs.Add(decision.DurabilitySeconds * 1000.0f);
+                    // A MOVE THAT MOVES NOTHING IS A STOP WITH A MOVE'S LABEL. See W8.
+                    if (decision.Distance <= 1e-6f)
+                    {
+                        _zeroLengthMoves++;
+                    }
                 }
                 if (decision.Held)
                 {
@@ -1762,15 +2607,47 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 // stays where it is -- which is the whole point of the arrival fixtures. `Escape` and
                 // `Degraded` are not modelled here: neither moves the character, and the escape is
                 // the caller's business (`World.RequestEscape`).
-                if (_trace.ClosedLoop)
+                //
+                // AND THE LOOP NOW REFUSES WHAT THE GAME REFUSES, WHICH IT DID NOT BEFORE. It used
+                // to add the step unconditionally, so a fixture could report that a farmer "reached"
+                // a target by walking through the scenery -- the one thing the live character cannot
+                // do, and the defect this harness exists to catch. The refusal is the client's own:
+                // `World.hehe...EF73` tests the destination's footprint, then slides along each axis,
+                // and only then gives up. `_simRefusedSteps` counts the give-ups, and W7 asserts it
+                // is zero on a farm run -- an emitted move the game would discard is a farmer that
+                // stands still while its own log says it is walking.
+                if (decision.Action == DodgeAction.Move)
                 {
-                    // A FIRST FRAME HAS NO PREVIOUS MOVE, so it starts from the scenario's own start
-                    // position -- seeded in `SyntheticTrace.Build` via the first frame's coordinates.
-                    if (decision.Action == DodgeAction.Move)
+                    float baseX = _trace.ClosedLoop ? _simX : frame.PlayerX;
+                    float baseY = _trace.ClosedLoop ? _simY : frame.PlayerY;
+                    float step = speed * frame.Dt * decision.SpeedScale;
+                    float nx = baseX + (step * (float)Math.Cos(decision.HeadingRadians));
+                    float ny = baseY + (step * (float)Math.Sin(decision.HeadingRadians));
+                    if (snapshot.Grid.Present)
                     {
-                        float step = speed * frame.Dt * decision.SpeedScale;
-                        _simX += step * (float)Math.Cos(decision.HeadingRadians);
-                        _simY += step * (float)Math.Sin(decision.HeadingRadians);
+                        if (snapshot.Grid.Walkable(nx, ny))
+                        {
+                            // free
+                        }
+                        else if (snapshot.Grid.Walkable(nx, baseY))
+                        {
+                            ny = baseY;      // slide along x, as EF73 does
+                        }
+                        else if (snapshot.Grid.Walkable(baseX, ny))
+                        {
+                            nx = baseX;      // slide along y
+                        }
+                        else
+                        {
+                            nx = baseX;
+                            ny = baseY;
+                            _simRefusedSteps++;
+                        }
+                    }
+                    if (_trace.ClosedLoop)
+                    {
+                        _simX = nx;
+                        _simY = ny;
                     }
                 }
             }
@@ -1804,6 +2681,9 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             }
 
             Console.WriteLine();
+            // THE MAP ROUTE OVER WHATEVER THIS RECORDING EXPLORED. Informational, not an assertion;
+            // see `ReportMapRouteTrace`.
+            ReportMapRouteTrace();
             if (_warningsFatal)
             {
                 Failures++;
@@ -2296,6 +3176,11 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             if (frame.Grid != null)
             {
                 snapshot.Grid = frame.Grid.ToSolverWindow();
+                // AND THE MAP-SCALE ROUTE'S CACHE, FROM THE SAME RECORD. The live adapter feeds
+                // `MapRoute` from every window it reads; the trace has those windows, including the
+                // per-cell `src` field that says which cells were FLOOR, so a replay can be handed
+                // the map the live run had. `ReportMapRouteTrace` walks it after the loop.
+                FeedMapRoute(frame);
             }
 
             foreach (RecordedThreat recorded in frame.Threats)
@@ -2357,6 +3242,19 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // switch off it publishes nothing, which is what makes `farm=0` byte-identical to the
             // build before the farmer existed.
             _farmer.ChooseTarget(snapshot, _config);
+
+            // AFTER THE FARMER, SO THE FIXED GOAL WINS. See `FixedGoalX`.
+            if (!float.IsNaN(FixedGoalX))
+            {
+                snapshot.GoalHasPoint = true;
+                snapshot.GoalX = FixedGoalX;
+                snapshot.GoalY = FixedGoalY;
+                snapshot.GoalIsPortal = false;
+                snapshot.GoalIsQuest = true;
+                snapshot.GoalQuestActivate = false;
+                snapshot.GoalFromRoute = false;
+                snapshot.GoalKeepWalking = false;
+            }
             return snapshot;
         }
 
@@ -3227,8 +4125,14 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // grazes the player while no frame-boundary position does is a *correct* prediction and
             // an artefact of the generator, and the strict test cannot tell the two apart. So it is
             // not run, and the report says which of the two situations the reader is looking at.
-            if (_trace.Synthetic)
+            if (_trace.Synthetic || !float.IsNaN(FixedGoalX))
             {
+                _t7NotApplicableWhy = _trace.Synthetic
+                    ? "these are synthetic frames, so there is no game's own collision decision to"
+                      + " agree with"
+                    : "this replay was given a fixed --goal, so the moves the model predicted against"
+                      + " are not the moves the recording was played with -- the game's own hit"
+                      + " decisions belong to the operator's inputs, not to a synthetic goal";
                 _t7 = new T7Report
                 {
                     Hits = 0,
@@ -3952,6 +4856,30 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             Report("T10 hysteresis cannot hold an unsafe heading",
                    _unsafeHold == 0,
                    _unsafeHold + " held heading(s) with no admissible candidate");
+            // A MOVE THAT CANNOT MOVE IS THE FREEZE, AND NOTHING ELSE IN THE REPORT NAMED IT. The
+            // live session's log said `Move` on every frozen frame -- `671 move(s)`, `1730 blocked` --
+            // because `Filled` turns the `stand` candidate into a Move with `SpeedScale = 0`, and a
+            // frame counted as a move is a frame no counter calls a stand. The solver no longer lets
+            // `stand` win while a point goal is being walked (`DodgeSolver.Decide`), so this must be
+            // zero on every run, farm or not.
+            Report("W8  no emitted move has zero length",
+                   _zeroLengthMoves == 0,
+                   _zeroLengthMoves + " of " + _moveFrames + " emitted move(s) had a distance of"
+                   + " zero and would write `MoveSpeed = 0` to the client. That is a `stand` wearing a"
+                   + " `Move`'s label: it stops the character, it is counted as a move by every"
+                   + " aggregate, and the operator sees a bot that is stuck while the log says it is"
+                   + " walking.");
+
+            // THE REFUSAL THE LIVE SESSION PAID FOR. See `_simRefusedSteps`: this is the only check
+            // that compares an emitted command with the CLIENT's answer, and its old failure mode was
+            // a farmer whose own counters said it was walking while the game discarded every step.
+            Report("W7  no emitted move is one the client refuses",
+                   _simRefusedSteps == 0,
+                   _simRefusedSteps + " of " + _moveFrames + " emitted move(s) had a blocked"
+                   + " footprint at the destination AND on both axis slides -- the client's own"
+                   + " `EF73` would not move the character at all. Rule 2 refuses these when it"
+                   + " tests the footprint (`CollisionWindow.Walkable`), which is the 0.4-unit"
+                   + " measurement that makes a farmer stop walking into a wall it never reaches");
             // THE PATH'S OWN SAFETY CLAIM, ASSERTED RATHER THAN INFERRED. A path is a route through
             // the client's collision grid, and the one way it can be wrong about a wall is a diagonal
             // corner cut -- a step whose two orthogonal neighbours are both solid, which is the exact
@@ -4258,6 +5186,52 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                        + " that keeps the character moving -- the operator's \"when there's no"
                        + " enemies on screen it has no where to pathfind\".");
             }
+            if (ScenarioName == "farmertravelwall" || ScenarioName == "farmer-travel-wall")
+            {
+                // W1f. THE WAYPOINT THAT LANDS IN A WALL. See `Scenario.FarmerTravelWall`: the first
+                // roam direction is south and the block is twenty cells out, so the waypoint is deep
+                // inside it -- `PathPointSnapCells` (three) cannot reach open ground and the planner
+                // used to answer `NoTarget` for the rest of the waypoint's life, which is a goal term
+                // pointing at the wall and a character that presses it. Two statements: the planner
+                // never refused the aim (the whole-window snap found a cell), and the character
+                // actually covered ground.
+                PathStats wp = _solver.Path.Stats;
+                float walked = (float)Math.Sqrt(
+                    ((_simX - _trace.Frames[0].PlayerX) * (_simX - _trace.Frames[0].PlayerX))
+                    + ((_simY - _trace.Frames[0].PlayerY) * (_simY - _trace.Frames[0].PlayerY)));
+                Report("W1f a travel waypoint inside a wall still produces a route",
+                       wp.NoTargetFrames == 0 && wp.PathsFound > 0 && _farmer.TravelFrames > 0
+                       && walked > 5.0f,
+                       wp.NoTargetFrames + " notarget refusal(s) over " + wp.Searches
+                       + " search(es), " + wp.PathsFound + " path(s) found, " + _farmer.TravelFrames
+                       + " travel frame(s), " + _farmer.RoamWaypoints + " roam waypoint(s); the"
+                       + " character covered " + F(walked) + " units and ended at (" + F(_simX) + ","
+                       + F(_simY) + "). `NoTarget` is the refusal the report could not see before it"
+                       + " had a counter, and it is the state where the path term is zero and the"
+                       + " goal term walks the character into the wall.");
+            }
+            if (ScenarioName == "farmersealed" || ScenarioName == "farmer-sealed")
+            {
+                // W1g. THE TARGET WITH NO ROUTE. See `Scenario.FarmerSealed`: the mob is inside a
+                // sealed box, so `Unreachable` is the honest planner answer and the goal term is the
+                // only thing left -- which is a character pressing a wall for as long as the hold
+                // lasts. The farmer's own release is the fix, and this asserts it fired AND that the
+                // detour moved the character (a release into a stand is the same defect renamed).
+                float sealedWalked = (float)Math.Sqrt(
+                    ((_simX - _trace.Frames[0].PlayerX) * (_simX - _trace.Frames[0].PlayerX))
+                    + ((_simY - _trace.Frames[0].PlayerY) * (_simY - _trace.Frames[0].PlayerY)));
+                Report("W1g an unreachable target is released instead of pressed forever",
+                       _farmer.StuckReleases > 0 && sealedWalked > 3.0f,
+                       _farmer.StuckReleases + " no-progress release(s) over " + _frames
+                       + " frame(s); the character covered " + F(sealedWalked) + " units and ended at"
+                       + " (" + F(_simX) + "," + F(_simY) + ") against a start of ("
+                       + F(_trace.Frames[0].PlayerX) + "," + F(_trace.Frames[0].PlayerY) + ")."
+                       + " Searches with no route: " + _solver.Path.Stats.NoPath
+                       + " (nodecap " + _solver.Path.Stats.NodeCapHits + ", unreachable "
+                       + _solver.Path.Stats.UnreachableFrames + ") -- on a sealed box the search"
+                       + " spends its cap and gives up honestly, and that is exactly why the release"
+                       + " has to live in the farmer and not in the search.");
+            }
             if (ScenarioName == "farmerdodge" || ScenarioName == "farmer-dodge")
             {
                 // W5. The ordering proof: the farmer is a PREFERENCE, and the dodge still wins. T6
@@ -4289,10 +5263,14 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 if (_t7 != null && _t7.NotApplicable)
                 {
                     Report("T7  predicted and actual collision agree", true,
-                           "NOT EVALUATED: these are synthetic frames, so there is no game's own"
-                           + " collision decision to agree with. " + _firstPrediction.Count
+                           "NOT EVALUATED: "
+                           + (_t7NotApplicableWhy
+                              ?? "these are synthetic frames, so there is no game's own collision"
+                                 + " decision to agree with")
+                           + ". " + _firstPrediction.Count
                            + " bullet(s) would have been predicted. T7 needs a recorded trace"
-                           + " (--trace <run>/trace.jsonl --collisions <run>/bootstrap.log).");
+                           + " (--trace <run>/trace.jsonl --collisions <run>/bootstrap.log) and the"
+                           + " moves the operator actually played.");
                 }
                 else
                 {

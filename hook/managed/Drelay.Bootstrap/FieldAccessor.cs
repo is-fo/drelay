@@ -229,6 +229,54 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
+        /// `object Call(object, int, int)` for a reference-returning instance method with two int
+        /// parameters -- `Tilemap.GetTile(int, int)` is the one caller.
+        ///
+        /// WHY THIS IS A DYNAMIC METHOD AND NOT `Delegate.CreateDelegate`. The natural delegate is
+        /// `Func&lt;object, int, int, object&gt;`, and the runtime REFUSES to bind it to
+        /// `TileData GetTile(int, int)`: `Delegate.CreateDelegate` applies neither return-type
+        /// covariance nor an `object` receiver for an open instance method -- measured, both throw
+        /// `ArgumentException` ("signature is not compatible"). The failure is caught at arm time by
+        /// the caller, so the wall-awareness fix would have shipped inert while reporting itself as
+        /// unresolved. One `callvirt` in IL has neither restriction.
+        /// </summary>
+        public static Func<object, int, int, object> MethodObject2Int(MethodInfo method)
+        {
+            if (method == null)
+            {
+                throw new ArgumentNullException(nameof(method), "MethodObject2Int needs a method");
+            }
+            ParameterInfo[] parameters = method.GetParameters();
+            if (parameters.Length != 2
+                || parameters[0].ParameterType != typeof(int)
+                || parameters[1].ParameterType != typeof(int)
+                || method.ReturnType.IsValueType)
+            {
+                throw new ArgumentException(
+                    "MethodObject2Int cannot call " + method.DeclaringType + "." + method.Name
+                    + ": it wants a reference-returning method with two int parameters and this is "
+                    + method.ReturnType.Name + "(...)", nameof(method));
+            }
+            DynamicMethod call = new DynamicMethod(
+                "DrelayCall_" + method.Name, typeof(object),
+                new[] { typeof(object), typeof(int), typeof(int) },
+                typeof(FieldAccessor).Module, skipVisibility: true);
+            ILGenerator il = call.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Castclass, method.DeclaringType);
+            il.Emit(OpCodes.Ldarg_1);
+            il.Emit(OpCodes.Ldarg_2);
+            il.Emit(OpCodes.Callvirt, method);
+            if (method.ReturnType.IsValueType)
+            {
+                il.Emit(OpCodes.Box, method.ReturnType);
+            }
+            il.Emit(OpCodes.Ret);
+            return (Func<object, int, int, object>)call.CreateDelegate(
+                typeof(Func<object, int, int, object>));
+        }
+
+        /// <summary>
         /// `float Get(object)` for a `float` inside an inline value-type field -- the shape
         /// that matters most here, because a position is a `Vector3` (or a `GamePoint`) and
         /// reading the struct to get at it is what boxes.

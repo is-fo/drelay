@@ -204,9 +204,61 @@ namespace Drelay.Bootstrap
         private const int GridRadius = 64;
 
         private static readonly byte[] GridCells = new byte[(2 * GridRadius) * (2 * GridRadius)];
+
         private static int _gridOriginX;
         private static int _gridOriginY;
         private static bool _gridWindowValid;
+
+        /// <summary>The grid array the cached window was read from, so a map change re-reads it.</summary>
+        private static object _gridArrayLast;
+
+        /// <summary>The frame of the last successful re-read. See `GridRefreshFrames`.</summary>
+        private static long _gridReadFrame;
+
+        /// <summary>
+        /// Whether the cached window was built WITH tile data. The first frames of a session have a
+        /// `World` but no `Tilemap` yet, and a window cached then would be the collision grid alone
+        /// until the player crossed a tile -- the exact half-fix this change exists to remove.
+        /// </summary>
+        private static bool _gridTileReady;
+
+        /// <summary>
+        /// HOW OFTEN THE WINDOW IS RE-READ EVEN WITHOUT A TILE CHANGE.
+        ///
+        /// THE CACHE WAS A HOLE IN THE WALL AWARENESS AND IT IS THE OPERATOR'S FRAMING. The window
+        /// used to be re-read only when the player's own tile changed, which is correct for a static
+        /// map and wrong for this game: collision arrives in `GmTiles` packets as a map streams in,
+        /// static objects are added and removed (a door, a destructible rock) and a realm change
+        /// allocates a NEW grid. Half a second is short enough that the planner cannot press into a
+        /// wall for the rest of a session because the bytes were read before the map finished
+        /// arriving, and long enough that the 16 384-cell copy is not a per-frame cost.
+        /// </summary>
+        private const int GridRefreshFrames = 30;
+
+        // --- The tile map, which is the other half of walkability ---------------------------
+        //
+        // THE GAME'S OWN WALK TEST IS TWO TESTS, AND THE PATHFINDER WAS ONLY MAKING ONE OF THEM.
+        // `World.hehe_..._EF72(x, y)` -- the function every move in the client goes through -- is
+        // `in bounds && Tilemap.CanWalk(x, y) && collision[x, y] == 0`. `CollisionWindow` carried the
+        // last term only, so a tile whose `TileData.NoWalk` is set while its collision byte is zero
+        // (the void/black tiles, and any `NoWalk` tile the server never sends collision for) read as
+        // OPEN GROUND: the planner routed straight across it, rule 2 admitted the step, and the
+        // character walked into it for as long as the goal kept pointing that way. That is the
+        // operator's screenshot -- "trying to path through a wall when they need to walk around" --
+        // and it is why the window now carries the tile half.
+        //
+        // AND ONLY THE TILE THAT EXISTS COUNTS, WHICH IS THE OTHER HALF OF THE SAME LESSON. The tile
+        // map STREAMS IN (`GmTiles`); `GetTile` answers null for a cell that has not arrived. The
+        // first version of this fix called that null a wall, which sealed every dungeon: the
+        // operator's "it does not work inside dungeons, it falls back to the circular discovery
+        // movement" was a 1 027-cell room with no route out of it (see
+        // `CollisionWindow.MergeCell`). So the window's rule is: nonzero collision is solid, an
+        // existing `NoWalk` tile is solid, and an absent tile says nothing.
+        private static bool _tileResolved;
+        private static Func<object, object> _getTilemap;
+        private static Func<object, bool> _getTileNoWalk;
+        private static Func<object, int, int, object> _getTileData;
+        private static string _tileStatus = "not resolved";
 
         // --- The published slot ------------------------------------------------------------
 
@@ -342,6 +394,37 @@ namespace Drelay.Bootstrap
         private static int _failureLogged;
         private static bool _firstDecisionLogged;
 
+        /// <summary>One line for the first accepted quest marker and one for the first refused one.</summary>
+        private static bool _firstQuestLogged;
+        private static bool _skippedQuestLogged;
+        private static bool _staleQuestLogged;
+
+        /// <summary>
+        /// The pathfinder's answer from the frame before, so this frame knows whether the local
+        /// window could aim at the goal at all. See the map-route call site in `FillSnapshot`.
+        /// </summary>
+        private static PathReason _lastPathReason = PathReason.Disabled;
+
+        /// <summary>Goals closer than this keep the ordinary point; the map route is for a walk.</summary>
+        private const float MinMapRouteGoalUnits = 10.0f;
+
+        /// <summary>
+        /// Frames the map route keeps the goal after it last published one.
+        ///
+        /// WITHOUT THIS THE TWO GOAL SOURCES ALTERNATE EVERY FEW FRAMES. The takeover is decided from
+        /// the PREVIOUS frame's planner answer, and once the published goal IS a waypoint the planner
+        /// has a route to it -- so `blind` goes false, the boss's own position is published again, the
+        /// planner refuses it, the route takes over... A hold is the same hysteresis the dodge applies
+        /// to a heading and the follower applies to a waypoint, for the same reason: two answers to
+        /// one question alternating frame by frame is not a decision.
+        /// </summary>
+        private const int MapRouteHoldFrames = 45;
+
+        private static int _mapRouteHold;
+
+        /// <summary>Frames the published goal came from the map route, for the report.</summary>
+        private static long _mapRouteGoalFrames;
+
         /// <summary>
         /// The first report arrives at 300 frames and every 900 after that.
         ///
@@ -412,6 +495,10 @@ namespace Drelay.Bootstrap
             // two frame-path methods are named -- `Resolve` and `ResolveWorld` run at arm time.
             Prepare(typeof(EnemyReader), "Fill", BindingFlags.Public | BindingFlags.Static);
             Prepare(typeof(EnemyReader), "Describe", BindingFlags.Public | BindingFlags.Static);
+            // THE QUEST READER IS ON THE FRAME PATH FOR THE SAME REASON. `Fill` is called every
+            // frame; `TryActivate` is a reflective invoke that the private module makes at most
+            // once per retry window, and it is warmed with the method it calls.
+            Prepare(typeof(QuestReader), "Fill", BindingFlags.Public | BindingFlags.Static);
             // THE FARMER IS ON THE FRAME PATH AS WELL, and this is not decoration: it is called on
             // EVERY frame whether or not the switch is on, and its first call would otherwise be
             // compiled from inside a patched game frame. `Describe` is named for the same reason it
@@ -552,6 +639,15 @@ namespace Drelay.Bootstrap
                     PortalReader.ResolveWorld(sharedField);
                     bool portals = PortalReader.Resolve(game, ManagedArmingProbe.WorldTypeName);
                     HookEntry.AppendLog(portals ? "INFO" : "WARN", PortalReader.Status());
+
+                    // AND THE ACTIVE QUEST MARKERS. Same terms, same reason: this file owns the
+                    // assembly and the `World.Shared` static, the reader owns the reflection. A
+                    // failure disarms the quest walker and says so; it does NOT disarm the farmer,
+                    // the lobby pilot or the dodge. Resolved only for a farm run because the two
+                    // field walks are only worth paying for on a run that may use them.
+                    QuestReader.ResolveWorld(sharedField);
+                    bool quests = QuestReader.Resolve(game, ManagedArmingProbe.WorldTypeName);
+                    HookEntry.AppendLog(quests ? "INFO" : "WARN", QuestReader.Status());
                 }
                 else
                 {
@@ -616,6 +712,7 @@ namespace Drelay.Bootstrap
                 }
 
                 ResolveGrid(worldType, Any);
+                ResolveTilemap(worldType, Any);
                 ResolvePrecedence(playerType, Any);
 
                 _config = DodgeConfig.FromEnvironment();
@@ -672,6 +769,13 @@ namespace Drelay.Bootstrap
                     HookEntry.AppendLog("WARN", "the dodge's collision grid did NOT resolve: "
                         + "admission rules 1-3 are vacuous and every candidate is admitted through "
                         + "walls. The grid is found as the only byte[,] on World.");
+                }
+                else
+                {
+                    // A LINE OF ITS OWN, because "the collision grid resolved" is NOT "the planner
+                    // can see walls": the game's walk test also refuses `TileData.NoWalk`, and a run
+                    // whose tile half did not resolve walks into the black void exactly as before.
+                    HookEntry.AppendLog("INFO", "dodge grid | collision World.byte[,] | " + _tileStatus);
                 }
                 if (!_act)
                 {
@@ -788,6 +892,73 @@ namespace Drelay.Bootstrap
                 t = t.BaseType;
             }
             return null;
+        }
+
+        /// <summary>
+        /// Resolves the client's tile map, which supplies the HALF OF WALKABILITY THE COLLISION GRID
+        /// DOES NOT CARRY: `Tilemap.CanWalk` is `TileType != 0 && !TileData.NoWalk`, and the game's
+        /// move test is `in bounds && CanWalk && collision == 0`.
+        ///
+        /// It is best-effort: a failure leaves `_tileResolved` false, the window is the collision
+        /// grid alone -- exactly the pre-change behaviour -- and the arm-time line says so rather
+        /// than leaving a planner that cannot see walls looking like one that can.
+        /// </summary>
+        private static void ResolveTilemap(Type worldType, BindingFlags any)
+        {
+            try
+            {
+                FieldInfo tilemapField = FieldLookup.Find(worldType, out _, "Tilemap");
+                if (tilemapField == null)
+                {
+                    _tileStatus = "World.Tilemap not found (tile walls IGNORED)";
+                    return;
+                }
+                _getTilemap = FieldAccessor.Reference(tilemapField);
+
+                Type tilemapType = tilemapField.FieldType;
+                // IT USES `GetTile` AND `NoWalk` RATHER THAN `CanWalk`, AND THE CHOICE IS DEFENSIVE.
+                // `Tilemap.CanWalk` is `TileType != 0 && !TileData.NoWalk`, but it indexes the tile
+                // array and dereferences `Tile.Data` without checking it; a cell whose data has not
+                // loaded would throw from inside a patched frame. `GetTile` cannot throw and answers
+                // null for an out-of-map OR a not-yet-streamed cell -- and THE TWO ARE NOT THE SAME
+                // ANSWER HERE. The map's dimensions answer the first; the cell simply not existing
+                // is the second, and it must fall back to the collision byte rather than become a
+                // wall, or every dungeon is sealed (`CollisionWindow.MergeCell`).
+                MethodInfo getTile = tilemapType.GetMethod(
+                    "GetTile", BindingFlags.Public | BindingFlags.Instance, null,
+                    new[] { typeof(int), typeof(int) }, null);
+                Type tileDataType = getTile != null ? getTile.ReturnType : null;
+                if (tileDataType != null)
+                {
+                    try
+                    {
+                        // EMITTED, NOT BOUND. `Delegate.CreateDelegate` refuses the covariant
+                        // return type; see `FieldAccessor.MethodObject2Int`.
+                        _getTileData = FieldAccessor.MethodObject2Int(getTile);
+                    }
+                    catch (Exception) { _getTileData = null; }
+                    FieldInfo noWalk = FieldLookup.Find(tileDataType, out _, "NoWalk");
+                    if (noWalk != null && noWalk.FieldType == typeof(bool))
+                    {
+                        _getTileNoWalk = FieldAccessor.Bool(noWalk);
+                    }
+                }
+
+                _tileResolved = _getTilemap != null;
+                // THE CLAUSE SAYS WHICH RULE IS RUNNING, because `ON` alone was read as "every cell
+                // that looks solid is a wall" and that is exactly the bug this line now cannot hide:
+                // a missing tile is deliberately NOT a wall (dungeon maps stream in), and an operator
+                // reading the log should be able to tell that from a run that has no tile data.
+                _tileStatus = "tile walls "
+                              + (_getTileData != null && _getTileNoWalk != null
+                                  ? "ON (NoWalk; a missing tile reads as open, not as wall)"
+                                  : "MISSING");
+            }
+            catch (Exception ex)
+            {
+                _tileResolved = false;
+                _tileStatus = ex.GetType().Name + ": " + ex.Message;
+            }
         }
 
         private static void ResolveGrid(Type worldType, BindingFlags any)
@@ -952,6 +1123,43 @@ namespace Drelay.Bootstrap
                 // per frame -- the same accounting `EnemyReader.Fill` itself makes.
                 PortalReader.Fill(s, _config);
 
+                // AND THE ACTIVE QUEST MARKERS. It is the quest walker's input and nothing else,
+                // and like the portal list it fills nothing unless the farmer and the quest switch
+                // are both on -- one branch per frame on every other run.
+                QuestReader.Fill(s, _config);
+                // AND ONE LINE THE FIRST TIME A MARKER IS ACCEPTED OR REFUSED. The first live
+                // report could only say the character walked to the top left; the log had no
+                // position to compare. This is the line that makes "the marker is (0,0)" and "the
+                // marker is real and the walk is wrong" different diagnoses in one session.
+                if (!_firstQuestLogged && s.Quests.Count > 0)
+                {
+                    _firstQuestLogged = true;
+                    QuestTarget first = s.Quests[0];
+                    HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
+                        "quest: marker id={0} at {1:0.#},{2:0.#} primary={3} activatable={4} name='{5}'",
+                        first.GameId, first.X, first.Y, first.Primary, first.Activatable,
+                        first.Name ?? ""));
+                }
+                if (!_skippedQuestLogged && QuestReader.MarkersSkipped > 0)
+                {
+                    _skippedQuestLogged = true;
+                    HookEntry.AppendLog("WARN", "quest: a marker was refused because its position was"
+                        + " (0,0) or non-finite; the farmer will not walk to the map origin. See"
+                        + " QuestReader (Position/ExactPosition) and qskip= in the pilot line.");
+                }
+                // AND THE OTHER REFUSAL, WHICH LOOKED LIKE "THE QUEST WALK IS BROKEN" AND WAS A
+                // MARKER FROM ANOTHER MAP. `World.Quest` survives `ClearWorld`, so after a portal the
+                // tracked marker can still name the realm the character left; its position is then a
+                // real number in a map that is not loaded, and the farmer walks at it. One line, so a
+                // session can tell this from an unplaced marker and from a walk that is simply wrong.
+                if (!_staleQuestLogged && QuestReader.MarkersStale > 0)
+                {
+                    _staleQuestLogged = true;
+                    HookEntry.AppendLog("WARN", "quest: a tracked marker was refused because it is not"
+                        + " an object in this world -- World.Quest survives a map change and still"
+                        + " names the previous map. qstale= in the pilot line. See QuestReader");
+                }
+
                 // THE FARMER, WHICH IS A SOURCE OF THE GOAL AND NOTHING ELSE. It runs here, on the
                 // sensor's side of the decision, because the enemy list it chooses from is the
                 // sensor's picture of the frame -- the same reason `EnemyReader.Fill` is here. It
@@ -972,10 +1180,61 @@ namespace Drelay.Bootstrap
                 // one was refused by its map block, or when the farmer already answered.
                 RouteRuntime.ApplyGoal(world, _config, s);
 
+                // AND THE MAP-SCALE ROUTE, WHICH IS THE ANSWER FOR A GOAL THE LOCAL WINDOW CANNOT
+                // REACH. `20261020-181445-p4196` (River Maze) is the measurement: the boss 32 units
+                // east, behind a wall, reachable in 78 steps over a route that leaves the
+                // planner's 128-unit window, `unreachable` on the frames the local search could
+                // finish and `nodecap` on the frames it could not. So when the last decision's
+                // planner had no route (or the goal is beyond the window by itself), the point the
+                // character is given becomes the next waypoint of the map route instead of the
+                // boss's own position. It writes the same `GoalX`/`GoalY` the farmer does and
+                // nothing else: the planner, admission, the score and the escape floor are
+                // untracked, and the arrival policy keeps walking because a waypoint is a place to
+                // pass through, not a place to stop at.
+                //
+                // A QUEST GOAL ONLY, AND THE ARRIVAL RADIUS IS WHY. An enemy goal stops the farmer
+                // three units out and lets the auto-fire work; a chain of waypoints would keep
+                // replacing that place with the next one, so the character would walk *through* the
+                // mob it was supposed to shoot. A quest marker is a journey -- a boss in the next
+                // room, a doorway across a dungeon -- which is the shape this module is for. The
+                // measured cases (River Maze, Frost Cavern) are both quest goals.
+                if (s.GoalHasPoint && s.GoalIsQuest)
+                {
+                    float gdx = s.GoalX - s.Player.X;
+                    float gdy = s.GoalY - s.Player.Y;
+                    float goalDistance = (float)Math.Sqrt((gdx * gdx) + (gdy * gdy));
+                    bool blind = _lastPathReason == PathReason.NoTarget
+                                 || _lastPathReason == PathReason.Unreachable
+                                 || _lastPathReason == PathReason.NodeCap
+                                 || _mapRouteHold > 0;
+                    float wx;
+                    float wy;
+                    if (goalDistance > MinMapRouteGoalUnits
+                        && MapRoute.ShouldTakeOver(blind, goalDistance)
+                        && MapRoute.TryWaypoint(s.Player.X, s.Player.Y, s.GoalX, s.GoalY,
+                                                out wx, out wy))
+                    {
+                        s.GoalX = wx;
+                        s.GoalY = wy;
+                        s.GoalKeepWalking = true;
+                        _mapRouteGoalFrames++;
+                        _mapRouteHold = MapRouteHoldFrames;
+                    }
+                }
+                if (_mapRouteHold > 0)
+                {
+                    _mapRouteHold--;
+                }
+
                 long t0 = Stopwatch.GetTimestamp();
                 DodgeDecision d = _solver.Decide(s);
                 long elapsed = Stopwatch.GetTimestamp() - t0;
                 d.CostMicroseconds = (int)((elapsed * 1000000L) / Stopwatch.Frequency);
+                // THE PLANNER'S ANSWER FOR THE FRAME THAT JUST RAN, WHICH IS TOMORROW'S `blind`. One
+                // frame of lag is deliberate: the route has to be published BEFORE `Decide`, and
+                // "the planner could not aim last frame" is the only evidence available at that
+                // point that the local view is not enough.
+                _lastPathReason = _solver.Path.Reason;
 
                 Record(s, d);
                 Publish(d);
@@ -1152,22 +1411,103 @@ namespace Drelay.Bootstrap
             int originY = (int)py - GridRadius;
             int size = 2 * GridRadius;
 
-            if (!_gridWindowValid || originX != _gridOriginX || originY != _gridOriginY)
+            object array = _getGridArray(world);
+            if (array == null)
             {
-                object array = _getGridArray(world);
-                if (array == null)
-                {
-                    return window;
-                }
+                return window;
+            }
+
+            // THREE REASONS TO RE-READ, AND TWO OF THEM ARE THE WALL-AWARENESS FIX. A tile change is
+            // the old one; a NEW grid array is a map change (the old cache would be another world's
+            // walls at the same coordinates), and `GridRefreshFrames` covers collision that arrived
+            // after the first read -- `GmTiles` streams in, and a door or a rock can change a cell
+            // without the player crossing a tile.
+            bool moved = !_gridWindowValid || originX != _gridOriginX || originY != _gridOriginY;
+            bool rebind = !ReferenceEquals(array, _gridArrayLast);
+            bool due = _gridWindowValid && _frames - _gridReadFrame >= GridRefreshFrames;
+            object tilemap = _tileResolved && _getTilemap != null ? _getTilemap(world) : null;
+            bool tileArrived = tilemap != null && !_gridTileReady;
+            if (moved || rebind || due || tileArrived)
+            {
+                Array dimensions = array as Array;
+                int mapW = dimensions != null && dimensions.Rank == 2 ? dimensions.GetLength(0) : 0;
+                int mapH = dimensions != null && dimensions.Rank == 2 ? dimensions.GetLength(1) : 0;
+
+                // THE MAP-SCALE ROUTE'S CACHE IS BOUND TO THE MAP THE SAME WAY THIS WINDOW IS: by the
+                // grid ARRAY's identity and its dimensions. A new `byte[,]` is a new world, and a
+                // route from the old one would be a route through another realm's walls. See
+                // `MapRoute`; this is also the call that refuses a map too large to keep a cache for.
+                MapRoute.EnsureMap(array, mapW, mapH);
+
                 for (int gy = 0; gy < size; gy++)
                 {
                     for (int gx = 0; gx < size; gx++)
                     {
-                        GridCells[(gy * size) + gx] = _gridAt(array, originX + gx, originY + gy);
+                        int index = (gy * size) + gx;
+                        int wx = originX + gx;
+                        int wy = originY + gy;
+                        bool inMap = mapW > 0 && mapH > 0
+                                     && wx >= 0 && wy >= 0 && wx < mapW && wy < mapH;
+
+                        // THE COLLISION BYTE, exactly as the client's own array answers it.
+                        byte cell = _gridAt(array, wx, wy);
+
+                        // OUTSIDE THE MAP IS NOT WALKABLE. The client's own test refuses it before it
+                        // ever reads the grid; `_gridAt` answers "not a wall" there because a reader
+                        // cannot know the map's dimensions, and this is the caller that can.
+                        if (!inMap)
+                        {
+                            cell = 1;
+                        }
+
+                        // THE TWO HALVES, MERGED BY ONE RULE. `Tilemap` does not arrive with the
+                        // world: `GmTiles` streams it in, and `GetTile` answers null for a cell that
+                        // has not arrived. A missing tile is NO INFORMATION and falls back to the
+                        // collision byte; only a tile that exists and says `NoWalk` is a wall. The
+                        // opposite reading sealed every dungeon (see `CollisionWindow.MergeCell` for
+                        // the 1 027-cell closed room and the 620 `1 -> 0` cells that came with it).
+                        //
+                        // AND THE SAME TWO HALVES CLASSIFY THE CELL FOR THE MAP CACHE, which needs
+                        // the difference between a wall and a hole the map has not painted: its
+                        // frontier is "an open cell with an unpainted neighbour", and the Infested
+                        // Cellar's east wall was a frontier for six thousand frames when a wall and a
+                        // hole were one byte. The codes are `TraceRecorder`'s own so the offline
+                        // replay feeds the same vocabulary; see `MapRoute.Observe`.
+                        byte mapSource;
+                        if (!inMap)
+                        {
+                            mapSource = MapRoute.CellOutOfMap;
+                        }
+                        else if (cell != 0)
+                        {
+                            mapSource = MapRoute.CellCollision;
+                        }
+                        else if (tilemap == null || _getTileData == null)
+                        {
+                            // NO TILE MAP YET: no information beyond the collision byte, which said
+                            // zero. That is unpainted, not floor.
+                            mapSource = MapRoute.CellUnknown;
+                        }
+                        else
+                        {
+                            object tileData = _getTileData(tilemap, wx, wy);
+                            bool noWalk = tileData != null && _getTileNoWalk != null
+                                          && _getTileNoWalk(tileData);
+                            cell = CollisionWindow.MergeCell(cell, tileData != null, noWalk);
+                            mapSource = tileData == null
+                                ? MapRoute.CellUnknown
+                                : (noWalk ? MapRoute.CellNoWalkTile : MapRoute.CellFloor);
+                        }
+                        MapRoute.Observe(wx, wy, mapSource);
+
+                        GridCells[index] = cell;
                     }
                 }
                 _gridOriginX = originX;
                 _gridOriginY = originY;
+                _gridArrayLast = array;
+                _gridReadFrame = _frames;
+                _gridTileReady = tilemap != null;
                 _gridWindowValid = true;
             }
 
@@ -1586,6 +1926,54 @@ namespace Drelay.Bootstrap
             // past the 256-byte buffer, which truncates silently.
             HookEntry.AppendLog("INFO", "PHASE 3 DODGE REASONS | " + ReasonHistogram());
 
+            // AND THE PATHFINDER'S OWN NUMBERS, WHICH NO OTHER LINE CARRIES.
+            //
+            // The operator's third live session was *"pathfinding isn't terrain aware. It gets stuck
+            // in buildings"*, and nothing in this report could have said whether the planner had
+            // refused (no route at all -- the character then walking at the wall) or had produced a
+            // route and been overruled by the score. `HANDOFF-DIRECTED-DODGE.md` section 6 states the
+            // rule this line follows: "a pathfinder that is silently absent prints as 'the outrun
+            // ratio did not move', which is the same output as a pathfinder that ran and did
+            // nothing". `unreachable`/`nodecap`/`nogrid`/`notarget`/`nogoal` are the five refusals.
+            //
+            // `notarget` AND `nogoal` WERE THE MISSING ONES, AND THE 2026-10-19 SESSION IS WHY THEY
+            // ARE HERE. Its line read `868 search: 541 found, 0 none`, and 327 frames were refused
+            // by one of the two -- a goal the planner could not aim at. Those are exactly the frames
+            // where the path term contributes nothing and the character walks into the wall, so the
+            // report was calling the defect a success.
+            PathStats path = _solver.Path.Stats;
+            if (path.Searches > 0)
+            {
+                HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
+                    "PHASE 3 DODGE PATH | {0} search: {1} found, {2} none (unreachable {3}, nodecap {4},"
+                    + " nogrid {5}, notarget {9}, nogoal {10}) | mean {6:0.0} nodes {7:0.0} units"
+                    + " | {8}us",
+                    path.Searches, path.PathsFound, path.NoPath,
+                    path.UnreachableFrames, path.NodeCapHits, path.NoGridFrames,
+                    path.PathsFound > 0 ? path.NodesTotal / (double)path.PathsFound : 0.0,
+                    path.PathsFound > 0 ? path.LengthTotal / (double)path.PathsFound : 0.0,
+                    (long)(path.MicrosecondsTotal / path.Searches),
+                    path.NoTargetFrames, path.NoGoalFrames));
+            }
+
+            // AND THE MAP-SCALE ROUTE'S OWN LINE. It is the answer to the line above: `unreachable`
+            // and `nodecap` are the local window saying "not here", and this says how much map the
+            // route had to work with and whether the goal was being published from it. A run whose
+            // `floor cell(s)` stops growing while the character is stuck is a map that is not
+            // revealing, which is a different defect from a route that cannot be found.
+            //
+            // `frontier left` IS THE NUMBER THAT SAYS WHETHER THE DUNGEON HAS BEEN MAPPED.
+            // `20261020-183555-p37604` spent 6 039 frames in Infested Cellar's spawn room with the
+            // cache at 1 054 floor cells and the route pacing between two points; the frontier count
+            // separates "there is somewhere left to walk" from "every opening has been visited".
+            // `dead end` is a frontier that was walked to and revealed nothing (the operator's
+            // backtracking), and `timeout` is one the character could not reach -- two different
+            // failures that would look identical in `refused`. See `MapRoute`'s header and
+            // `PLAN-AUTOFARM.md` section 14.13.
+            HookEntry.AppendLog("INFO",
+                "PHASE 3 DODGE MAPROUTE | " + MapRoute.Status()
+                + " | goal from the route " + _mapRouteGoalFrames + " frame(s)");
+
             // AND THE FARMER'S OWN LINE, ON ITS OWN FOR THE SAME REASON, AND ONLY WHEN IT RAN. It
             // carries the plan's `stand held for range` counter, which is the one number that says
             // the arrival policy of `PLAN-AUTOFARM.md` section 4.3 did anything -- and, by being
@@ -1601,6 +1989,15 @@ namespace Drelay.Bootstrap
                 HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
                     "PHASE 3 DODGE PILOT | {0} | stand held for range {1}",
                     _farmer.DescribePilot(), _solver.StandHeldForRange));
+
+                // THE QUEST READER'S OWN STATE, WHICH NO COUNTER ON THE PILOT LINE CAN ANSWER.
+                // `20261019-223603-p19004` walked the overworld and the Infested Cellar with a quest
+                // indicator on screen and reported `quest=0/0 qsrc=none` for the whole run: the
+                // farmer never had a marker. "No marker in `World.Quest`" and "a marker the farmer
+                // declined" are different bugs and this line is the difference -- it prints the
+                // tracked reference, the event count, the registry scan's size and the reader's own
+                // seen/skip/stale counters, every one of them a value the reader itself used.
+                HookEntry.AppendLog("INFO", "PHASE 3 DODGE QUEST | " + QuestReader.DescribeLive());
             }
             HookEntry.FlushLog();
         }

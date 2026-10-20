@@ -64,6 +64,7 @@
     <Compile Include="Program.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\WorldLog.cs" Link="WorldLog.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\EnemyReader.cs" Link="EnemyReader.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\QuestReader.cs" Link="QuestReader.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSnapshot.cs" Link="DodgeSnapshot.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\FieldAccessor.cs" Link="FieldAccessor.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\FieldLookup.cs" Link="FieldLookup.cs" />
