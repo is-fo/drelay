@@ -2320,3 +2320,26 @@ failed wall blocks `BlockedRadius` = 2 around it, so a solid wall costs a handfu
 The next run's test is the second-cellar shape: while standing at a wall, `dead end` or `timeout`
 must advance at least once per ~75 frames, and a converted tile must appear as floor growth. A
 stationary position with frozen probe counters is this integration bug, not an unsolvable map.
+
+### 16.5 The sixth live run: why the spawn room is slow and the rest is not
+
+`20261021-000135-p35056` has Infested Cellar twice and Frost Cavern; both Cellars reached the boss.
+The operator's observation is exact: the spawn room takes a long time, then the rest of the route is
+efficient.
+
+That is an information asymmetry, not a pathing defect. At entry the map knows the spawn room and
+almost nothing else: the boss is outside, every connection is still a `NoWalk` placeholder, and
+there is no floor route. The solver must walk to room boundaries and let the streamer paint a
+doorway. Once one converts, the next corridor's floor arrives and the rest is mostly known floor --
+hence the quick finish.
+
+Two ordering fixes came out of this run:
+
+1. **Hard frontiers are walked before the optimistic wall plan.** The wall plan had been tried
+   first, so a room with real unpainted edges was wall-probed instead of exploring them.
+2. **A provisional wall with disconnected floor on its far side is priced at `DoorwayCost` (2)**
+   instead of `ProvisionalCost` (40). That is the corridor seen through a doorway; a solid wall with
+   no floor beyond is the expensive case.
+
+The unavoidable part is unchanged: a doorway that has never been streamed cannot be known until the
+character is near it. The goal is one perimeter pass, not a wall-cell-by-cell probe.

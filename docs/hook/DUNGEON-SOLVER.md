@@ -463,3 +463,31 @@ than one per cell.
 `timeout` must advance at least once per ~75 frames, and a converted tile must show up as floor
 growth. A frozen counter beside a stationary position is this integration bug, not a map that cannot
 be solved.
+
+### 8.5 The sixth live run: why the spawn room is slow and the rest is fast
+
+`20261021-000135-p35056` is Infested Cellar twice and Frost Cavern. Both Cellars reached the boss.
+The operator's observation is exact: the spawn room takes a long time, then the rest of the route is
+efficient.
+
+That asymmetry is **information, not pathing**. At entry the map knows the spawn room and almost
+nothing else: the boss is outside the room, every connection to it is still a `NoWalk` placeholder,
+and there is no floor path. The solver must find a doorway by walking to wall boundaries and letting
+the streamer paint; each failed candidate costs `BoundaryDwellFrames` (75) plus the walk. Once a
+doorway converts, the next corridor's floor arrives, the map connects, and the remaining route is
+mostly known floor -- which is why it then looks like a near-one-shot.
+
+The run also exposed an ordering mistake: the optimistic wall plan was tried **before hard
+frontiers**, so a room with real unpainted edges was wall-probed first. Hard frontiers are cheaper
+and are the direction the streamer is already revealing; they are now chosen first, and the
+optimistic plan is the fallback for a room whose every edge is already painted.
+
+The optimistic search also now prices a provisional wall at `DoorwayCost` (2) when it has
+**disconnected floor on its far side** -- the corridor seen through a doorway -- and at
+`ProvisionalCost` (40) otherwise. This is the same exit-corridor signal the boundary probe uses, and
+it stops a solid wall from being tested ahead of an obvious opening.
+
+**What should change in the next run**: floor and frontier should advance while the character is
+still in the spawn room, because real unknown edges are walked first. The unavoidable part remains:
+a doorway that has never been streamed cannot be known, so the character still has to walk near the
+room's boundary at least once. The aim is one perimeter pass, not a wall-cell-by-wall-cell probe.

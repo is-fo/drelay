@@ -140,6 +140,15 @@ namespace Drelay.Bootstrap
         private int[] _heapScore;
         private int _heapCount;
 
+        /// <summary>
+        /// Floor cells the last EXACT search reached. The optimistic search uses the complement as
+        /// the doorway signal: a provisional wall with disconnected floor on its far side is much
+        /// more likely to be a doorway than a solid wall. This is <see cref="Search"/>'s answer kept
+        /// across the optimistic search, which has its own generation.
+        /// </summary>
+        private int[] _reachable;
+        private int _reachableGeneration;
+
         /// <summary>Nodes in <see cref="_path"/> after the last <see cref="BuildPath"/>, player first.</summary>
         public int PathCount { get; private set; }
 
@@ -203,6 +212,8 @@ namespace Drelay.Bootstrap
             _blocked = new byte[cells];
             _g = new int[cells];
             _gStamp = new int[cells];
+            _reachable = new int[cells];
+            _reachableGeneration = 0;
             // The optimistic search can push a node more than once (a cheaper route found later);
             // four entries per expanded node is generous and bounds the heap at the budget's order.
             int heap = Math.Min(cells, DungeonSolver.PlanNodeBudget * 4);
@@ -266,6 +277,7 @@ namespace Drelay.Bootstrap
             _heapCost = null;
             _heapScore = null;
             _heapCount = 0;
+            _reachable = null;
             _path = new int[0];
             PathCount = 0;
             BoundaryCount = 0;
@@ -295,6 +307,7 @@ namespace Drelay.Bootstrap
             _heapCost = null;
             _heapScore = null;
             _heapCount = 0;
+            _reachable = null;
             _path = new int[0];
             PathCount = 0;
             BoundaryCount = 0;
@@ -640,7 +653,12 @@ namespace Drelay.Bootstrap
                     }
                     else if (kind == ProvisionalWall && !IsBlocked(n))
                     {
-                        step = ProvisionalCost;
+                        // THE DOORWAY SIGNAL. A provisional wall with disconnected FLOOR on its
+                        // far side is a doorway with the next corridor already visible through it;
+                        // a provisional wall with no floor beyond is a solid wall. Preferring the
+                        // first at cost 2 over the second at 40 is what stops a spawn room from
+                        // being tested wall-cell by wall-cell before the exit is found.
+                        step = HasUnreachableFloorNeighbour(n) ? DoorwayCost : ProvisionalCost;
                     }
                     else
                     {
@@ -690,6 +708,40 @@ namespace Drelay.Bootstrap
         /// wall-cutting shortcut, and each wall it does test is a real doorway candidate.
         /// </summary>
         public const int ProvisionalCost = 40;
+
+        /// <summary>
+        /// A provisional cell with disconnected floor on its far side. It is almost certainly the
+        /// doorway the room is looking for, so the optimistic search should take it without first
+        /// testing the solid wall next to it.
+        /// </summary>
+        public const int DoorwayCost = 2;
+
+        /// <summary>True when the last exact search reached this cell.</summary>
+        public bool IsReachable(int index)
+        {
+            return Available && _reachable != null && index >= 0 && index < _reachable.Length
+                   && _reachable[index] == _reachableGeneration;
+        }
+
+        /// <summary>
+        /// True when a 4-neighbour is FLOOR that the exact search did not reach. From the inside of
+        /// a room that is the corridor on the far side of a doorway placeholder; from solid rock it
+        /// is false.
+        /// </summary>
+        public bool HasUnreachableFloorNeighbour(int index)
+        {
+            if (!Available || index < 0 || index >= _cells.Length)
+            {
+                return false;
+            }
+            int x = index % Width;
+            int y = index / Width;
+            if (x + 1 < Width && _cells[index + 1] == Floor && !IsReachable(index + 1)) { return true; }
+            if (x > 0 && _cells[index - 1] == Floor && !IsReachable(index - 1)) { return true; }
+            if (y + 1 < Height && _cells[index + Width] == Floor && !IsReachable(index + Width)) { return true; }
+            if (y > 0 && _cells[index - Width] == Floor && !IsReachable(index - Width)) { return true; }
+            return false;
+        }
 
         private int Heuristic(int x, int y, float goalX, float goalY)
         {
@@ -929,6 +981,13 @@ namespace Drelay.Bootstrap
                 Array.Clear(_seen, 0, _seen.Length);
                 _seenGeneration = 1;
             }
+            _reachableGeneration++;
+            if (_reachableGeneration == int.MaxValue)
+            {
+                Array.Clear(_reachable, 0, _reachable.Length);
+                _reachableGeneration = 1;
+            }
+            int reachableStamp = _reachableGeneration;
 
             int goalCellX = (int)goalX;
             int goalCellY = (int)goalY;
@@ -946,6 +1005,7 @@ namespace Drelay.Bootstrap
             int tail = 0;
             _queue[tail++] = start;
             _seen[start] = _seenGeneration;
+            _reachable[start] = reachableStamp;
             _parent[start] = -1;
             _depth[start] = 0;
 
@@ -1025,6 +1085,7 @@ namespace Drelay.Bootstrap
                         continue;
                     }
                     _seen[n] = _seenGeneration;
+                    _reachable[n] = reachableStamp;
                     _parent[n] = current;
                     _depth[n] = nextDepth;
                     if (tail < _queue.Length)

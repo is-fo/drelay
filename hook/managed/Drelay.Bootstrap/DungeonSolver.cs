@@ -687,38 +687,6 @@ namespace Drelay.Bootstrap
                 return StartGoalRoute(search.NearestGoalNode, goalX, goalY, playerCellX, playerCellY);
             }
 
-            // THE MOUSE'S MOVE: PLAN THROUGH THE PLACEHOLDER TOWARD THE GOAL. The exact search has
-            // said there is no floor route; this search treats `NoWalk` as a possible doorway and
-            // returns the first one on the shortest route. The character walks to the floor cell
-            // before it and waits. A conversion opens the route; a dry dwell blocks that wall and
-            // the next plan goes around it.
-            if (_committed < 0)
-            {
-                int approach;
-                int wall;
-                if (Map.SearchOptimistic(playerCellX, playerCellY, goalX, goalY,
-                                         OptimisticNodeBudget, out approach, out wall))
-                {
-                    _committed = approach;
-                    _pendingWall = wall;
-                    _committedBoundary = true;
-                    _lastProbe = approach;
-                    _exploreStartFrame = _frames;
-                    _dwellStartFrame = 0;
-                    _boundaryProbes++;
-                    _mode = ModeExplore;
-                    _target = approach;
-                    _mapped = false;
-                    if (!SetPath(approach))
-                    {
-                        FinishExplore(false);
-                        return false;
-                    }
-                    _committedParent = Map.ParentOf(approach);
-                    return true;
-                }
-            }
-
             // THE GOAL IS NOT CONNECTED TO THE KNOWN FLOOR. Explore, committing to a frontier.
             int target;
             if (_committed >= 0)
@@ -727,14 +695,49 @@ namespace Drelay.Bootstrap
             }
             else
             {
+                // A HARD FRONTIER COMES FIRST. It is a floor cell beside genuinely unpainted space:
+                // the cheapest thing to walk to, and the direction a streamer is already revealing.
+                // The optimistic wall plan below is for the case where every edge is painted -- a
+                // sealed-looking room -- not for skipping unexplored openings. The live spawn-room
+                // runs prioritized the wall plan over two to twenty real frontiers and paid for it.
                 target = search.FrontierNode;
                 _committedBoundary = false;
                 if (target < 0)
                 {
-                    // NO HARD FRONTIER: EVERY EDGE OF THE KNOWN FLOOR HAS BEEN PAINTED. That is a
-                    // sealed room, and in a streaming dungeon the seal is usually a `NoWalk`
-                    // placeholder over the doorway. Probe the boundary instead; see
-                    // `ChooseBoundary` and the live River Maze/Chasm of Dread measurement.
+                    // THE MOUSE'S MOVE: PLAN THROUGH THE PLACEHOLDER TOWARD THE GOAL. The exact
+                    // search has said there is no floor route and no hard frontier; this search
+                    // treats `NoWalk` as a possible doorway and returns the first one on the
+                    // shortest route. The character walks to the floor cell before it and waits. A
+                    // conversion opens the route; a dry dwell blocks that wall and the next plan
+                    // goes around it.
+                    int approach;
+                    int wall;
+                    if (Map.SearchOptimistic(playerCellX, playerCellY, goalX, goalY,
+                                             OptimisticNodeBudget, out approach, out wall))
+                    {
+                        _committed = approach;
+                        _pendingWall = wall;
+                        _committedBoundary = true;
+                        _lastProbe = approach;
+                        _exploreStartFrame = _frames;
+                        _dwellStartFrame = 0;
+                        _boundaryProbes++;
+                        _mode = ModeExplore;
+                        _target = approach;
+                        _mapped = false;
+                        if (!SetPath(approach))
+                        {
+                            FinishExplore(false);
+                            return false;
+                        }
+                        _committedParent = Map.ParentOf(approach);
+                        return true;
+                    }
+                }
+                if (target < 0)
+                {
+                    // NO HARD FRONTIER AND NO OPTIMISTIC ROUTE: probe the nearest boundary instead;
+                    // see `ChooseBoundary`.
                     target = ChooseBoundary(playerCellX, playerCellY, goalX, goalY);
                     _committedBoundary = target >= 0;
                 }
