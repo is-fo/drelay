@@ -377,6 +377,43 @@ namespace Drelay.Bootstrap
             return !Available || index < 0 || index >= _tried.Length || _tried[index] != 0;
         }
 
+        /// <summary>
+        /// Spends the boundary cells in a square around a failed probe. Only cells that are still
+        /// boundaries (floor beside a provisional wall) are marked, so a hard frontier or a future
+        /// doorway revealed elsewhere is not suppressed. Used for boundary probes only: a hard
+        /// frontier is a single, specific hole and is spent on its own.
+        /// </summary>
+        public void MarkTriedAround(int index, int radius)
+        {
+            if (!Available || index < 0 || index >= _cells.Length)
+            {
+                return;
+            }
+            int x = index % Width;
+            int y = index / Width;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                int ny = y + dy;
+                if (ny < 0 || ny >= Height)
+                {
+                    continue;
+                }
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    int nx = x + dx;
+                    if (nx < 0 || nx >= Width)
+                    {
+                        continue;
+                    }
+                    int n = (ny * Width) + nx;
+                    if (HasProvisionalNeighbour(n))
+                    {
+                        _tried[n] = 1;
+                    }
+                }
+            }
+        }
+
         /// <summary>True when this floor cell has a 4-neighbour that has never been painted.</summary>
         public bool HasUnknownNeighbour(int index)
         {
@@ -594,7 +631,13 @@ namespace Drelay.Bootstrap
                 if (_tried[current] == 0 && HasUnknownNeighbour(current))
                 {
                     int depth = _depth[current];
-                    if (depth < bestDepth || (depth == bestDepth && d2 < bestGoal2))
+                    // GOAL DISTANCE FIRST, PATH LENGTH AS THE TIE-BREAK. Nearest-first was the
+                    // right rule for a small room and the wrong one for the 1 108-cell Infested
+                    // Cellar component measured on 2026-10-20: it explored the whole south half
+                    // while the boss was north, then cycled between the two ends. The commitment
+                    // and the tried set still prevent the old ping-pong; this only decides WHICH
+                    // unexplored edge is worth walking first.
+                    if (d2 < bestGoal2 || (d2 == bestGoal2 && depth < bestDepth))
                     {
                         bestDepth = depth;
                         bestGoal2 = d2;

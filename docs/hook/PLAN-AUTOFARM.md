@@ -2215,3 +2215,32 @@ candidate in each room (`map 9`: 5 waypoints to (494.5,521.5), 2.2 units from th
 streamer is what must turn the placeholder into floor. **The next live run is the test**: `floor` and
 `edge` must move while the character is probing, and `(mapped)` must not appear on a room with an
 exit.
+
+### 16.1 The second live run: doorways did convert, and the probe order was wrong
+
+`20261020-224816-p12992` is Infested Cellar with the first boundary build in it. The operator's
+report is the screenshot at the intersection: *"It never progresses past the room with the
+intersection"* (the red enemy on the minimap is in another room, not the boss).
+
+The last window is a **1 108-cell component**, 0 unknown neighbours, 352 collision and 126 `NoWalk`,
+with zero other floor touching it. Over 6 239 frames the status moves floor **994 -> 1 139**, `edge`
+**102 -> 79**, plans **171 -> 348**, dead ends **25**, timeouts **6**, backtracks **15** -- and the
+position cycles between y ≈ 503-516 and y ≈ 530-550, visiting the intersection cell 63 times.
+
+The per-cell transition count is what rules out the streamer as the culprit: **601 cells went
+`2 -> 3`** (`NoWalk` -> floor) and **zero went `1 -> 3`** (collision -> floor) in that window. The
+doorways are placeholders and they do convert. Two things were wrong:
+
+1. **Boundary dwell was 30 frames.** The measured placeholder-to-floor delay is up to 70 frames
+   (§14.12), so the probe left before the tile arrived. It is now **75**.
+2. **The rankings pointed the wrong way.** Hard frontiers were nearest-by-path-depth, which
+   explored the whole south half before the boss side; boundaries were outside-floor-first, which
+   walked back to the spawn-room walls on every probe. Both are now **goal distance first**, with
+   path depth and the outside-floor signal as the tie-break/filter. A failed probe also spends its
+   neighbourhood (`BoundarySpendRadius` = 2), so a wall costs a few probes, not one per cell.
+
+The static replay of the latest map now moves toward the marker side (`map 11`: 4 waypoints east to
+(521.5,510.5)) instead of back to the spawn. The next run's `DUNGEON` line is the live test:
+`edge` must fall while `floor` grows through the doorway, and a probe that converts must produce a
+goal route. If `edge` reaches 0 with the boss unreachable, the component is genuinely sealed and the
+answer is §8.4's exit, not another probe.

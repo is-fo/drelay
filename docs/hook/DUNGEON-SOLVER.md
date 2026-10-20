@@ -107,9 +107,9 @@ direction when it runs out.
 streamer paints the whole window `NoWalk` before the real tiles arrive, so a room can have **zero
 unknown neighbours** and still have two doorways. A boundary is *a floor cell with a 4-neighbour that
 is a `ProvisionalWall`*. The search collects these too, and when no hard frontier is reachable the
-solver probes them. The ranking is the exit-corridor signal: a boundary cell within eight cells of a
-**disconnected floor patch** is probably a doorway placeholder with the corridor on the other side;
-goal distance is the tie-break and the fallback. See §8 for the measurement that forced this.
+solver probes them. The probe rank is **goal distance first**, and the exit-corridor signal (a
+disconnected floor patch within eight cells) filters candidates and breaks ties. §8 records why the
+order was reversed after the second live run.
 
 ---
 
@@ -152,7 +152,7 @@ A frontier leaves the committed state in exactly four ways, and each is counted 
 | the map **opened** at it | when it stops being a frontier, a floor neighbour other than the way in | `explored` |
 | the map **closed** at it | it stops being a frontier, but the only floor neighbour is the way in | `dead end` |
 | the character stood on it and nothing changed | `DwellFrames` (60) with no version growth | `dead end` |
-| a boundary probe revealed nothing | `BoundaryDwellFrames` (30) at a `NoWalk` edge with no growth | `dead end` |
+| a boundary probe revealed nothing | `BoundaryDwellFrames` (75) at a `NoWalk` edge with no growth; its nearby boundary cells are spent with it | `dead end` |
 | the character could not reach it | `ExploreTimeoutFrames` (300) | `timeout` |
 
 The second row is the distinction the old cache could not make: a stub whose end is painted `NoWalk`
@@ -296,38 +296,65 @@ Infested Cellar's east wall therefore retired the only signal that could find th
 
 **The fix, and why it is not a random wall sweep.** The search now also collects **boundary cells**:
 floor cells beside a `ProvisionalWall`. When no hard frontier is reachable, the solver probes one.
-The probe is ranked by the **disconnected floor** signal — the corridor on the other side of a
-doorway placeholder is already floor in the same window, so a boundary cell within 8 cells of a
-disconnected floor patch is a doorway far more often than it is rock. On the measured River Maze room
-the first candidate was **2.2 units** from the outside floor; the room's other walls were 5+ units
-from anything. The probe dwells `BoundaryDwellFrames` (30, half a second), then marks the cell
-`Tried` and takes the next candidate. If the door converts, `Observe` turns the placeholder into
-floor, the map connects, and the goal route takes over.
+The probe is ranked **goal distance first**, with the **disconnected floor** signal as a filter and
+tie-break — the corridor on the other side of a doorway placeholder is already floor in the same
+window. A probe dwells `BoundaryDwellFrames` (75), then marks itself `Tried`; if the door converts,
+`Observe` turns the placeholder into floor, the map connects, and the goal route takes over.
 
-The static trace replay now walks the first boundary candidate in each room:
+### 8.1 The second live run: the component was large, and the probe order was wrong
+
+`20261020-224816-p12992` is the Infested Cellar run the operator described as “never progresses past
+the room with the intersection”. It used the first boundary build (30-frame probe, outside-floor
+ranking). The last window:
+
+- player component: **1 108 floor cells**, bounds x 486–539, y 503–567
+- neighbours: **0 unknown**, 352 collision, 126 `NoWalk`, **0 other floor**
+- status over the segment: floor **994 → 1 139**, `edge` **102 → 79**, plans **171 → 348**,
+  dead ends **25**, timeouts **6**, backtracks **15**
+- position over 6 239 frames: a cycle between y ≈ 503–516 and y ≈ 530–550, 63 visits to the
+  intersection cell — not a dead end, but no progress either
+
+The per-cell transitions over that window are the important part: **601 cells went `2 -> 3`**
+(`NoWalk` placeholder → floor) and **zero went `1 -> 3`** (collision → floor). So the doorways are
+indeed `NoWalk` placeholders and they do convert; the streamer was working. The solver was not
+finishing the experiment: the measured placeholder-to-floor delay is up to **70 frames**, and the
+30-frame probe left before the tile arrived.
+
+Two selection defects made it worse:
+
+1. **The frontier rank was nearest-by-path-depth.** In a 1 108-cell component that explores the whole
+   south half first, then cycles. It is now **goal distance first**, path depth as the tie-break; the
+   commitment and tried set still prevent the old ping-pong.
+2. **The boundary rank was outside-floor first.** The strongest outside-floor patches were at the
+   spawn end, so every probe walked the character back north. The goal is now the primary rank and
+   the outside-floor signal the filter/tie-break.
+
+The probe also spends its **neighbourhood** on failure (`BoundarySpendRadius` = 2): if 75 frames at
+one boundary cell did not open the wall, the cell next to it is the same experiment.
+
+The static trace replay of the latest map now walks toward the goal side of the intersection instead
+of the spawn-room wall:
 
 ```
-dungeon (trace, map 9): ... 17 frontier, 78 edge, 6 waypoint ...
-    5 waypoint(s) walked from (514.5,511.5) to (494.5,521.5), 78.583 unit(s) from the goal (SHORT)
-dungeon (trace, map 5): ... 3 frontier, 395 edge, 19 waypoint ...
-   18 waypoint(s) walked from (514.5,500.5) to (539.5,578.5), 78.743 unit(s) from the goal (SHORT)
+dungeon (trace, map 11): ... 1 192 floor, 315 wall, 3 383 provisional, 0 frontier, 103 edge,
+    1 plan (0 goal), 5 waypoint ... 4 waypoint(s) walked from (512.5,510.5) to (521.5,510.5)
 ```
 
-The replay is static: the recorded map never gains the door cell, so it stops at the probe instead of
-walking through. What it proves is the selection — the character now walks *at* the exit-corridor
-boundary instead of refusing. The live streamer is what turns that placeholder into floor.
+The replay is static: the recorded map never gains the door cell, so it stops at the probe. What it
+shows is the direction — east/north toward the marker, not back to the spawn. The live streamer is
+what turns the probed placeholder into floor.
 
 **Offline fixture.** `D6` is the room made undeniable: all 2 500 cells of the window pre-painted
 `NoWalk`, a ten-by-ten floor room, two exits whose door cells are placeholders, and a reveal function
 that turns a door into floor when the character stands near it. The goal is south; the east exit is a
-decoy. The check passes, and it fails on the previous build at the first `TryWaypoint`.
+decoy. The check passes, and it fails on the pre-boundary build at the first `TryWaypoint`.
 
 **Report line change.** `Status()` now carries `edge` beside `frontier`. `edge` is the number of
 unspent boundary cells: a non-zero `edge` on a run that reports `(mapped)` is no longer possible, and
 a run whose `floor` and `edge` both stop changing is the one that is genuinely finished. The live
-line now reads, e.g. `... 17 frontier, 78 edge ...`.
+line reads, e.g. `... 0 frontier, 79 edge ...` while the room is still being probed.
 
-**Still not verified live.** Whether the streamer converts the probed placeholder within the half
-second, and whether the exit-corridor ranking picks the right wall in a room with two real exits, are
-the next session's `DUNGEON` line. The evidence that the selection is pointed at the right place is
-the trace replay above; the evidence that the door opens is the live run after this build.
+**What the next run must show.** `edge` falling while `floor` grows at the doorways; a probe that
+converts should open a route to the marker. If `edge` falls to 0 with the boss still unreachable, the
+component really is sealed and the answer is the exit decision (§8.4), not another probe. If it still
+cycles between the same two ends, the line's `dead end` and `backtrack` counts will say so.

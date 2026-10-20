@@ -105,12 +105,20 @@ namespace Drelay.Bootstrap
         private const int DwellFrames = 60;
 
         /// <summary>
-        /// Frames the character stands on a BOUNDARY probe. Half a second, not one: the boundary
-        /// test is a place where a doorway may be a placeholder, and there can be dozens of them
-        /// around a room. A probe that has not revealed anything in half a second is marked tried and
-        /// the next one -- ranked by the exit-corridor signal in `ChooseBoundary` -- is walked.
+        /// Frames the character stands on a BOUNDARY probe. One and a quarter seconds, not half:
+        /// the measured streamer delay for a placeholder that becomes floor is up to seventy frames
+        /// (`PLAN-AUTOFARM.md` section 14.12), and the 30-frame probe was leaving before the tile
+        /// arrived. A failed probe is then spent with its neighbours; see `BoundarySpendRadius`.
         /// </summary>
-        private const int BoundaryDwellFrames = 30;
+        private const int BoundaryDwellFrames = 75;
+
+        /// <summary>
+        /// Boundary cells this close to a failed probe are spent with it. The streamer paints a
+        /// neighbourhood, so if standing at one cell for a full dwell did not open the wall, probing
+        /// the cell next to it is the same experiment again. This is what keeps a room's whole wall
+        /// from costing one probe per cell.
+        /// </summary>
+        private const int BoundarySpendRadius = 2;
 
         /// <summary>
         /// Frames a frontier may be walked toward before it is abandoned as unreachable. Five
@@ -506,7 +514,7 @@ namespace Drelay.Bootstrap
                     }
                     else
                     {
-                        Map.MarkTried(target);
+                        SpendBoundary(target);
                         _deadEnds++;
                         _spentNode = target;
                         FinishExplore(false);
@@ -515,10 +523,27 @@ namespace Drelay.Bootstrap
             }
             else if (_frames - _exploreStartFrame >= ExploreTimeoutFrames)
             {
-                Map.MarkTried(target);
+                SpendBoundary(target);
                 _timeouts++;
                 _spentNode = target;
                 FinishExplore(false);
+            }
+        }
+
+        /// <summary>
+        /// Spends a failed probe. A boundary probe is a neighbourhood experiment, so its nearby
+        /// boundary cells are spent with it; a hard frontier is a single specific hole and is spent
+        /// alone.
+        /// </summary>
+        private void SpendBoundary(int target)
+        {
+            if (_committedBoundary)
+            {
+                Map.MarkTriedAround(target, BoundarySpendRadius);
+            }
+            else
+            {
+                Map.MarkTried(target);
             }
         }
 
@@ -687,9 +712,13 @@ namespace Drelay.Bootstrap
                 }
                 float goal2 = Map.DistanceSquared(index, goalX, goalY);
                 float outside = NearestDisconnectedFloor(index);
-                // A disconnected floor patch dominates the ranking; the goal is the tie-break and
-                // the fallback when the window shows none.
-                float score = outside >= 0.0f ? (outside * 10000.0f) + goal2 : 1000000000.0f + goal2;
+                // THE GOAL COMES FIRST, THE EXIT-CORRIDOR SIGNAL SECOND. In the live Infested
+                // Cellar the outside-floor signal was strongest at the spawn-room end, so a
+                // boundary ranking that led with it walked the character back north every time
+                // while the boss was east and the unexplored route was elsewhere. The signal still
+                // matters -- a boundary with a disconnected floor patch on its far side is a
+                // doorway -- but it now filters candidates instead of overriding the direction.
+                float score = goal2 + (outside >= 0.0f ? 0.0f : 1000000000.0f);
                 if (score < bestScore || (score == bestScore && goal2 < bestGoal))
                 {
                     bestScore = score;
