@@ -24,6 +24,8 @@ DodgeAdapter.FillSnapshot (every frame, farm run, quest goal, planner blind)
     └─ DungeonSolver.TryWaypoint(player, goal, out waypoint)
          ├─ goal is reachable over known floor?  -> route to it
          ├─ a reachable floor cell is within 3   -> route to that (marker on a wall/occupied tile)
+         ├─ optimistic A*: cross NoWalk placeholders toward the goal -> walk to the first wall
+         │     └─ tile converts? continue : mark that wall blocked and recompute
          ├─ a hard frontier (floor beside unknown) exists -> committed frontier walk
          └─ otherwise                            -> boundary probe (floor beside a NoWalk wall)
     └─ snapshot.GoalX/Y = waypoint; GoalKeepWalking = true
@@ -113,6 +115,15 @@ wall**: the next probe is the nearest unspent boundary cell to the player, with 
 tie-break. That is what turns a room's boundary from N independent cross-room walks into one
 perimeter pass. §8 records the live measurements behind the order.
 
+**Optimistic planning is the mouse's move.** Before any frontier or boundary walk, the solver runs
+A* over `Floor` plus `ProvisionalWall`, with a provisional cell costing `ProvisionalCost` (40)
+instead of being impassable. The search returns the first provisional wall on the shortest route to
+the goal and the floor cell just before it. The character walks to that cell and waits: if the tile
+converts, the route opens; if not, that wall cell is marked **blocked** and the search runs again
+around it. Hard walls and unknown cells are never traversed. This is what makes the boss known
+position actually drive the route, instead of the solver sweeping every wall in the room; see §8.3
+for the live run that forced it.
+
 ---
 
 ## 3. `DungeonSolver` — the state machine
@@ -156,6 +167,10 @@ A frontier leaves the committed state in exactly four ways, and each is counted 
 | the character stood on it and nothing changed | `DwellFrames` (60) with no version growth | `dead end` |
 | a boundary probe revealed nothing | `BoundaryDwellFrames` (75) at a `NoWalk` edge with no growth; its nearby boundary cells are spent with it | `dead end` |
 | the character could not reach it | `ExploreTimeoutFrames` (300) | `timeout` |
+| an optimistic wall did not convert | 75 frames at the floor cell before it; the wall cell is `MarkBlocked` | `dead end` |
+
+A blocked wall is not a `Tried` cell: it is a wall the mouse has bumped into. A later floor
+observation clears the block, so a slow streamer can still turn it into a doorway.
 
 The second row is the distinction the old cache could not make: a stub whose end is painted `NoWalk`
 is *closed*, not *explored*. It is marked `Tried`, and `Tried` cells are never chosen as a frontier
@@ -225,6 +240,7 @@ They run on **every** `SolverHarness` invocation, including the short run in
 | D4 | a room with one entrance is left through that entrance and the goal beyond its wall is reached. | PASS: left the room, goal in 88 frames |
 | D5 | state is per map: a new array starts empty, an empty map refuses rather than inventing a route, counters survive a rebind, `Reset` clears everything. | PASS |
 | D6 | a room whose entire boundary is a `NoWalk` placeholder, with two doorways left as placeholders, is probed at the boundary, the door converts, and the goal beyond is reached. | PASS: boundary probe and arrival |
+| D7 | a REAL `NoWalk` wall on the direct goal line is planned through optimistically, bumped, blocked, and the route recomputed around it through a placeholder door. | PASS: all 10 wall rows blocked, goal reached, first waypoint east |
 
 The trace replay (`--trace <run>/trace.jsonl --goal X,Y [--map N]`) now feeds recorded `src` windows
 into `DungeonMap` and walks the result. It prints the measurement (`dungeon (trace, map N): ...`) and
@@ -387,3 +403,34 @@ it. A perimeter pass is the cheapest way to do that.
 
 **The next run's measurement** is the same `DUNGEON` line: for the same room, the frames per probe
 should collapse and `edge` should fall without the position cycling between the room's two ends.
+
+### 8.3 The fourth live run: the optimistic planner
+
+`20261020-233845-p12720` is the run the operator called *"painfully slow"*: one Infested Cellar
+from frame 2 885 to 16 535. The status tells the whole story:
+
+- floor grows 1 047 -> 1 682 by about frame 4 002, then sits at **1 682 for roughly 7 000 frames**;
+- `edge` falls 99 -> 33, plans rise 18 -> 333, dead ends 18, timeouts 14;
+- the first goal plan does not appear until frame **11 602** -- roughly 8 700 frames after entry.
+
+The exact search can only answer "is there a way over floor?"; when the boss is across a doorway
+placeholder the answer is no, so every frame went to a frontier or a boundary probe. The boss's
+position was known the whole time; **the route was not**, because the map deliberately refuses to
+route over `NoWalk`.
+
+The fix is the optimistic A* above. It treats `NoWalk` as a possible doorway at cost 40, finds the
+shortest route toward the boss, and returns the first wall on it. The character walks to that wall;
+the tile either converts (route continues) or the wall is blocked and the next route goes around.
+That is the loop a maze-solving mouse runs, and it uses the boss position as the objective rather
+than a tie-break.
+
+`D7` is the offline proof: a real wall straight east of the player and a doorway south. The first
+waypoint is **east** (18.5, 13.5), all **10 wall rows are blocked**, the route re-plans through the
+south door, and the goal is reached in 1 052 frames. Without optimistic planning this is a perimeter
+sweep; without blocking the wall the same cell is retried for ever.
+
+**What the next run must show.** The `DUNGEON` line's `dead end` will rise in bursts as real walls
+are bumped, and `floor` should grow shortly after each burst as a doorway converts. The time spent
+near the spawn room should no longer be dominated by walking its perimeter. If a boss is behind a
+**collision** wall (not a placeholder), no amount of proximity will open it; the line will show
+blocked walls with no floor growth, and the answer is the exit decision, not another probe.

@@ -124,6 +124,22 @@ namespace Drelay.Bootstrap
         private int[] _queue;
         private int[] _path = new int[0];
 
+        // --- The optimistic search's scratch -------------------------------------------------
+        //
+        // `_blocked` is the mouse's memory of a wall it has bumped into: a provisional cell the
+        // character walked up to and the tile did NOT convert. It is separate from `_cells` because
+        // a `NoWalk` cell is still provisional -- the streamer may paint it floor later, and
+        // `Observe` clears the block when it does. The g/stamp arrays and the binary heap are the
+        // A* over Floor + provisional cells; see `SearchOptimistic`.
+        private byte[] _blocked;
+        private int[] _g;
+        private int[] _gStamp;
+        private int _searchStamp;
+        private int[] _heapNode;
+        private int[] _heapCost;
+        private int[] _heapScore;
+        private int _heapCount;
+
         /// <summary>Nodes in <see cref="_path"/> after the last <see cref="BuildPath"/>, player first.</summary>
         public int PathCount { get; private set; }
 
@@ -184,6 +200,16 @@ namespace Drelay.Bootstrap
             _seen = new byte[cells];
             _parent = new int[cells];
             _depth = new int[cells];
+            _blocked = new byte[cells];
+            _g = new int[cells];
+            _gStamp = new int[cells];
+            // The optimistic search can push a node more than once (a cheaper route found later);
+            // four entries per expanded node is generous and bounds the heap at the budget's order.
+            int heap = Math.Min(cells, DungeonSolver.PlanNodeBudget * 4);
+            _heapNode = new int[heap];
+            _heapCost = new int[heap];
+            _heapScore = new int[heap];
+            _heapCount = 0;
             // The queue is bounded by the node budget, not by the map: a search that expands more
             // than the budget stops with the best frontier it found, and a queue the size of the
             // map would be another 8 MB at the cap for no benefit.
@@ -210,6 +236,10 @@ namespace Drelay.Bootstrap
             }
             Array.Clear(_cells, 0, _cells.Length);
             Array.Clear(_tried, 0, _tried.Length);
+            if (_blocked != null)
+            {
+                Array.Clear(_blocked, 0, _blocked.Length);
+            }
             PathCount = 0;
             BoundaryCount = 0;
             FloorCells = 0;
@@ -229,6 +259,13 @@ namespace Drelay.Bootstrap
             _parent = null;
             _depth = null;
             _queue = null;
+            _blocked = null;
+            _g = null;
+            _gStamp = null;
+            _heapNode = null;
+            _heapCost = null;
+            _heapScore = null;
+            _heapCount = 0;
             _path = new int[0];
             PathCount = 0;
             BoundaryCount = 0;
@@ -251,6 +288,13 @@ namespace Drelay.Bootstrap
             _parent = null;
             _depth = null;
             _queue = null;
+            _blocked = null;
+            _g = null;
+            _gStamp = null;
+            _heapNode = null;
+            _heapCost = null;
+            _heapScore = null;
+            _heapCount = 0;
             _path = new int[0];
             PathCount = 0;
             BoundaryCount = 0;
@@ -312,6 +356,12 @@ namespace Drelay.Bootstrap
                 return;
             }
             int index = (y * Width) + x;
+            if (source == SourceFloor && _blocked != null)
+            {
+                // THE TILE ARRIVED AFTER ALL. A blocked provisional wall is the mouse's memory of a
+                // bump; a real floor observation is newer evidence and clears it.
+                _blocked[index] = 0;
+            }
             byte prior = _cells[index];
             if (prior == Floor || prior == Wall)
             {
@@ -412,6 +462,268 @@ namespace Drelay.Bootstrap
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// The mouse's memory of a wall it has bumped into: a provisional cell the solver walked up
+        /// to and the streamer did not turn into floor. The optimistic search treats it as solid;
+        /// a later floor observation clears it in <see cref="Observe"/>.
+        /// </summary>
+        public void MarkBlocked(int index)
+        {
+            if (!Available || _blocked == null || index < 0 || index >= _blocked.Length)
+            {
+                return;
+            }
+            _blocked[index] = 1;
+        }
+
+        public bool IsBlocked(int index)
+        {
+            return Available && _blocked != null && index >= 0 && index < _blocked.Length
+                   && _blocked[index] != 0;
+        }
+
+        /// <summary>
+        /// The goal-directed optimistic search: A* over FLOOR cells plus PROVISIONAL `NoWalk`
+        /// cells, where a provisional cell costs `ProvisionalCost` instead of being impassable.
+        ///
+        /// THIS IS THE DIFFERENCE BETWEEN A MOUSE AND A WALL SWEEP. The exact search in
+        /// <see cref="Search"/> can only answer "is there a way over floor?", and in a streaming
+        /// dungeon the answer before a doorway resolves is no -- so the solver used to probe the
+        /// whole boundary. This search assumes the placeholder MIGHT be a doorway, walks the
+        /// shortest route toward the boss, and returns the FIRST provisional cell on that route
+        /// together with the floor cell just before it. The character walks to that floor cell and
+        /// waits; if the tile converts, the route opens; if it does not, the caller marks the cell
+        /// blocked and the route is recomputed around it. That is exactly the loop a mouse runs.
+        ///
+        /// Hard walls and unknown cells are never traversed. Only a `NoWalk` placeholder is
+        /// optimistic, because that is the state the streamer uses for a cell it has not painted.
+        /// </summary>
+        public bool SearchOptimistic(int startX, int startY, float goalX, float goalY,
+                                     int nodeBudget, out int approach, out int wall)
+        {
+            approach = -1;
+            wall = -1;
+            if (!Available || _cells == null || _heapNode == null)
+            {
+                return false;
+            }
+            if (startX < 0 || startY < 0 || startX >= Width || startY >= Height)
+            {
+                return false;
+            }
+            int start = (startY * Width) + startX;
+            if (_cells[start] != Floor)
+            {
+                return false;
+            }
+
+            _searchStamp++;
+            if (_searchStamp == int.MaxValue)
+            {
+                Array.Clear(_gStamp, 0, _gStamp.Length);
+                _searchStamp = 1;
+            }
+            int stamp = _searchStamp;
+            _heapCount = 0;
+
+            int goalCellX = (int)goalX;
+            int goalCellY = (int)goalY;
+            bool goalInside = goalCellX >= 0 && goalCellY >= 0
+                              && goalCellX < Width && goalCellY < Height;
+            int goalIndex = goalInside ? (goalCellY * Width) + goalCellX : -1;
+
+            _seenGeneration++;
+            if (_seenGeneration == 0)
+            {
+                Array.Clear(_seen, 0, _seen.Length);
+                _seenGeneration = 1;
+            }
+
+            _g[start] = 0;
+            _gStamp[start] = stamp;
+            _parent[start] = -1;
+            _depth[start] = 0;
+            _seen[start] = _seenGeneration;
+            HeapPush(start, 0, Heuristic(startX, startY, goalX, goalY));
+
+            int best = start;
+            float bestDistance = DistanceSquared(start, goalX, goalY);
+            int bestCost = 0;
+            int expanded = 0;
+            int budget = nodeBudget < 0 ? 0 : nodeBudget;
+
+            while (_heapCount > 0 && expanded < budget)
+            {
+                int cost;
+                int node;
+                if (!HeapPop(out node, out cost))
+                {
+                    continue;
+                }
+                if (_gStamp[node] != stamp || cost != _g[node])
+                {
+                    continue;   // a stale entry from before a cheaper route was found
+                }
+                expanded++;
+                float d2 = DistanceSquared(node, goalX, goalY);
+                if (d2 < bestDistance || (d2 == bestDistance && cost < bestCost))
+                {
+                    bestDistance = d2;
+                    bestCost = cost;
+                    best = node;
+                }
+                if (node == goalIndex && goalInside)
+                {
+                    best = node;
+                    break;
+                }
+
+                int cx = node % Width;
+                int cy = node / Width;
+                for (int d = 0; d < 4; d++)
+                {
+                    int nx;
+                    int ny;
+                    if (d == 0) { nx = cx + 1; ny = cy; }
+                    else if (d == 1) { nx = cx - 1; ny = cy; }
+                    else if (d == 2) { nx = cx; ny = cy + 1; }
+                    else { nx = cx; ny = cy - 1; }
+                    if (nx < 0 || ny < 0 || nx >= Width || ny >= Height)
+                    {
+                        continue;
+                    }
+                    int n = (ny * Width) + nx;
+                    byte kind = _cells[n];
+                    int step;
+                    if (kind == Floor)
+                    {
+                        step = 1;
+                    }
+                    else if (kind == ProvisionalWall && !IsBlocked(n))
+                    {
+                        step = ProvisionalCost;
+                    }
+                    else
+                    {
+                        continue;
+                    }
+                    int next = cost + step;
+                    if (_gStamp[n] != stamp || next < _g[n])
+                    {
+                        _gStamp[n] = stamp;
+                        _g[n] = next;
+                        _parent[n] = node;
+                        _depth[n] = _depth[node] + 1;
+                        _seen[n] = _seenGeneration;
+                        HeapPush(n, next, next + Heuristic(nx, ny, goalX, goalY));
+                    }
+                }
+            }
+
+            if (best < 0)
+            {
+                return false;
+            }
+            int count = BuildPath(best);
+            if (count <= 0)
+            {
+                return false;
+            }
+            // The first non-floor node on the route is the wall to test; the floor node before it
+            // is where the character can stand and let the streamer paint.
+            for (int i = 1; i < count; i++)
+            {
+                int node = _path[i];
+                if (_cells[node] != Floor)
+                {
+                    approach = _path[i - 1];
+                    wall = node;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// A `NoWalk` placeholder is worth trying, but at a high price: the search should follow
+        /// known floor around a wall when a detour exists, and only cut through the placeholder when
+        /// the detour is much longer. That keeps the optimistic route a mouse's plan rather than a
+        /// wall-cutting shortcut, and each wall it does test is a real doorway candidate.
+        /// </summary>
+        public const int ProvisionalCost = 40;
+
+        private int Heuristic(int x, int y, float goalX, float goalY)
+        {
+            return Math.Abs(x - (int)goalX) + Math.Abs(y - (int)goalY);
+        }
+
+        private void HeapPush(int node, int cost, int score)
+        {
+            if (_heapCount >= _heapNode.Length)
+            {
+                return;
+            }
+            int i = _heapCount++;
+            _heapNode[i] = node;
+            _heapCost[i] = cost;
+            _heapScore[i] = score;
+            while (i > 0)
+            {
+                int parent = (i - 1) >> 1;
+                if (_heapScore[parent] <= _heapScore[i])
+                {
+                    break;
+                }
+                SwapHeap(parent, i);
+                i = parent;
+            }
+        }
+
+        private bool HeapPop(out int node, out int cost)
+        {
+            node = -1;
+            cost = 0;
+            if (_heapCount <= 0)
+            {
+                return false;
+            }
+            node = _heapNode[0];
+            cost = _heapCost[0];
+            _heapCount--;
+            if (_heapCount > 0)
+            {
+                _heapNode[0] = _heapNode[_heapCount];
+                _heapCost[0] = _heapCost[_heapCount];
+                _heapScore[0] = _heapScore[_heapCount];
+                int i = 0;
+                while (true)
+                {
+                    int left = (i << 1) + 1;
+                    if (left >= _heapCount)
+                    {
+                        break;
+                    }
+                    int right = left + 1;
+                    int small = right < _heapCount && _heapScore[right] < _heapScore[left]
+                        ? right : left;
+                    if (_heapScore[i] <= _heapScore[small])
+                    {
+                        break;
+                    }
+                    SwapHeap(i, small);
+                    i = small;
+                }
+            }
+            return true;
+        }
+
+        private void SwapHeap(int a, int b)
+        {
+            int node = _heapNode[a]; _heapNode[a] = _heapNode[b]; _heapNode[b] = node;
+            int cost = _heapCost[a]; _heapCost[a] = _heapCost[b]; _heapCost[b] = cost;
+            int score = _heapScore[a]; _heapScore[a] = _heapScore[b]; _heapScore[b] = score;
         }
 
         /// <summary>True when this floor cell has a 4-neighbour that has never been painted.</summary>

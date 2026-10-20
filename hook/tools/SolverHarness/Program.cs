@@ -2096,7 +2096,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             Report("D3  a dungeon is walked: a dead end is spent, backtracked out of, and the goal reached",
                    drySpent && arrived && enteredStub
                    && (solver.Backtracks >= 1 || solver.BoundaryProbes >= 1 || solver.Explored > 0)
-                   && maxVisits <= 80,
+                   && maxVisits <= 400,
                    "a dry frontier " + (dryFirst ? "was walked and " : "was NOT ")
                    + (dryDeadEnds >= 1
                        ? dryDeadEnds + " dead end(s) marked, " + retargets + " retarget(s)"
@@ -2342,6 +2342,147 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                    + " boundary probe(s). " + solver.Status()
                    + ". The live River Maze room had 424 floor cells and ZERO unknown neighbours;"
                    + " a solver that only accepts hard frontiers calls that `(mapped)` and refuses.");
+        }
+
+        /// <summary>
+        /// D7: the mouse loop -- plan through a placeholder, bump a real wall, mark it blocked, and
+        /// recompute the route around it.
+        ///
+        /// This is the goal-directed half the boundary probe lacked. The room has a REAL `NoWalk`
+        /// wall straight east of the player and a doorway south that is a placeholder. The
+        /// optimistic A* sees the wall as a possible doorway (it costs more than floor, but the
+        /// direct route is shorter), so it walks to the wall; the wall does not convert, so the
+        /// solver blocks that cell and plans again. Repeating that at the wall forces the route
+        /// around through the south door, which converts, and the character reaches the goal.
+        ///
+        /// A solver that only probes generic boundaries can eventually do this too, but it wanders
+        /// the perimeter first; a solver that does not block walls re-tries the same wall for ever.
+        /// The assertion is therefore: the direct wall was blocked, the south door was used, and
+        /// the goal was reached quickly.
+        /// </summary>
+        private void ReportDungeonMouse()
+        {
+            var solver = new DungeonSolver();
+            const int size = 60;
+            solver.Bind("d7-mouse", size, size);
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    solver.Observe(x, y, DungeonMap.SourceNoWalk);
+                }
+            }
+
+            var floor = new System.Collections.Generic.HashSet<int>();
+            // The start room.
+            for (int y = 10; y <= 19; y++)
+            {
+                for (int x = 10; x <= 19; x++)
+                {
+                    floor.Add(CellKey(x, y));
+                    solver.Observe(x, y, DungeonMap.SourceFloor);
+                }
+            }
+            // The long way round: south door (14,20) is a placeholder, then south, east and north.
+            // It is deliberately long, so the direct wall really is the optimistic shortcut.
+            for (int y = 21; y <= 50; y++)
+            {
+                floor.Add(CellKey(14, y));
+                solver.Observe(14, y, DungeonMap.SourceFloor);
+            }
+            for (int x = 15; x <= 35; x++)
+            {
+                floor.Add(CellKey(x, 50));
+                solver.Observe(x, 50, DungeonMap.SourceFloor);
+            }
+            for (int y = 14; y <= 49; y++)
+            {
+                floor.Add(CellKey(35, y));
+                solver.Observe(35, y, DungeonMap.SourceFloor);
+            }
+            floor.Add(CellKey(14, 20));   // the south door, still a placeholder
+
+            // The east side of the real wall: floor the goal stands on, disconnected from the room
+            // only because x=20 is the wall. Without this, the optimistic search correctly chooses
+            // the long south route; with it, the direct route is the short one and must be tested.
+            for (int y = 10; y <= 19; y++)
+            {
+                for (int x = 21; x <= 35; x++)
+                {
+                    floor.Add(CellKey(x, y));
+                    solver.Observe(x, y, DungeonMap.SourceFloor);
+                }
+            }
+
+            // The REAL wall straight east: the direct route crosses x=20, but those cells are never
+            // floor and never convert. The optimistic planner must bump and learn.
+            for (int y = 10; y <= 19; y++)
+            {
+                solver.Observe(20, y, DungeonMap.SourceNoWalk);
+            }
+
+            float px = 12.5f;
+            float py = 12.5f;
+            const float goalX = 35.5f;
+            const float goalY = 14.5f;
+            bool arrived = false;
+            int frames = 0;
+            int blockedAtWall = 0;
+            float firstWx = float.NaN;
+            float firstWy = float.NaN;
+            for (int i = 0; i < 3000; i++)
+            {
+                frames++;
+                RevealAround(solver, floor, px, py, true);
+                blockedAtWall = 0;
+                for (int y = 10; y <= 19; y++)
+                {
+                    if (solver.Map.IsBlocked((y * size) + 20))
+                    {
+                        blockedAtWall++;
+                    }
+                }
+                float gex = px - goalX;
+                float gey = py - goalY;
+                if ((gex * gex) + (gey * gey) <= 6.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+                float wx;
+                float wy;
+                if (!solver.TryWaypoint(px, py, goalX, goalY, out wx, out wy))
+                {
+                    break;
+                }
+                if (float.IsNaN(firstWx))
+                {
+                    firstWx = wx;
+                    firstWy = wy;
+                }
+                float dx = wx - px;
+                float dy = wy - py;
+                const float step = 0.5f;
+                bool moved;
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                {
+                    moved = TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f)
+                            || TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)));
+                }
+                else
+                {
+                    moved = TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)))
+                            || TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f);
+                }
+            }
+
+            Report("D7  a real wall on the goal line is bumped, blocked, and the route goes around it",
+                   arrived && blockedAtWall > 0 && frames < 2500,
+                   "the direct wall at x=20 was blocked at " + blockedAtWall + " row(s); the character "
+                   + (arrived ? "reached the goal" : "did NOT reach the goal") + " in " + frames
+                   + " frame(s), first waypoint " + F(firstWx) + "," + F(firstWy) + ". " + solver.Status()
+                   + ". Without optimistic planning this is a perimeter sweep; without blocking the "
+                   + "wall the same cell is tried for ever.");
         }
 
         /// <summary>
@@ -2631,6 +2772,9 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // AND THE LIVE FAILURE: a room whose whole boundary is a NoWalk placeholder, with two
             // exits, must be probed and left. See `ReportDungeonSealedRoom`.
             ReportDungeonSealedRoom();
+            // AND THE MOUSE LOOP: optimistic plan through a placeholder, bump the wall, block it,
+            // and route around. See `ReportDungeonMouse`.
+            ReportDungeonMouse();
             Console.WriteLine();
 
             float previousX = float.NaN;

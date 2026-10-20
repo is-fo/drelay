@@ -75,6 +75,13 @@ namespace Drelay.Bootstrap
         /// <summary>Nodes the breadth-first walk may expand in one plan. Bounds the frame cost.</summary>
         public const int PlanNodeBudget = 40000;
 
+        /// <summary>
+        /// Nodes the optimistic A* may expand. Halved from the exact search's budget because every
+        /// node also pays a heap operation; 20 000 is more than a dungeon's reachable ring needs and
+        /// keeps a plan inside the frame budget when the map is large.
+        /// </summary>
+        public const int OptimisticNodeBudget = 20000;
+
         /// <summary>How far along the route the published waypoint sits, in world units.</summary>
         private const float WaypointAhead = 6.0f;
 
@@ -167,6 +174,14 @@ namespace Drelay.Bootstrap
         /// still goal-directed; after that, locality wins and the goal is the tie-break.
         /// </summary>
         private int _lastProbe = -1;
+
+        /// <summary>
+        /// The first provisional wall on the optimistic route to the goal, or -1. The character
+        /// walks to <see cref="_committed"/> (the floor cell before it) and waits: a floor
+        /// observation clears the pending state and the route continues; a dry dwell marks the wall
+        /// blocked and the optimistic route is recomputed around it.
+        /// </summary>
+        private int _pendingWall = -1;
 
         /// <summary>
         /// The breadth-first parent of the committed frontier: the cell the route came through.
@@ -286,6 +301,7 @@ namespace Drelay.Bootstrap
             _committedParent = -1;
             _committedBoundary = false;
             _lastProbe = -1;
+            _pendingWall = -1;
             _exploreStartFrame = 0;
             _dwellStartFrame = 0;
             _dwellVersion = 0;
@@ -304,6 +320,9 @@ namespace Drelay.Bootstrap
             _target = -1;
             _committed = -1;
             _committedParent = -1;
+            _committedBoundary = false;
+            _lastProbe = -1;
+            _pendingWall = -1;
             _planFrame = 0;
             _frames = 0;
             _exploreStartFrame = 0;
@@ -480,6 +499,14 @@ namespace Drelay.Bootstrap
                 return;
             }
             int target = _committed;
+            if (_pendingWall >= 0 && Map.KindAt(_pendingWall) == DungeonMap.Floor)
+            {
+                // THE WALL WAS A DOORWAY. The tile arrived while the character approached; drop the
+                // pending probe and let the next plan route through the new floor.
+                _pendingWall = -1;
+                FinishExplore(true);
+                return;
+            }
             if (Map.KindAt(target) != DungeonMap.Floor)
             {
                 // A floor cell is never downgraded, so this is only reachable if the map was rebound
@@ -524,6 +551,11 @@ namespace Drelay.Bootstrap
                     }
                     else
                     {
+                        if (_pendingWall >= 0)
+                        {
+                            Map.MarkBlocked(_pendingWall);
+                            _pendingWall = -1;
+                        }
                         SpendBoundary(target);
                         _deadEnds++;
                         _spentNode = target;
@@ -533,6 +565,11 @@ namespace Drelay.Bootstrap
             }
             else if (_frames - _exploreStartFrame >= ExploreTimeoutFrames)
             {
+                if (_pendingWall >= 0)
+                {
+                    Map.MarkBlocked(_pendingWall);
+                    _pendingWall = -1;
+                }
                 SpendBoundary(target);
                 _timeouts++;
                 _spentNode = target;
@@ -566,6 +603,7 @@ namespace Drelay.Bootstrap
             _committed = -1;
             _committedParent = -1;
             _committedBoundary = false;
+            _pendingWall = -1;
             _target = -1;
             _mode = ModeNone;
             _pathCount = 0;
@@ -632,6 +670,38 @@ namespace Drelay.Bootstrap
                 // tile; the route is to the floor within reach of it, and the existing arrival policy
                 // covers the last few units.
                 return StartGoalRoute(search.NearestGoalNode, goalX, goalY, playerCellX, playerCellY);
+            }
+
+            // THE MOUSE'S MOVE: PLAN THROUGH THE PLACEHOLDER TOWARD THE GOAL. The exact search has
+            // said there is no floor route; this search treats `NoWalk` as a possible doorway and
+            // returns the first one on the shortest route. The character walks to the floor cell
+            // before it and waits. A conversion opens the route; a dry dwell blocks that wall and
+            // the next plan goes around it.
+            if (_committed < 0)
+            {
+                int approach;
+                int wall;
+                if (Map.SearchOptimistic(playerCellX, playerCellY, goalX, goalY,
+                                         OptimisticNodeBudget, out approach, out wall))
+                {
+                    _committed = approach;
+                    _pendingWall = wall;
+                    _committedBoundary = true;
+                    _lastProbe = approach;
+                    _exploreStartFrame = _frames;
+                    _dwellStartFrame = 0;
+                    _boundaryProbes++;
+                    _mode = ModeExplore;
+                    _target = approach;
+                    _mapped = false;
+                    if (!SetPath(approach))
+                    {
+                        FinishExplore(false);
+                        return false;
+                    }
+                    _committedParent = Map.ParentOf(approach);
+                    return true;
+                }
             }
 
             // THE GOAL IS NOT CONNECTED TO THE KNOWN FLOOR. Explore, committing to a frontier.
@@ -803,6 +873,7 @@ namespace Drelay.Bootstrap
             _committedParent = -1;
             _committedBoundary = false;
             _lastProbe = -1;
+            _pendingWall = -1;
             _exploreStartFrame = 0;
             _dwellStartFrame = 0;
             _dwellVersion = 0;

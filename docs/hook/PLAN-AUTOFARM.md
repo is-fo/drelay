@@ -2272,3 +2272,30 @@ probes rather than one per cell. The transient answer to the operator's question
 map only arrives near the character** -- `GmTiles` streams and `NoWalk` is the placeholder for
 "not yet sent" -- but the solver does not need to *collide* with a wall; it needs to be near it, and
 a perimeter pass is the cheapest way to be near all of it.
+
+### 16.3 The fourth live run: optimistic planning through the placeholders
+
+`20261020-233845-p12720` is the Infested Cellar the operator called *"painfully slow"*. Floor grows
+1 047 -> 1 682 by about frame 4 002, then stays at **1 682 for roughly 7 000 frames**; the first goal
+plan appears at frame **11 602**, about 8 700 frames after entry. `edge` falls 99 -> 33 and plans
+rise 18 -> 333.
+
+The cause is structural: the exact search only traverses `Floor`, so when the boss is across a
+`NoWalk` doorway the map has no route and the solver falls back to per-wall probes. The boss
+position was known; the route was not.
+
+The fix is a goal-directed **optimistic A*** (`DungeonMap.SearchOptimistic`): it traverses `Floor`
+normally and `ProvisionalWall` at cost 40, returns the **first provisional wall on the shortest route
+to the boss**, and the character walks to the floor cell before it. If the tile converts, the route
+opens; if it does not, that wall is `MarkBlocked` and the search recomputes around it. Hard walls and
+unknown cells are never traversed. This is the mouse loop, and it replaces "sweep the room" with
+"walk at the boss and learn the wall that blocks you".
+
+`D7` is the offline fixture: a real `NoWalk` wall straight east, a placeholder door south. The first
+waypoint is east, all 10 wall rows are blocked, the route re-plans through the south door, and the
+goal is reached in 1 052 frames. `D1`-`D7` and `Test-HookOffline.ps1` (9/9) pass.
+
+**The next live `DUNGEON` line is the test**: `dead end` rising in bursts as real walls are bumped,
+`floor` growing after a burst as a doorway converts, and much less time spent walking the spawn
+room's perimeter. If `floor` stays flat while walls are blocked, the blocking wall is collision (not
+a placeholder) and the answer is the exit decision, not another probe.
