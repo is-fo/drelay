@@ -2235,12 +2235,40 @@ doorways are placeholders and they do convert. Two things were wrong:
    (§14.12), so the probe left before the tile arrived. It is now **75**.
 2. **The rankings pointed the wrong way.** Hard frontiers were nearest-by-path-depth, which
    explored the whole south half before the boss side; boundaries were outside-floor-first, which
-   walked back to the spawn-room walls on every probe. Both are now **goal distance first**, with
-   path depth and the outside-floor signal as the tie-break/filter. A failed probe also spends its
-   neighbourhood (`BoundarySpendRadius` = 2), so a wall costs a few probes, not one per cell.
+   walked back to the spawn-room walls on every probe. Frontiers are now **goal distance first**.
+   The first boundary probe is goal-directed too, but once a sequence is running the next probe is
+   the **nearest unspent boundary to the player**, with the goal as a tie-break: the second run was
+   spending ~400 frames per probe crossing the room, and a perimeter sweep is the same experiment
+   without the travel. A failed probe also spends its neighbourhood (`BoundarySpendRadius` = 2), so
+   a wall costs a few probes, not one per cell.
 
 The static replay of the latest map now moves toward the marker side (`map 11`: 4 waypoints east to
 (521.5,510.5)) instead of back to the spawn. The next run's `DUNGEON` line is the live test:
 `edge` must fall while `floor` grows through the doorway, and a probe that converts must produce a
 goal route. If `edge` reaches 0 with the boss unreachable, the component is genuinely sealed and the
 answer is §8.4's exit, not another probe.
+
+### 16.2 The third live run: it reached the boss twice, and the spawn room is still slow
+
+`20261020-230932-p36548` has two Infested Cellars back to back. Both reached the boss room. The
+operator's remaining complaint is efficiency: *"it spends a lot of time discovering spawn room"*.
+
+The position record agrees. In the **first** visit (frames 7 409-14 147) the character first gets
+more than 25 units from spawn at frame 7 639, but spends roughly frames 8 409-10 408 within ~10
+units of it, and reaches the boss side around frame 11 409. In the **second** (frames 14 159-23 069)
+it briefly leaves at frame 14 546, comes back, and stays within ~10 units of spawn until about frame
+18 158 -- roughly **3 600 frames** -- before the route to the boss opens.
+
+The `DUNGEON` line says where that time goes: the second run is around `73 edge` with only 15 dead
+ends and 11 timeouts over 8 000 frames -- about **400 frames per probe**. The dwell is 75 frames; the
+rest is **travel between boundary cells on opposite sides of the room**, because the ranking was
+goal-first and the goal was far away. The probes were correct experiments, just spread across the
+whole component.
+
+The fix is the local sweep: the first probe stays goal-directed, then each next probe is the nearest
+unspent boundary cell to the player (goal as tie-break), so the character walks the room's perimeter
+instead of crossing it. With `BoundarySpendRadius` = 2, a room's wall now costs a handful of
+probes rather than one per cell. The transient answer to the operator's question is **yes, the tile
+map only arrives near the character** -- `GmTiles` streams and `NoWalk` is the placeholder for
+"not yet sent" -- but the solver does not need to *collide* with a wall; it needs to be near it, and
+a perimeter pass is the cheapest way to be near all of it.

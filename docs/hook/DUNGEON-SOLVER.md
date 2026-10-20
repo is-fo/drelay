@@ -107,9 +107,11 @@ direction when it runs out.
 streamer paints the whole window `NoWalk` before the real tiles arrive, so a room can have **zero
 unknown neighbours** and still have two doorways. A boundary is *a floor cell with a 4-neighbour that
 is a `ProvisionalWall`*. The search collects these too, and when no hard frontier is reachable the
-solver probes them. The probe rank is **goal distance first**, and the exit-corridor signal (a
-disconnected floor patch within eight cells) filters candidates and breaks ties. §8 records why the
-order was reversed after the second live run.
+solver probes them. The **first** probe is goal-directed, with the exit-corridor signal (a
+disconnected floor patch within eight cells) as its filter; after that the sequence **sweeps the
+wall**: the next probe is the nearest unspent boundary cell to the player, with the goal as the
+tie-break. That is what turns a room's boundary from N independent cross-room walks into one
+perimeter pass. §8 records the live measurements behind the order.
 
 ---
 
@@ -326,8 +328,11 @@ Two selection defects made it worse:
    south half first, then cycles. It is now **goal distance first**, path depth as the tie-break; the
    commitment and tried set still prevent the old ping-pong.
 2. **The boundary rank was outside-floor first.** The strongest outside-floor patches were at the
-   spawn end, so every probe walked the character back north. The goal is now the primary rank and
-   the outside-floor signal the filter/tie-break.
+   spawn end, so every probe walked the character back north. The first probe is now goal-directed;
+   after that the rank is **local**: the next probe is the nearest unspent boundary cell to the
+   player, with the goal as a tiny tie-break. The second Infested Cellar spent roughly **400 frames
+   per probe**, mostly crossing a large room to the next boundary cell; a perimeter sweep is the same
+   experiment without the travel.
 
 The probe also spends its **neighbourhood** on failure (`BoundarySpendRadius` = 2): if 75 frames at
 one boundary cell did not open the wall, the cell next to it is the same experiment.
@@ -358,3 +363,27 @@ line reads, e.g. `... 0 frontier, 79 edge ...` while the room is still being pro
 converts should open a route to the marker. If `edge` falls to 0 with the boss still unreachable, the
 component really is sealed and the answer is the exit decision (§8.4), not another probe. If it still
 cycles between the same two ends, the line's `dead end` and `backtrack` counts will say so.
+
+### 8.2 The third live run: both bosses reached, and the spawn room is the remaining cost
+
+`20261020-230932-p36548` has two Infested Cellars in a row; both reached the boss room. The
+operator's remaining complaint is speed: the character spends a long time discovering the spawn
+room.
+
+The trace agrees. The first visit gets more than 25 units from spawn at frame 7 639 but spends
+roughly frames 8 409-10 408 within ~10 units of it. The second leaves briefly at frame 14 546,
+returns, and stays within ~10 units until about frame 18 158 -- roughly **3 600 frames** -- before
+the route to the boss opens. The `DUNGEON` line shows ~73 `edge` with only 15 dead ends and 11
+timeouts over 8 000 frames: about **400 frames per probe**, of which the 75-frame dwell is only a
+fifth. Most of it was travelling between boundary cells on opposite sides of a large component,
+because the probe rank was goal-first and the goal was far away.
+
+The fix is the **local sweep**: the first probe stays goal-directed, then the next is the nearest
+unspent boundary cell to the player, with the goal as a tie-break. The character now walks the
+room's perimeter instead of crossing it. With `BoundarySpendRadius` = 2, a wall costs a handful of
+probes. The inherent limit remains: **tiles only arrive near the character**, so the exit cannot be
+known until the character is near it; it does not need to collide with the wall, only to walk past
+it. A perimeter pass is the cheapest way to do that.
+
+**The next run's measurement** is the same `DUNGEON` line: for the same room, the frames per probe
+should collapse and `edge` should fall without the position cycling between the room's two ends.

@@ -160,6 +160,15 @@ namespace Drelay.Bootstrap
         private bool _committedBoundary;
 
         /// <summary>
+        /// The last boundary probe that was chosen. It anchors the next probe to the same wall, so a
+        /// room is swept along its perimeter instead of re-crossed: the second Infested Cellar
+        /// (`20261020-230932-p36548`) spent roughly 400 frames per probe, mostly walking between
+        /// boundary cells on opposite sides of a large component. The first probe of a sequence is
+        /// still goal-directed; after that, locality wins and the goal is the tie-break.
+        /// </summary>
+        private int _lastProbe = -1;
+
+        /// <summary>
         /// The breadth-first parent of the committed frontier: the cell the route came through.
         /// When the frontier stops being a frontier, a FLOOR neighbour other than this one means the
         /// map OPENED there; only this one means the corridor was painted closed. That distinction
@@ -276,6 +285,7 @@ namespace Drelay.Bootstrap
             _committed = -1;
             _committedParent = -1;
             _committedBoundary = false;
+            _lastProbe = -1;
             _exploreStartFrame = 0;
             _dwellStartFrame = 0;
             _dwellVersion = 0;
@@ -640,7 +650,7 @@ namespace Drelay.Bootstrap
                     // sealed room, and in a streaming dungeon the seal is usually a `NoWalk`
                     // placeholder over the doorway. Probe the boundary instead; see
                     // `ChooseBoundary` and the live River Maze/Chasm of Dread measurement.
-                    target = ChooseBoundary(goalX, goalY);
+                    target = ChooseBoundary(playerCellX, playerCellY, goalX, goalY);
                     _committedBoundary = target >= 0;
                 }
                 if (target < 0)
@@ -658,7 +668,12 @@ namespace Drelay.Bootstrap
                 _dwellStartFrame = 0;
                 if (_committedBoundary)
                 {
+                    _lastProbe = target;
                     _boundaryProbes++;
+                }
+                else
+                {
+                    _lastProbe = -1;
                 }
             }
 
@@ -681,19 +696,15 @@ namespace Drelay.Bootstrap
         /// The boundary probe to walk when no hard frontier is reachable: a floor cell beside a
         /// provisional `NoWalk` wall.
         ///
-        /// THE RANKING IS THE EXIT-CORRIDOR SIGNAL, AND IT IS WHY THIS IS NOT A RANDOM WALL SWEEP.
-        /// A sealed room's whole boundary is `NoWalk`, but the window also contains the floor of the
-        /// corridor on the other side -- disconnected, because the doorway cell between them is a
-        /// placeholder. A boundary cell within a few units of a disconnected floor patch is a
-        /// doorway far more often than it is rock, so the probe order is: nearest disconnected
-        /// floor first, then distance to the goal, then BFS depth. On the measured River Maze room
-        /// the first candidate is 2.2 units from the outside floor; the room's other walls are 5+
-        /// units from anything.
-        ///
-        /// If no disconnected floor is visible, the goal distance is the only signal and the probe
-        /// starts in the boss's direction, which is where a dungeon's exit usually is.
+        /// THE FIRST PROBE IS GOAL-DIRECTED, THEN THE WALL IS SWEPT. A disconnected floor patch on
+        /// the far side of a placeholder is the strongest doorway signal, so the first probe prefers
+        /// it and otherwise heads toward the goal. Once a boundary sequence is running, the next
+        /// probe is the nearest unspent boundary cell to the PLAYER: walking to the far side of a
+        /// large room for every probe is what made the second Infested Cellar spend roughly 400
+        /// frames per probe, and a perimeter sweep is the same experiment in a fraction of the
+        /// travel. The goal remains the tie-break, so a fork still prefers the boss side.
         /// </summary>
-        private int ChooseBoundary(float goalX, float goalY)
+        private int ChooseBoundary(int playerCellX, int playerCellY, float goalX, float goalY)
         {
             int count = Map.BoundaryCount;
             if (count <= 0)
@@ -703,6 +714,7 @@ namespace Drelay.Bootstrap
             int best = -1;
             float bestScore = float.MaxValue;
             float bestGoal = float.MaxValue;
+            bool sweep = _lastProbe >= 0;
             for (int i = 0; i < count; i++)
             {
                 int index = Map.BoundaryAt(i);
@@ -712,13 +724,23 @@ namespace Drelay.Bootstrap
                 }
                 float goal2 = Map.DistanceSquared(index, goalX, goalY);
                 float outside = NearestDisconnectedFloor(index);
-                // THE GOAL COMES FIRST, THE EXIT-CORRIDOR SIGNAL SECOND. In the live Infested
-                // Cellar the outside-floor signal was strongest at the spawn-room end, so a
-                // boundary ranking that led with it walked the character back north every time
-                // while the boss was east and the unexplored route was elsewhere. The signal still
-                // matters -- a boundary with a disconnected floor patch on its far side is a
-                // doorway -- but it now filters candidates instead of overriding the direction.
-                float score = goal2 + (outside >= 0.0f ? 0.0f : 1000000000.0f);
+                float score;
+                if (sweep)
+                {
+                    // SWEEP THE WALL, DO NOT CROSS THE ROOM. Once a boundary sequence is running,
+                    // the next probe is the nearest unspent boundary cell; the goal is a tiny
+                    // tie-break so a fork prefers the boss side. This is what turns a room's wall
+                    // from N independent cross-room walks into one perimeter pass.
+                    float player2 = Map.DistanceSquared(index, playerCellX + 0.5f, playerCellY + 0.5f);
+                    score = player2 + (goal2 * 0.001f) + (outside >= 0.0f ? -0.25f : 0.0f);
+                }
+                else
+                {
+                    // THE FIRST PROBE IS GOAL-DIRECTED. A disconnected floor patch on the far side
+                    // of the wall is the strongest doorway signal; without one, the goal direction
+                    // is the only useful ranking.
+                    score = goal2 + (outside >= 0.0f ? 0.0f : 1000000000.0f);
+                }
                 if (score < bestScore || (score == bestScore && goal2 < bestGoal))
                 {
                     bestScore = score;
@@ -780,6 +802,7 @@ namespace Drelay.Bootstrap
             _committed = -1;
             _committedParent = -1;
             _committedBoundary = false;
+            _lastProbe = -1;
             _exploreStartFrame = 0;
             _dwellStartFrame = 0;
             _dwellVersion = 0;
