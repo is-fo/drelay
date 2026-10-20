@@ -2168,8 +2168,50 @@ and `explored`. `MAPROUTE` no longer exists, and a run that reads it is reading 
 
 **Offline verification.** `SolverHarness` now runs `D1` (cell states and per-map identity), `D2`
 (the U-corridor route), `D3` (a dry frontier, a blind stub, a backtrack and the goal), `D4` (a room
-with one entrance) and `D5` (state per map) on every invocation; `Test-HookOffline.ps1` passes all
-nine checks with them. **No live run.** The next dungeon session's `DUNGEON` line -- `floor` growing
-while the character moves, `frontier` falling, `dead end` only where the map really ends -- is the
-measurement that turns this from an offline result into a solved dungeon. The design and the full
-limit list are in [`DUNGEON-SOLVER.md`](DUNGEON-SOLVER.md).
+with one entrance), `D5` (state per map) and `D6` (the placeholder-sealed room of §16) on every
+invocation; `Test-HookOffline.ps1` passes all nine checks with them. **No live run of §16 yet.** The
+next dungeon session's `DUNGEON` line -- `floor` and `edge` moving while the character probes,
+`frontier` falling, `dead end` only where the map really ends -- is the measurement that turns this
+from an offline result into a solved dungeon. The design and the full limit list are in
+[`DUNGEON-SOLVER.md`](DUNGEON-SOLVER.md).
+
+### 16. The first live dungeon run: a room sealed by `NoWalk` placeholders
+
+`20261020-223237-p14412` ran the §15 build. The operator's report:
+
+> Chasm of Dread: did make some progress, eventually got stuck walking in circles inside a room. Not
+> a dead end, it should have chosen one of two exits to continue.
+> River Maze: stuck in spawn room walking up and down.
+
+The `DUNGEON` line at the end of River Maze read:
+
+```
+dungeon map ON (1024x1024, 518 floor, 87 wall, 2102 provisional, 17 frontier (mapped),
+                 6993 plan (0 goal), 485 waypoint, 6950 refused, 1 dead end, 0 timeout,
+                 0 backtrack, 39 explored)
+```
+
+`(mapped)` was wrong, and the numbers say why: `plans` and `refused` climbed by thousands while
+`waypoint` stayed at 485. The solver was refusing every frame, not routing. Flood-filling the last
+River Maze `G` record from the player's cell gives **424 floor cells and zero unknown neighbours** --
+the room's boundary was 68 collision cells and 78 `NoWalk` cells, and the other **94 floor cells in
+the same window were disconnected**. The doorway was still a `NoWalk` placeholder and the corridor
+was already visible on the far side of it. Chasm of Dread had the same signature (2 044 floor, 3 828
+provisional, 3 frontiers, 8 plans).
+
+So the hard-frontier definition -- floor beside *unknown* -- had nothing to find. The fix is in
+`DUNGEON-SOLVER.md` §8: the search also collects **boundary cells** (floor beside a `NoWalk`
+placeholder), and when no hard frontier is reachable the solver probes one. The probe is ranked by
+the distance to a **disconnected floor patch** in the same window, because that is the exit corridor
+seen through the placeholder; the goal is the tie-break. The probe dwells 30 frames, then marks the
+cell tried and moves to the next candidate. The report line gained `edge`, the number of unspent
+boundary cells.
+
+Offline, `D6` is the fixture: the whole window pre-painted `NoWalk`, two exits whose door cells are
+placeholders, and a reveal that turns a door into floor when the character stands near it. It passes;
+it fails at the first `TryWaypoint` on the §15 build. The static trace replay now walks a boundary
+candidate in each room (`map 9`: 5 waypoints to (494.5,521.5), 2.2 units from the outside floor;
+`map 5`: 18 waypoints to (539.5,578.5)) -- the selection is pointed at the exit, and the live
+streamer is what must turn the placeholder into floor. **The next live run is the test**: `floor` and
+`edge` must move while the character is probing, and `(mapped)` must not appear on a room with an
+exit.

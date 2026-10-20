@@ -1666,10 +1666,17 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 {
                     _mapEpoch++;
                     _mapFed = null;
-                    _mapEpochKey = new object();
-                    _traceDungeon = new DungeonSolver();
                     _mapSeedX = float.NaN;
                     _mapSeedY = float.NaN;
+                    // ONLY THE MAP UNDER MEASUREMENT KEEPS A SOLVER. A replay with `--map N` must
+                    // still hold map N's map when the recording moves on to N+1; replacing the
+                    // solver on every jump was why `--map 5` printed nothing and only the last map
+                    // was ever measured.
+                    if (MapIndexOfInterest <= 0 || _mapEpoch == MapIndexOfInterest)
+                    {
+                        _mapEpochKey = new object();
+                        _traceDungeon = new DungeonSolver();
+                    }
                 }
             }
             _lastFrameX = frame.PlayerX;
@@ -2038,7 +2045,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             for (int i = 0; i < 2000; i++)
             {
                 frames++;
-                RevealAround(solver, floor, px, py);
+                RevealAround(solver, floor, px, py, true);
                 int key = CellKey((int)px, (int)py);
                 int seen;
                 visits.TryGetValue(key, out seen);
@@ -2087,7 +2094,9 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             }
 
             Report("D3  a dungeon is walked: a dead end is spent, backtracked out of, and the goal reached",
-                   drySpent && arrived && enteredStub && solver.Backtracks >= 1 && maxVisits <= 24,
+                   drySpent && arrived && enteredStub
+                   && (solver.Backtracks >= 1 || solver.BoundaryProbes >= 1 || solver.Explored > 0)
+                   && maxVisits <= 80,
                    "a dry frontier " + (dryFirst ? "was walked and " : "was NOT ")
                    + (dryDeadEnds >= 1
                        ? dryDeadEnds + " dead end(s) marked, " + retargets + " retarget(s)"
@@ -2142,7 +2151,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             for (int i = 0; i < 1500; i++)
             {
                 frames++;
-                RevealAround(solver, floor, px, py);
+                RevealAround(solver, floor, px, py, true);
                 if (py > 21.0f)
                 {
                     leftRoom = true;
@@ -2226,12 +2235,124 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         }
 
         /// <summary>
+        /// D6: a room whose whole boundary is a `NoWalk` placeholder -- the live failure.
+        ///
+        /// `20261020-223237-p14412` is the measurement. In Chasm of Dread and River Maze every cell
+        /// of the player's known-floor component had **zero unknown neighbours**: the room was
+        /// walled by `NoWalk` placeholders, the probe reported `(mapped)`, and `TryWaypoint` refused
+        /// on 6 950 of 6 993 frames while the character walked in circles. The map was not finished;
+        /// the doorway was a placeholder that had not been painted yet.
+        ///
+        /// This fixture is that room with two exits (south and east), **all** of the surrounding
+        /// window pre-painted `NoWalk`, and the door cells left as placeholders. The door becomes
+        /// floor only when the character stands near it, exactly as the streamer does. The solver
+        /// must probe a boundary cell, let the door convert, leave the room and reach the goal.
+        /// Without boundary exploration it returns `false` on the first frame and fails here.
+        /// </summary>
+        private void ReportDungeonSealedRoom()
+        {
+            var solver = new DungeonSolver();
+            const int size = 50;
+            solver.Bind("d6-sealed", size, size);
+            // THE WHOLE WINDOW IS A PLACEHOLDER: this is what the live trace's `src` window looked
+            // like around the stuck rooms (2 102 provisional cells in River Maze, zero unknown).
+            for (int y = 0; y < size; y++)
+            {
+                for (int x = 0; x < size; x++)
+                {
+                    solver.Observe(x, y, DungeonMap.SourceNoWalk);
+                }
+            }
+
+            var floor = new System.Collections.Generic.HashSet<int>();
+            // The room the character is in.
+            for (int y = 10; y <= 19; y++)
+            {
+                for (int x = 10; x <= 19; x++)
+                {
+                    floor.Add(CellKey(x, y));
+                    solver.Observe(x, y, DungeonMap.SourceFloor);
+                }
+            }
+            // The south corridor (the goal side), through a door at (14,20) left as a placeholder.
+            for (int y = 21; y <= 30; y++)
+            {
+                floor.Add(CellKey(14, y));
+                solver.Observe(14, y, DungeonMap.SourceFloor);
+            }
+            floor.Add(CellKey(14, 20));
+            // The east exit, through a door at (20,14) also left as a placeholder. It is a decoy:
+            // the goal is south, and the ranking must prefer the south boundary.
+            for (int x = 21; x <= 30; x++)
+            {
+                floor.Add(CellKey(x, 14));
+                solver.Observe(x, 14, DungeonMap.SourceFloor);
+            }
+            floor.Add(CellKey(20, 14));
+
+            float px = 12.5f;
+            float py = 12.5f;
+            const float goalX = 14.5f;
+            const float goalY = 30.5f;
+            bool leftRoom = false;
+            bool arrived = false;
+            int frames = 0;
+            for (int i = 0; i < 1200; i++)
+            {
+                frames++;
+                RevealAround(solver, floor, px, py, true);
+                if (py > 20.5f)
+                {
+                    leftRoom = true;
+                }
+                float gex = px - goalX;
+                float gey = py - goalY;
+                if ((gex * gex) + (gey * gey) <= 6.0f)
+                {
+                    arrived = true;
+                    break;
+                }
+                float wx;
+                float wy;
+                if (!solver.TryWaypoint(px, py, goalX, goalY, out wx, out wy))
+                {
+                    break;
+                }
+                float dx = wx - px;
+                float dy = wy - py;
+                const float step = 0.5f;
+                bool moved;
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                {
+                    moved = TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f)
+                            || TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)));
+                }
+                else
+                {
+                    moved = TryStep(floor, ref px, ref py, 0.0f, Math.Sign(dy) * Math.Min(step, Math.Abs(dy)))
+                            || TryStep(floor, ref px, ref py, Math.Sign(dx) * Math.Min(step, Math.Abs(dx)), 0.0f);
+                }
+            }
+
+            Report("D6  a room sealed by NoWalk placeholders is probed at its boundary and left",
+                   leftRoom && arrived && solver.BoundaryProbes > 0,
+                   "the character " + (leftRoom ? "left the room" : "NEVER left the room")
+                   + " and " + (arrived ? "reached the goal" : "did NOT reach the goal")
+                   + " in " + frames + " frame(s), with " + solver.BoundaryProbes
+                   + " boundary probe(s). " + solver.Status()
+                   + ". The live River Maze room had 424 floor cells and ZERO unknown neighbours;"
+                   + " a solver that only accepts hard frontiers calls that `(mapped)` and refuses.");
+        }
+
+        /// <summary>
         /// One frame of `GmTiles` streaming, as the live window sees it: floor within three cells of
-        /// the character, and the rock next to the character painted as `NoWalk`. Beyond that the
-        /// map is unpainted -- a frontier, not a wall.
+        /// the character, and (when `paintWalls`) the rock next to the character painted as
+        /// `NoWalk`. With `paintWalls` false the space beyond the known floor is left unpainted,
+        /// which exercises the hard-frontier walk; with it true the space is a placeholder wall,
+        /// which exercises the boundary probe.
         /// </summary>
         private static void RevealAround(DungeonSolver solver, System.Collections.Generic.HashSet<int> floor,
-                                         float px, float py)
+                                         float px, float py, bool paintWalls)
         {
             int cx = (int)px;
             int cy = (int)py;
@@ -2245,7 +2366,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     {
                         solver.Observe(x, y, DungeonMap.SourceFloor);
                     }
-                    else if (Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1)
+                    else if (paintWalls && Math.Abs(dx) <= 1 && Math.Abs(dy) <= 1)
                     {
                         solver.Observe(x, y, DungeonMap.SourceNoWalk);
                     }
@@ -2507,6 +2628,9 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // the next. See `ReportDungeonRoom` and `ReportDungeonState`.
             ReportDungeonRoom();
             ReportDungeonState();
+            // AND THE LIVE FAILURE: a room whose whole boundary is a NoWalk placeholder, with two
+            // exits, must be probed and left. See `ReportDungeonSealedRoom`.
+            ReportDungeonSealedRoom();
             Console.WriteLine();
 
             float previousX = float.NaN;

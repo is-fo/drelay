@@ -127,6 +127,21 @@ namespace Drelay.Bootstrap
         /// <summary>Nodes in <see cref="_path"/> after the last <see cref="BuildPath"/>, player first.</summary>
         public int PathCount { get; private set; }
 
+        /// <summary>
+        /// Reachable floor cells that touch a <see cref="ProvisionalWall"/>, collected by the last
+        /// search. THESE ARE THE DUNGEON'S DOORWAYS-AS-PLACEHOLDERS: a room whose whole boundary is
+        /// `NoWalk` has no unknown neighbour at all, so the hard-frontier test finds nothing and the
+        /// map looks finished. The boundary cells are where a streamer is about to turn a doorway
+        /// into floor, and the solver walks them in order.
+        /// </summary>
+        private int[] _boundary = new int[BoundaryCapacity];
+
+        /// <summary>How many entries of <see cref="_boundary"/> the last search filled.</summary>
+        public int BoundaryCount { get; private set; }
+
+        /// <summary>Boundary candidates kept per search. A room has tens; a corridor mouth has one.</summary>
+        public const int BoundaryCapacity = 2048;
+
         // ===================================================================================
         // Binding
         // ===================================================================================
@@ -176,6 +191,7 @@ namespace Drelay.Bootstrap
             _seenGeneration = 0;
             _path = new int[0];
             PathCount = 0;
+            BoundaryCount = 0;
             FloorCells = 0;
             WallCells = 0;
             ProvisionalCells = 0;
@@ -195,6 +211,7 @@ namespace Drelay.Bootstrap
             Array.Clear(_cells, 0, _cells.Length);
             Array.Clear(_tried, 0, _tried.Length);
             PathCount = 0;
+            BoundaryCount = 0;
             FloorCells = 0;
             WallCells = 0;
             ProvisionalCells = 0;
@@ -214,6 +231,7 @@ namespace Drelay.Bootstrap
             _queue = null;
             _path = new int[0];
             PathCount = 0;
+            BoundaryCount = 0;
             Width = 0;
             Height = 0;
             FloorCells = 0;
@@ -235,6 +253,7 @@ namespace Drelay.Bootstrap
             _queue = null;
             _path = new int[0];
             PathCount = 0;
+            BoundaryCount = 0;
             FloorCells = 0;
             WallCells = 0;
             ProvisionalCells = 0;
@@ -375,6 +394,65 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
+        /// True when this floor cell has a 4-neighbour that is a PROVISIONAL wall (`NoWalk`). That
+        /// is not a frontier -- the map has been painted there -- but it is a doorway that may be a
+        /// placeholder. See <see cref="_boundary"/>.
+        /// </summary>
+        public bool HasProvisionalNeighbour(int index)
+        {
+            if (!Available || index < 0 || index >= _cells.Length || _cells[index] != Floor)
+            {
+                return false;
+            }
+            int x = index % Width;
+            int y = index / Width;
+            if (x + 1 < Width && _cells[index + 1] == ProvisionalWall) { return true; }
+            if (x > 0 && _cells[index - 1] == ProvisionalWall) { return true; }
+            if (y + 1 < Height && _cells[index + Width] == ProvisionalWall) { return true; }
+            if (y > 0 && _cells[index - Width] == ProvisionalWall) { return true; }
+            return false;
+        }
+
+        /// <summary>One reachable boundary cell collected by the last search.</summary>
+        public int BoundaryAt(int index)
+        {
+            if (index < 0 || index >= BoundaryCount)
+            {
+                return -1;
+            }
+            return _boundary[index];
+        }
+
+        /// <summary>True when the last search reached this cell.</summary>
+        public bool WasReached(int index)
+        {
+            return Available && index >= 0 && index < _seen.Length
+                   && _seen[index] == _seenGeneration;
+        }
+
+        /// <summary>
+        /// The number of floor cells that touch a provisional wall and have not been spent. A scan,
+        /// paid once per report; it is the number that says whether a sealed-looking room still has
+        /// doorways to try.
+        /// </summary>
+        public long EdgeCount()
+        {
+            if (!Available)
+            {
+                return 0;
+            }
+            long count = 0;
+            for (int i = 0; i < _cells.Length; i++)
+            {
+                if (_tried[i] == 0 && HasProvisionalNeighbour(i))
+                {
+                    count++;
+                }
+            }
+            return count;
+        }
+
+        /// <summary>
         /// The number of cells this map would be willing to walk to next: a floor cell with an
         /// unpainted neighbour that has not already been spent. It is a scan, paid once per report.
         /// </summary>
@@ -488,6 +566,7 @@ namespace Drelay.Bootstrap
             int bestDepth = int.MaxValue;
             float bestGoal2 = float.MaxValue;
             int budget = nodeBudget < 0 ? 0 : nodeBudget;
+            BoundaryCount = 0;
 
             while (head < tail)
             {
@@ -522,6 +601,15 @@ namespace Drelay.Bootstrap
                         result.FrontierNode = current;
                         result.FrontierDepth = depth;
                     }
+                }
+                if (_tried[current] == 0 && BoundaryCount < _boundary.Length
+                    && HasProvisionalNeighbour(current))
+                {
+                    // A DOORWAY THAT IS STILL A PLACEHOLDER. It is not a hard frontier -- the map
+                    // has been painted -- but it is the only kind of edge a sealed room has. The
+                    // solver ranks these by whether a disconnected floor patch is on the other side
+                    // (that is the exit corridor), which is why the candidate list is kept.
+                    _boundary[BoundaryCount++] = current;
                 }
 
                 int cx = current % Width;

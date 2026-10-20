@@ -105,6 +105,14 @@ namespace Drelay.Bootstrap
         private const int DwellFrames = 60;
 
         /// <summary>
+        /// Frames the character stands on a BOUNDARY probe. Half a second, not one: the boundary
+        /// test is a place where a doorway may be a placeholder, and there can be dozens of them
+        /// around a room. A probe that has not revealed anything in half a second is marked tried and
+        /// the next one -- ranked by the exit-corridor signal in `ChooseBoundary` -- is walked.
+        /// </summary>
+        private const int BoundaryDwellFrames = 30;
+
+        /// <summary>
         /// Frames a frontier may be walked toward before it is abandoned as unreachable. Five
         /// seconds is several rooms; the counter exists so a target the character cannot physically
         /// reach costs five seconds and not the session.
@@ -134,6 +142,14 @@ namespace Drelay.Bootstrap
 
         /// <summary>The committed frontier, or -1 when the route is a goal route.</summary>
         private int _committed = -1;
+
+        /// <summary>
+        /// True when the committed target is a BOUNDARY probe -- a floor cell beside a provisional
+        /// `NoWalk` wall -- rather than a hard frontier. A sealed room has no hard frontiers at all,
+        /// so this is the only thing that gets the character out of one; see the live measurement in
+        /// `DUNGEON-SOLVER.md` section 8.
+        /// </summary>
+        private bool _committedBoundary;
 
         /// <summary>
         /// The breadth-first parent of the committed frontier: the cell the route came through.
@@ -166,6 +182,7 @@ namespace Drelay.Bootstrap
         private long _timeouts;
         private long _backtracks;
         private long _explored;
+        private long _boundaryProbes;
 
         public bool Available => Map.Available;
         public bool Mapped => _mapped;
@@ -178,6 +195,7 @@ namespace Drelay.Bootstrap
         public long Timeouts => _timeouts;
         public long Backtracks => _backtracks;
         public long Explored => _explored;
+        public long BoundaryProbes => _boundaryProbes;
         public long Frames => _frames;
 
         /// <summary>The mode, for a harness assertion: "goal", "explore" or "none".</summary>
@@ -193,7 +211,8 @@ namespace Drelay.Bootstrap
             }
             return "dungeon map ON (" + Map.Width + "x" + Map.Height
                    + ", " + Map.FloorCells + " floor, " + Map.WallCells + " wall, "
-                   + Map.ProvisionalCells + " provisional, " + Map.FrontierCount() + " frontier"
+                   + Map.ProvisionalCells + " provisional, " + Map.FrontierCount() + " frontier, "
+                   + Map.EdgeCount() + " edge"
                    + (_mapped ? " (mapped)" : "")
                    + ", " + _plans + " plan (" + _goalPlans + " goal), " + _waypoints + " waypoint, "
                    + _refusals + " refused, " + _deadEnds + " dead end, " + _timeouts + " timeout, "
@@ -248,6 +267,7 @@ namespace Drelay.Bootstrap
             _target = -1;
             _committed = -1;
             _committedParent = -1;
+            _committedBoundary = false;
             _exploreStartFrame = 0;
             _dwellStartFrame = 0;
             _dwellVersion = 0;
@@ -284,6 +304,7 @@ namespace Drelay.Bootstrap
             _timeouts = 0;
             _backtracks = 0;
             _explored = 0;
+            _boundaryProbes = 0;
         }
 
         /// <summary>
@@ -448,7 +469,7 @@ namespace Drelay.Bootstrap
                 FinishExplore(false);
                 return;
             }
-            if (!Map.HasUnknownNeighbour(target))
+            if (!Map.HasUnknownNeighbour(target) && !Map.HasProvisionalNeighbour(target))
             {
                 // THE FRONTIER IS NO LONGER A FRONTIER. Two things can have happened, and they are
                 // the operator's two outcomes: the map OPENED here (a floor neighbour other than
@@ -476,7 +497,8 @@ namespace Drelay.Bootstrap
                     _dwellVersion = Map.Version;
                     _dwellFloorCells = Map.FloorCells;
                 }
-                else if (_frames - _dwellStartFrame >= DwellFrames)
+                else if (_frames - _dwellStartFrame
+                         >= (_committedBoundary ? BoundaryDwellFrames : DwellFrames))
                 {
                     if (Map.Version != _dwellVersion || Map.FloorCells > _dwellFloorCells)
                     {
@@ -508,6 +530,7 @@ namespace Drelay.Bootstrap
             }
             _committed = -1;
             _committedParent = -1;
+            _committedBoundary = false;
             _target = -1;
             _mode = ModeNone;
             _pathCount = 0;
@@ -585,11 +608,22 @@ namespace Drelay.Bootstrap
             else
             {
                 target = search.FrontierNode;
+                _committedBoundary = false;
                 if (target < 0)
                 {
-                    // THE DUNGEON'S CONNECTED FLOOR IS MAPPED: no untried frontier is left and the
-                    // goal is not on this floor. False is the honest answer; the caller keeps its
-                    // own goal rather than this module inventing a waypoint on top of the character.
+                    // NO HARD FRONTIER: EVERY EDGE OF THE KNOWN FLOOR HAS BEEN PAINTED. That is a
+                    // sealed room, and in a streaming dungeon the seal is usually a `NoWalk`
+                    // placeholder over the doorway. Probe the boundary instead; see
+                    // `ChooseBoundary` and the live River Maze/Chasm of Dread measurement.
+                    target = ChooseBoundary(goalX, goalY);
+                    _committedBoundary = target >= 0;
+                }
+                if (target < 0)
+                {
+                    // THE DUNGEON'S CONNECTED FLOOR IS MAPPED: no untried frontier or boundary is
+                    // left and the goal is not on this floor. False is the honest answer; the
+                    // caller keeps its own goal rather than this module inventing a waypoint on top
+                    // of the character.
                     _mapped = true;
                     FinishExplore(false);
                     return false;
@@ -597,6 +631,10 @@ namespace Drelay.Bootstrap
                 _committed = target;
                 _exploreStartFrame = _frames;
                 _dwellStartFrame = 0;
+                if (_committedBoundary)
+                {
+                    _boundaryProbes++;
+                }
             }
 
             _mode = ModeExplore;
@@ -614,6 +652,95 @@ namespace Drelay.Bootstrap
             return true;
         }
 
+        /// <summary>
+        /// The boundary probe to walk when no hard frontier is reachable: a floor cell beside a
+        /// provisional `NoWalk` wall.
+        ///
+        /// THE RANKING IS THE EXIT-CORRIDOR SIGNAL, AND IT IS WHY THIS IS NOT A RANDOM WALL SWEEP.
+        /// A sealed room's whole boundary is `NoWalk`, but the window also contains the floor of the
+        /// corridor on the other side -- disconnected, because the doorway cell between them is a
+        /// placeholder. A boundary cell within a few units of a disconnected floor patch is a
+        /// doorway far more often than it is rock, so the probe order is: nearest disconnected
+        /// floor first, then distance to the goal, then BFS depth. On the measured River Maze room
+        /// the first candidate is 2.2 units from the outside floor; the room's other walls are 5+
+        /// units from anything.
+        ///
+        /// If no disconnected floor is visible, the goal distance is the only signal and the probe
+        /// starts in the boss's direction, which is where a dungeon's exit usually is.
+        /// </summary>
+        private int ChooseBoundary(float goalX, float goalY)
+        {
+            int count = Map.BoundaryCount;
+            if (count <= 0)
+            {
+                return -1;
+            }
+            int best = -1;
+            float bestScore = float.MaxValue;
+            float bestGoal = float.MaxValue;
+            for (int i = 0; i < count; i++)
+            {
+                int index = Map.BoundaryAt(i);
+                if (index < 0 || Map.IsTried(index) || Map.KindAt(index) != DungeonMap.Floor)
+                {
+                    continue;
+                }
+                float goal2 = Map.DistanceSquared(index, goalX, goalY);
+                float outside = NearestDisconnectedFloor(index);
+                // A disconnected floor patch dominates the ranking; the goal is the tie-break and
+                // the fallback when the window shows none.
+                float score = outside >= 0.0f ? (outside * 10000.0f) + goal2 : 1000000000.0f + goal2;
+                if (score < bestScore || (score == bestScore && goal2 < bestGoal))
+                {
+                    bestScore = score;
+                    bestGoal = goal2;
+                    best = index;
+                }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Squared distance from a boundary cell to the nearest FLOOR cell the last search did not
+        /// reach, searched in a 17x17 box; -1 when there is none in the box. A disconnected floor
+        /// patch on the other side of a provisional wall is the strongest available evidence that
+        /// the wall is a doorway placeholder and not rock.
+        /// </summary>
+        private float NearestDisconnectedFloor(int index)
+        {
+            int x = index % Map.Width;
+            int y = index / Map.Width;
+            const int Radius = 8;
+            float best = float.MaxValue;
+            for (int dy = -Radius; dy <= Radius; dy++)
+            {
+                int ny = y + dy;
+                if (ny < 0 || ny >= Map.Height)
+                {
+                    continue;
+                }
+                for (int dx = -Radius; dx <= Radius; dx++)
+                {
+                    int nx = x + dx;
+                    if (nx < 0 || nx >= Map.Width)
+                    {
+                        continue;
+                    }
+                    int n = (ny * Map.Width) + nx;
+                    if (Map.KindAt(n) != DungeonMap.Floor || Map.WasReached(n))
+                    {
+                        continue;
+                    }
+                    float d2 = (dx * dx) + (dy * dy);
+                    if (d2 < best)
+                    {
+                        best = d2;
+                    }
+                }
+            }
+            return best == float.MaxValue ? -1.0f : best;
+        }
+
         private bool StartGoalRoute(int target, float goalX, float goalY,
                                     int playerCellX, int playerCellY)
         {
@@ -623,6 +750,7 @@ namespace Drelay.Bootstrap
             _target = target;
             _committed = -1;
             _committedParent = -1;
+            _committedBoundary = false;
             _exploreStartFrame = 0;
             _dwellStartFrame = 0;
             _dwellVersion = 0;
