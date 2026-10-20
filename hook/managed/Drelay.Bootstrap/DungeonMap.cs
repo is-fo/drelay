@@ -485,6 +485,43 @@ namespace Drelay.Bootstrap
         }
 
         /// <summary>
+        /// Blocks a provisional wall and its provisional neighbours. A wall that did not convert
+        /// under a full dwell is a wall segment, not a single cell; testing the cell next to it is
+        /// the same experiment again. Only provisional cells are blocked, so real floor and
+        /// collision are untouched, and a later `Observe(Floor)` clears a block.
+        /// </summary>
+        public void MarkBlockedAround(int index, int radius)
+        {
+            if (!Available || _blocked == null || index < 0 || index >= _blocked.Length)
+            {
+                return;
+            }
+            int x = index % Width;
+            int y = index / Width;
+            for (int dy = -radius; dy <= radius; dy++)
+            {
+                int ny = y + dy;
+                if (ny < 0 || ny >= Height)
+                {
+                    continue;
+                }
+                for (int dx = -radius; dx <= radius; dx++)
+                {
+                    int nx = x + dx;
+                    if (nx < 0 || nx >= Width)
+                    {
+                        continue;
+                    }
+                    int n = (ny * Width) + nx;
+                    if (_cells[n] == ProvisionalWall)
+                    {
+                        _blocked[n] = 1;
+                    }
+                }
+            }
+        }
+
+        /// <summary>
         /// The goal-directed optimistic search: A* over FLOOR cells plus PROVISIONAL `NoWalk`
         /// cells, where a provisional cell costs `ProvisionalCost` instead of being impassable.
         ///

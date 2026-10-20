@@ -434,3 +434,32 @@ are bumped, and `floor` should grow shortly after each burst as a doorway conver
 near the spawn room should no longer be dominated by walking its perimeter. If a boss is behind a
 **collision** wall (not a placeholder), no amount of proximity will open it; the line will show
 blocked walls with no floor growth, and the answer is the exit decision, not another probe.
+
+### 8.4 The fifth live run: the probe was not being asked
+
+`20261020-235250-p33652` is two Infested Cellars. The first eventually reached the boss (goal plans
+start at frame 12 047, after about 8 500 frames); the second was aborted after ~1 500 frames, with
+the character sitting in a 3x3 space around **(521, 515)** for over a thousand frames.
+
+The second run's counters are the signature: `dead end` only moved 29 -> 31 and `timeout` 13 -> 14
+in those 1 500 frames, while the status showed 43 unspent boundary cells. The solver was not probing
+once per 75 frames; it was barely being asked at all.
+
+The cause is in the adapter, not the map. The dungeon solver was called only while the local
+planner's answer was one of the blind reasons (`NoTarget`/`Unreachable`/`NodeCap`) or during a
+45-frame hold. Once the solver published the **floor cell before a wall**, the local planner had a
+perfectly good route to that cell -- so the planner was no longer blind, the hold expired, and the
+solver stopped being called mid-dwell. The dwell never reached 75 frames, so the wall was never
+converted or blocked, and the character stood at the same spot. The planner was working; the probe
+was not being asked to finish.
+
+The fix is `DungeonSolver.HasActiveProbe`: the adapter now keeps asking the dungeon solver while a
+probe is committed, even when the local planner has a route. The hold is also raised from 45 to 120
+frames, so a published waypoint survives longer than one dwell. A wall that fails its dwell now
+blocks its **neighbourhood** (`BlockedRadius` = 2), so a solid wall costs a handful of probes rather
+than one per cell.
+
+**The live test is the second-cellar shape**: while the character stands at a wall, `dead end` or
+`timeout` must advance at least once per ~75 frames, and a converted tile must show up as floor
+growth. A frozen counter beside a stationary position is this integration bug, not a map that cannot
+be solved.

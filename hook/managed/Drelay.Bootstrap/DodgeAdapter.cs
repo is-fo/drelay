@@ -426,7 +426,7 @@ namespace Drelay.Bootstrap
         /// applies to a heading and the follower applies to a waypoint, for the same reason: two
         /// answers to one question alternating frame by frame is not a decision.
         /// </summary>
-        private const int DungeonHoldFrames = 45;
+        private const int DungeonHoldFrames = 120;
 
         private static int _dungeonHold;
 
@@ -1222,7 +1222,13 @@ namespace Drelay.Bootstrap
                     bool blind = _lastPathReason == PathReason.NoTarget
                                  || _lastPathReason == PathReason.Unreachable
                                  || _lastPathReason == PathReason.NodeCap
-                                 || _dungeonHold > 0;
+                                 || _dungeonHold > 0
+                                 // AN ACTIVE PROBE MUST FINISH, even if the local planner found a
+                                 // route to the waypoint it published. The second Infested Cellar
+                                 // (`20261020-235250-p33652`) froze because the planner had a route
+                                 // to the floor before the wall, so the solver stopped being asked
+                                 // mid-dwell and never converted or blocked the wall.
+                                 || _dungeon.HasActiveProbe;
                     float wx;
                     float wy;
                     if (goalDistance > MinDungeonGoalUnits

@@ -2299,3 +2299,24 @@ goal is reached in 1 052 frames. `D1`-`D7` and `Test-HookOffline.ps1` (9/9) pass
 `floor` growing after a burst as a doorway converts, and much less time spent walking the spawn
 room's perimeter. If `floor` stays flat while walls are blocked, the blocking wall is collision (not
 a placeholder) and the answer is the exit decision, not another probe.
+
+### 16.4 The fifth live run: the probe stopped being asked mid-dwell
+
+`20261020-235250-p33652` is two Infested Cellars. The first eventually reached the boss (goal plans
+start at frame 12 047, after ~8 500 frames). The second was aborted after ~1 500 frames with the
+character sitting in a 3x3 space around **(521, 515)** for over a thousand frames; `dead end` moved
+only 29 -> 31 and `timeout` 13 -> 14 in that time, while 43 boundary cells were still unspent.
+
+That is not the map failing. The adapter called the dungeon solver only while the local planner was
+blind (`NoTarget`/`Unreachable`/`NodeCap`) or during a 45-frame hold. Once the solver published the
+**floor cell before a wall**, the planner had a good route to that cell, stopped being blind, and
+the solver stopped being called mid-dwell. The probe never reached 75 frames, so the wall was never
+converted or blocked.
+
+`DungeonSolver.HasActiveProbe` is the fix: the adapter keeps asking while a probe is committed, even
+if the local planner has a route. `DungeonHoldFrames` is 120 now (longer than one dwell), and a
+failed wall blocks `BlockedRadius` = 2 around it, so a solid wall costs a handful of probes.
+
+The next run's test is the second-cellar shape: while standing at a wall, `dead end` or `timeout`
+must advance at least once per ~75 frames, and a converted tile must appear as floor growth. A
+stationary position with frozen probe counters is this integration bug, not an unsolvable map.

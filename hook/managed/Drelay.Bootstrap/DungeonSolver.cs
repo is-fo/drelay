@@ -184,6 +184,13 @@ namespace Drelay.Bootstrap
         private int _pendingWall = -1;
 
         /// <summary>
+        /// Provisional cells blocked around a wall that failed its dwell. A wall is a segment, not a
+        /// point; without this the mouse tests every cell along a solid wall, which is exactly the
+        /// slow spawn-room discovery measured in `20261020-235250-p33652`.
+        /// </summary>
+        private const int BlockedRadius = 2;
+
+        /// <summary>
         /// The breadth-first parent of the committed frontier: the cell the route came through.
         /// When the frontier stops being a frontier, a FLOOR neighbour other than this one means the
         /// map OPENED there; only this one means the corridor was painted closed. That distinction
@@ -229,6 +236,14 @@ namespace Drelay.Bootstrap
         public long Explored => _explored;
         public long BoundaryProbes => _boundaryProbes;
         public long Frames => _frames;
+
+        /// <summary>
+        /// True while an exploration probe is committed: a wall to test, or a boundary cell to
+        /// stand on. The adapter must keep asking on these frames even when the local planner has a
+        /// route, or the dwell never completes and the character stands at the same wall. This is
+        /// the integration half of the second Infested Cellar freeze (`20261020-235250-p33652`).
+        /// </summary>
+        public bool HasActiveProbe => _mode == ModeExplore && _committed >= 0 && _committedBoundary;
 
         /// <summary>The mode, for a harness assertion: "goal", "explore" or "none".</summary>
         public string ModeName =>
@@ -553,7 +568,7 @@ namespace Drelay.Bootstrap
                     {
                         if (_pendingWall >= 0)
                         {
-                            Map.MarkBlocked(_pendingWall);
+                            Map.MarkBlockedAround(_pendingWall, BlockedRadius);
                             _pendingWall = -1;
                         }
                         SpendBoundary(target);
@@ -567,7 +582,7 @@ namespace Drelay.Bootstrap
             {
                 if (_pendingWall >= 0)
                 {
-                    Map.MarkBlocked(_pendingWall);
+                    Map.MarkBlockedAround(_pendingWall, BlockedRadius);
                     _pendingWall = -1;
                 }
                 SpendBoundary(target);
