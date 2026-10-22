@@ -181,6 +181,44 @@ namespace Drelay.SolverHarness
         FarmerTravel,
 
         /// <summary>
+        /// THE TRAVEL WAYPOINT THAT LANDS INSIDE A WALL, WHICH IS THE LIVE FREEZE'S OTHER HALF
+        /// (`PLAN-AUTOFARM.md` section 14.6(c)). `FarmerTravel`'s empty world, with a solid block
+        /// laid across the FIRST roam direction -- south is tried first, so the very first waypoint
+        /// is `FarmTravelRadius` (25) into solid rock.
+        ///
+        /// WHAT FAILS HERE WITHOUT THE FIX, AND WHAT THE ASSERTION IS. `PathPlanner` used to refuse
+        /// the search with `NoTarget` whenever a point goal's own cell was solid and no walkable cell
+        /// lay within three cells -- and a waypoint 25 units out is far more than three cells from
+        /// open ground. The path then contributed nothing, the goal term pointed at the wall, and the
+        /// character pressed into it: the 2026-10-19 session spent 3 700 consecutive frames there.
+        /// The planner's own refusal counter (`PathStats.NoTargetFrames`) did not exist, so its
+        /// report read `0 none` while a third of its searches were that refusal.
+        ///
+        /// THE FIXTURE ASSERTS TWO THINGS: `NoTargetFrames == 0` (the planner always found a cell to
+        /// aim at, because it now searches the whole window for the nearest walkable one) and the
+        /// character moved a real distance. A goal that is unreachable because the MAP says so is
+        /// still refused honestly; a goal that is merely inside a rock is not.
+        /// </summary>
+        FarmerTravelWall,
+
+        /// <summary>
+        /// THE TARGET NO ROUTE EXISTS TO (`PLAN-AUTOFARM.md` section 14.7). A mob twelve units east,
+        /// sealed inside a nine-cell box -- so the farmer acquires it (twelve is inside
+        /// `FarmEngageRadius` 20), the planner honestly answers `Unreachable` on every frame, and the
+        /// only thing a goal-level rule can do is press the wall forever.
+        ///
+        /// THE ASSERTION IS THE FARMER'S NO-PROGRESS RELEASE: after `FarmStuckFrames` (~3 s) without
+        /// getting closer the hold is dropped, the farmer travels for `FarmDetourFrames` (~2.5 s) and
+        /// the mob is re-acquired from somewhere else. Two releases in 600 frames is the shape; the
+        /// check asks for at least one and that the character actually moved, because a "detour" that
+        /// stands still is the same defect with a new counter. The planner's own refusal on this map
+        /// is the NODE CAP rather than `Unreachable` -- the window is mostly open, so the search
+        /// expands until it runs out -- and either way it is "no route", which is the state the
+        /// release is about.
+        /// </summary>
+        FarmerSealed,
+
+        /// <summary>
         /// W5: the farmer and a live bullet on the same frame. See `PlanSpawns`'s case for the
         /// geometry -- it is `Scenario.Dodge`'s bullet with a farm target added, so the dodge has
         /// real work to do while the farmer is asking to walk north.
@@ -570,6 +608,46 @@ namespace Drelay.SolverHarness
 
         private void PlanWalls()
         {
+            if (Kind == Scenario.FarmerSealed)
+            {
+                // A NINE-CELL BOX ROUND THE MOB. The radius is four rather than one on purpose: the
+                // closest the character can stand is `ex - 4 - MoveFootprint` units away, which is
+                // about 4.4, and that has to stay outside `FarmStopRadius + FarmStuckUnits` (3.5) or
+                // "the farmer is in range, standing" would be indistinguishable from "the farmer is
+                // stuck, walking".
+                int ex = (int)StartX + 12;
+                int ey = (int)StartY;
+                for (int dy = -4; dy <= 4; dy++)
+                {
+                    for (int dx = -4; dx <= 4; dx++)
+                    {
+                        if (dx == 0 && dy == 0)
+                        {
+                            continue;   // the mob's own cell is walkable ground
+                        }
+                        _walls.Add(new[] { ex + dx, ey + dy });
+                    }
+                }
+                return;
+            }
+            if (Kind == Scenario.FarmerTravelWall)
+            {
+                // A BLOCK WHERE THE FIRST ROAM WAYPOINT GOES. `RoamDegrees` starts at 90 degrees
+                // (south, +y) at `FarmTravelRadius` = 25, so the first waypoint is (StartX,
+                // StartY + 25) and this block covers y = StartY+20 .. StartY+30, ten cells either
+                // side. The nearest walkable cell to that waypoint is the block's north edge, which
+                // is the "walk as far toward it as the map allows" route the fix produces.
+                int y0 = (int)StartY + 20;
+                int y1 = (int)StartY + 30;
+                for (int y = y0; y <= y1; y++)
+                {
+                    for (int x = (int)StartX - 10; x <= (int)StartX + 10; x++)
+                    {
+                        _walls.Add(new[] { x, y });
+                    }
+                }
+                return;
+            }
             if (Kind == Scenario.Farmer)
             {
                 // THE WALL W2 ASKS FOR: a solid line across the straight route to the enemy, with a
@@ -649,12 +727,13 @@ namespace Drelay.SolverHarness
             return new EntityBody { X = x, Y = y, Radius = radius, DangerRadius = 0.0f };
         }
 
-        /// <summary>True for the five fixtures `PLAN-AUTOFARM.md` section 4 adds.</summary>
+        /// <summary>True for the fixtures `PLAN-AUTOFARM.md` sections 4 and 14 add.</summary>
         public static bool IsFarm(Scenario kind)
         {
             return kind == Scenario.Farmer || kind == Scenario.FarmerClose
                    || kind == Scenario.FarmerOrbit || kind == Scenario.FarmerPair
                    || kind == Scenario.FarmerIgnore || kind == Scenario.FarmerTravel
+                   || kind == Scenario.FarmerTravelWall || kind == Scenario.FarmerSealed
                    || kind == Scenario.FarmerDodge;
         }
 
@@ -774,6 +853,9 @@ namespace Drelay.SolverHarness
                     break;
                 case Scenario.FarmerDodge:
                     targets.Add(Target(1, StartX, StartY + 3.0f));
+                    break;
+                case Scenario.FarmerSealed:
+                    targets.Add(Target(1, StartX + 12.0f, StartY));
                     break;
             }
             return targets;

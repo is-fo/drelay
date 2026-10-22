@@ -87,6 +87,14 @@ internal static class Program
         world.Player.Health = 150;
         world.Player.MaxHealth = 2000;
 
+        // --- the quest reader's origin guard -------------------------------------------------
+        //
+        // The first live quest walk set off for the map's top left. The reader now samples both
+        // `Position` and `ExactPosition`, refuses a marker that is not a place, and counts it. This
+        // fake gives one activatable marker a local (0,0) `Position` and a real `ExactPosition`, and
+        // one event marker that is (0,0) in both -- the two halves of that fix.
+        CheckQuests(world);
+
         // THE WORLD LOG RESOLVES THE ENEMY READER ITSELF, AND THIS HARNESS RELIES ON IT.
         //
         // In the hook `EnemyReader` is resolved by `DodgeAdapter.Resolve`, which returns at its first
@@ -372,6 +380,129 @@ internal static class Program
             Console.WriteLine("  " + (line.Length > 220 ? line.Substring(0, 220) + "..." : line));
         }
         return _failures == 0 ? 0 : 1;
+    }
+
+    /// <summary>
+    /// The quest reader against the fake's own `World.Quest`/`World.EventQuests`, including the
+    /// `Position`-is-(0,0)-and-`ExactPosition`-is-real case the first live report produced, and the
+    /// registry check that refuses a marker from another map.
+    /// </summary>
+    private static void CheckQuests(DarzasDominion.Darza.Game.World world)
+    {
+        world.Quest = new DarzasDominion.Darza.Game.Objects.Map.Activatable.SoloDungeonStatue
+        {
+            GameId = 9001,
+            Position = new Microsoft.Xna.Framework.Vector3(0.0f, 0.0f, 0.0f),
+            ExactPosition = new Microsoft.Xna.Framework.Vector3(110.0f, 120.0f, 0.0f),
+            Title = "Quest Giver",
+        };
+        world.EventQuests.Add(new DarzasDominion.Darza.Game.Objects.GameObject
+        {
+            GameId = 9002,
+            Position = new Microsoft.Xna.Framework.Vector3(0.0f, 0.0f, 0.0f),
+            ExactPosition = new Microsoft.Xna.Framework.Vector3(0.0f, 0.0f, 0.0f),
+        });
+        // THE STALENESS FIXTURE: a marker with a perfectly good position that is NOT an object in
+        // this world. It is what `World.Quest` looks like after a map change -- `ClearWorld` empties
+        // `Objects` and leaves `Quest` set -- and walking to it is walking to a coordinate in a map
+        // that is not loaded.
+        var stale = new DarzasDominion.Darza.Game.Objects.GameObject
+        {
+            GameId = 9003,
+            Position = new Microsoft.Xna.Framework.Vector3(50.0f, 50.0f, 0.0f),
+        };
+        world.EventQuests.Add(stale);
+        // THE TRACKED MARKER AND THE (0,0) EVENT MARKER ARE OBJECTS IN THIS WORLD; 9003 is not.
+        world.Objects[9001] = world.Quest;
+        world.Objects[9002] = world.EventQuests[0];
+
+        QuestReader.ResolveWorld(typeof(DarzasDominion.Darza.Game.World).GetField("Shared"));
+        Check("QuestReader resolves World.Quest and World.EventQuests",
+              QuestReader.Resolve(typeof(DarzasDominion.Darza.Game.World).Assembly,
+                                  "DarzasDominion.Darza.Game.World"),
+              QuestReader.Status());
+
+        var snapshot = new DodgeSnapshot();
+        snapshot.Clear();
+        snapshot.Player.X = 100.0f;
+        snapshot.Player.Y = 100.0f;
+        DodgeConfig config = DodgeConfig.Default();
+        config.FarmMode = true;
+        config.FarmQuest = true;
+        QuestReader.Fill(snapshot, config);
+
+        bool one = snapshot.Quests.Count == 1;
+        Check("the (0,0) Position falls back to ExactPosition, and a marker with no place is skipped",
+              one && snapshot.Quests[0].X == 110.0f && snapshot.Quests[0].Y == 120.0f
+              && snapshot.Quests[0].Primary && snapshot.Quests[0].Activatable
+              && QuestReader.MarkersSkipped >= 1,
+              one
+                  ? snapshot.Quests.Count + " marker(s), first at "
+                    + snapshot.Quests[0].X + "," + snapshot.Quests[0].Y
+                    + ", skipped " + QuestReader.MarkersSkipped
+                  : snapshot.Quests.Count + " marker(s), skipped " + QuestReader.MarkersSkipped);
+
+        Check("a marker that is not an object in this world is refused as stale",
+              QuestReader.MarkersStale == 1,
+              "stale " + QuestReader.MarkersStale + " (the event marker at 9002 is not in Objects)");
+
+        if (one)
+        {
+            string why;
+            Check("an activatable quest marker is entered through Activate(0)",
+                  QuestReader.TryActivate(snapshot.Quests[0].Object, out why), why);
+        }
+
+        // --- THE REGISTRY SCAN: a quest the client flags on the OBJECT, not on `World.Quest` ----
+        //
+        // THE OPERATOR'S 22:36 SESSION: a quest indicator on screen for `Athena, Queen of
+        // Arachnids`, `World.Quest` null, `EventQuests` empty, and a farmer that spent the session
+        // on roam waypoints. The client's other statement about a quest object is its data:
+        // `EntityData.Quest` / `EntityData.EventQuest`. This is that object -- flagged, in
+        // `Objects`, and in neither of the two tracked collections.
+        var athena = new DarzasDominion.Darza.Game.Objects.Entities.Enemy
+        {
+            GameId = 9100,
+            Position = new Microsoft.Xna.Framework.Vector3(320.0f, 240.0f, 0.0f),
+            Radius = 1.0f,
+            Data = new DarzaCore.Data.Entities.EntityData
+            {
+                Name = "Athena, Queen of Arachnids",
+                Class = "Enemy",
+                Quest = true,
+            },
+        };
+        world.Objects[9100] = athena;
+        var scanned = new DodgeSnapshot();
+        // `QuestScanFrames` CALLS, NOT ONE: the registry walk is every tenth frame (see
+        // `ScanRegistry`), which is the cost contract, so a test that scanned once would only prove
+        // that the cache was not updated early.
+        for (int i = 0; i < 10; i++)
+        {
+            scanned.Clear();
+            scanned.Player.X = 100.0f;
+            scanned.Player.Y = 100.0f;
+            QuestReader.Fill(scanned, config);
+        }
+
+        bool found = false;
+        for (int i = 0; i < scanned.Quests.Count; i++)
+        {
+            if (scanned.Quests[i].GameId == 9100
+                && scanned.Quests[i].Name == "Athena, Queen of Arachnids"
+                && scanned.Quests[i].X == 320.0f && scanned.Quests[i].Y == 240.0f)
+            {
+                found = true;
+            }
+        }
+        Check("a quest the client flags in the object's DATA is found by the registry scan",
+              found && QuestReader.DataMarkers >= 1,
+              "scanned " + QuestReader.ScannedObjects + " object(s), " + QuestReader.DataMarkers
+              + " data-flagged marker(s); " + scanned.Quests.Count
+              + " marker(s) published, and the flagged one is the `Athena, Queen of Arachnids` at"
+              + " (320,240) in `World.Objects` with `EntityData.Quest = true` -- in neither"
+              + " `World.Quest` nor `World.EventQuests`, which is the state the 2026-10-19 session"
+              + " was in.");
     }
 
     /// <summary>

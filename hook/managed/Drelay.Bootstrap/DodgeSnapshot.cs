@@ -339,6 +339,64 @@ namespace Drelay.Bootstrap
     }
 
     /// <summary>
+    /// One ACTIVE QUEST MARKER the farmer may walk to, as the sensor saw it -- the client's own
+    /// `World.Quest` (the tracked quest) or one entry of `World.EventQuests`.
+    ///
+    /// WHY THIS IS A THIRD LIST AND NOT A `FarmTarget`. The two answer different questions: a farm
+    /// target is an enemy the character should fight, culled at `FarmEngageRadius`; a quest marker is
+    /// a PLACE the client itself is pointing an arrow at, and it may be a thousand units away, an
+    /// NPC, or a static quest object that is not an enemy at all. `World.Quest` is a single
+    /// `GameObject` reference and `EventQuests` is a list of them (the client's own minimap and
+    /// `QuestIndicator` draw both); neither is `World.GetEnemies()`.
+    ///
+    /// IT CARRIES THE LIVE OBJECT because an activatable quest target is entered the same way a
+    /// portal is -- through the client's own `ActivatableObject.Activate(int)` -- and that needs the
+    /// instance. `Activatable` is resolved once from the object's type, not per frame.
+    /// </summary>
+    public struct QuestTarget
+    {
+        /// <summary>The live `GameObject`; used only when <see cref="Activatable"/> is true.</summary>
+        public object Object;
+
+        /// <summary>`GameObject.GameId` -- the identity the quest hold keeps across frames.</summary>
+        public int GameId;
+
+        public float X;
+        public float Y;
+
+        /// <summary>`GameObjectData.Name`, or null when the reader could not resolve `Data`.</summary>
+        public string Name;
+
+        /// <summary>
+        /// True for `World.Quest` (the quest the client's own arrow is tracking), false for an
+        /// entry of `World.EventQuests`. The tracked quest wins when both exist: it is the one the
+        /// operator selected, while an event list is whatever the server has announced.
+        /// </summary>
+        public bool Primary;
+
+        /// <summary>
+        /// True when the object is an `ActivatableObject` -- an NPC, a quest board, a chest. Those
+        /// are walked ONTO and activated, exactly like `Portal`; an enemy quest target is walked at
+        /// and stopped beside, exactly like a farm target.
+        /// </summary>
+        public bool Activatable;
+
+        /// <summary>`Entity.Dead`, false for a non-entity or an unresolved field.</summary>
+        public bool Dead;
+
+        /// <summary>
+        /// True when the marker came from the REGISTRY SCAN -- an object whose own data carries
+        /// `EntityData.Quest`/`EventQuest` -- rather than from `World.Quest` or `World.EventQuests`.
+        ///
+        /// IT IS A SEPARATE FACT BECAUSE IT IS A SEPARATE BUG CLASS. The operator's 22:36 session had
+        /// a quest indicator on screen and an empty tracked reference; a session's log has to be able
+        /// to say which source the goal came from, so the pilot line's `qsrc=` distinguishes
+        /// `worldquest`, `event` and `data`.
+        /// </summary>
+        public bool Scanned;
+    }
+
+    /// <summary>
     /// One portal the LOBBY PILOT may walk to (`PLAN-AUTOFARM.md` section 5.2), as the sensor saw it.
     ///
     /// IT CARRIES THE LIVE OBJECT BECAUSE ENTERING IS A CLIENT CALL, not a coordinate. Section 5.2's
@@ -398,6 +456,83 @@ namespace Drelay.Bootstrap
         /// <summary>Row-major, `Width * Height` bytes, from a `byte[x, y]` -- see `WriteGridWindow`.</summary>
         public byte[] Cells;
 
+        /// <summary>
+        /// THE PLAYER'S MOVEMENT FOOTPRINT: the client's move test, not a guess.
+        ///
+        /// The client's movement resolver (`World.hehe...EF73` -> `EF74`) does not test the single
+        /// cell under the destination point. It tests the SAME 3x3 neighbourhood twice, at two
+        /// offsets, calling a walkability predicate on `(int)(x + n)`, `(int)(x - n)`, `(int)(y + n)`,
+        /// `(int)(y - n)` and their diagonals. So the player has a square footprint and may not
+        /// approach a nonzero collision cell closer than that offset on either axis, even though its
+        /// CENTRE is still in an open cell. A centre-only rule 2 admits steps the client refuses,
+        /// which reads as a character pressed against a wall it never quite reaches.
+        ///
+        /// THIS WAS BLAMED FOR THE 40-SECOND FREEZE AND IT WAS NOT THE CAUSE (section 14.8: a `stand`
+        /// candidate was winning the score and being published as `Move` with a zero scale). It is
+        /// still the client's own test, and the numbers that bound it are measurements: the closest
+        /// approach to a nonzero collision cell over frames that MOVED is 0.401
+        /// (`20261019-211704-p7732`) and 0.403 (`20261019-220335-p16416`). The same measurement on
+        /// TILE-derived cells is 0.008, which is the other finding -- `EF74` reads the server's
+        /// collision bytes and knows nothing about `Tilemap.NoWalk`, so this window's two halves are
+        /// two different questions (`Walkable` is the move test; the planner's cell grid is the map).
+        ///
+        /// IT IS A CONSTANT AND NOT A CONFIGURATION VALUE, because it is a property of the client's
+        /// move test and not a preference: a run that tuned it down would walk into walls again and
+        /// a run that tuned it up would refuse the one-cell corridors the maps are built from.
+        /// </summary>
+        public const float MoveFootprint = 0.4f;
+
+        /// <summary>
+        /// THE ONE RULE THAT TURNS THE CLIENT'S TWO WALKABILITY SOURCES INTO THIS WINDOW'S BYTE.
+        ///
+        /// WHY IT IS HERE AND NOT AT THE TWO CALL SITES. `DodgeAdapter.RefreshGrid` (the live window)
+        /// and `TraceRecorder.RefreshGrid` (the recording the harness replays) must agree cell for
+        /// cell, and they had grown two copies of the same three-branch expression. A merge that
+        /// disagrees between them is an offline result for a different world -- and the rule below is
+        /// the one that decides whether a dungeon is navigable at all, so it is a single function
+        /// that the harness checks directly (`SolverHarness`'s `G1`).
+        ///
+        /// THE COLLISION BYTE WINS WHEN IT IS NONZERO. The server sends `1` and `2` and both are
+        /// walls (the client's move test is `collision[x, y] == 0`; the 0.400 refusal boundary in
+        /// `PLAN-AUTOFARM.md` section 14.7 is measured against a `2`).
+        ///
+        /// A TILE THAT EXISTS AND SAYS `NoWalk` IS A WALL. That is the half the window used to be
+        /// missing: the black void has a zero collision byte and a `NoWalk` tile, so the planner
+        /// routed across it and rule 2 admitted the step. See `Tilemap.CanWalk`.
+        ///
+        /// AND A CELL WITH NO TILE IS NOT A WALL. THIS IS THE DUNGEON FIX, AND IT IS A MEASUREMENT,
+        /// not a preference. `Tilemap` does not arrive with the world: `GmTiles` streams it in as the
+        /// character explores, and `Tilemap.GetTile` answers null for a cell that has not arrived
+        /// (it also answers null for out-of-map, which the callers handle with the map's dimensions).
+        /// Treating that null as a wall made every dungeon entry look like a sealed box:
+        ///
+        ///   * session `20261020-171352-p40648`, *Frost Cavern*, 21:28: the character stood in a
+        ///     30-unit circular entry room for ~1 700 frames with the boss marker (`Gradvale, Mage of
+        ///     Winter`) 130 units east. The merged window covered a walkable component of **1 027
+        ///     cells that did not touch the window's edge** -- a sealed island in the middle of a
+        ///     128-unit window -- so the planner had no route, and the logs read `qsrc=worldquest`,
+        ///     `quest=24703/22`: the marker was known and the way to it was declared not to exist.
+        ///   * the room's own floor was **474 walkable cells on the entry frame and 1 094 by frame
+        ///     28 500**, because the tiles were still arriving. Between frames 27 640 and 29 300 the
+        ///     same absolute cells went **620 x `1 -> 0`** (tile arrived, floor) and **364 x `1 -> 2`**
+        ///     (tile arrived, real wall). Those were never walls; they were "not read yet".
+        ///
+        /// So an absent tile is no information, and the collision byte is the honest answer: it is
+        /// zeroed for a cell the server has not painted, and the client's own streamer paints ahead
+        /// of the character (the same session moved 30 units through cells that had read solid).
+        /// The consequence is the intended one: inside a dungeon the planner routes toward the
+        /// marker through unexplored space and the character discovers it, instead of the farmer
+        /// falling back to its roam waypoints -- the circular movement the operator reported.
+        /// </summary>
+        public static byte MergeCell(byte collision, bool hasTile, bool noWalk)
+        {
+            if (collision != 0)
+            {
+                return collision;
+            }
+            return hasTile && noWalk ? (byte)1 : (byte)0;
+        }
+
         /// <summary>The cell containing a world position, in the game's own truncating convention.</summary>
         public int GridFromWorld(float world) => (int)world;
 
@@ -435,18 +570,45 @@ namespace Drelay.Bootstrap
             return Cells[(cy * Width) + cx];
         }
 
-        /// <summary>True when a world position is walkable, and only when the window covers it.</summary>
+        /// <summary>
+        /// True when the player's WHOLE FOOTPRINT fits at a world position, and only when the window
+        /// covers every cell involved.
+        ///
+        /// THE TEST IS THE CLIENT'S OWN, CELL FOR CELL. `MoveFootprint` records the measurement that
+        /// forced it; the shape here is exactly `(int)(x - r) .. (int)(x + r)` crossed with
+        /// `(int)(y - r) .. (int)(y + r)`, which is at most 2x2 cells because `r` is under one cell.
+        /// It is a truncation, not a floor, because the client's own expressions truncate: the same
+        /// convention `GridFromWorld` documents.
+        ///
+        /// AN OUT-OF-WINDOW CELL IS A REFUSAL, for the same reason it was before: the recorded
+        /// window is the only region this decision has evidence about.
+        /// </summary>
         public bool Walkable(float x, float y)
         {
             if (!Present)
             {
                 return true;   // rule 2 degrades away when the offset could not be resolved
             }
-            if (!InWindow(x, y))
+            int x0 = (int)(x - MoveFootprint) - OriginX;
+            int x1 = (int)(x + MoveFootprint) - OriginX;
+            int y0 = (int)(y - MoveFootprint) - OriginY;
+            int y1 = (int)(y + MoveFootprint) - OriginY;
+            if (x0 < 0 || y0 < 0 || x1 >= Width || y1 >= Height)
             {
                 return false;  // out of the recorded window is not evidence of walkability
             }
-            return At(x, y) == 0;
+            for (int cy = y0; cy <= y1; cy++)
+            {
+                int row = cy * Width;
+                for (int cx = x0; cx <= x1; cx++)
+                {
+                    if (Cells[row + cx] != 0)
+                    {
+                        return false;
+                    }
+                }
+            }
+            return true;
         }
     }
 
@@ -548,6 +710,14 @@ namespace Drelay.Bootstrap
             new System.Collections.Generic.List<FarmTarget>();
 
         /// <summary>
+        /// The active quest markers (`World.Quest` and `World.EventQuests`), filled only when the
+        /// farmer and its quest walker are both on. Empty is legal -- most frames have no tracked
+        /// quest -- and empty is also the switch's off position. See <see cref="QuestTarget"/>.
+        /// </summary>
+        public readonly System.Collections.Generic.List<QuestTarget> Quests =
+            new System.Collections.Generic.List<QuestTarget>();
+
+        /// <summary>
         /// The portals in the current world, filled only when the farmer is on (`FarmMode`). The
         /// LOBBY PILOT's input: `PLAN-AUTOFARM.md` section 5.2's "find the portals, walk to one,
         /// enter it". Empty is legal -- a realm has no realm entrance and the dungeon exit is the
@@ -625,6 +795,26 @@ namespace Drelay.Bootstrap
         /// </summary>
         public bool GoalKeepWalking;
 
+        /// <summary>
+        /// True when the point goal is an ACTIVE QUEST MARKER rather than an enemy, a portal or a
+        /// roam waypoint. It is the same kind of flag as <see cref="GoalIsPortal"/> and
+        /// <see cref="GoalKeepWalking"/>: the planner and the score terms do not care, and the
+        /// arrival policy needs to know which radius to use.
+        ///
+        /// It exists as a flag of its own rather than reusing `GoalKeepWalking` because a quest
+        /// marker can be either kind: an NPC/board is walked ONTO and
+        /// <see cref="GoalQuestActivate"/> is true; a quest ENEMY is walked at and stopped beside,
+        /// and the difference is exactly the difference between `FarmPortalRadius` and
+        /// `FarmStopRadius`.
+        /// </summary>
+        public bool GoalIsQuest;
+
+        /// <summary>
+        /// True when the quest goal is an `ActivatableObject` that the farmer should stand on and
+        /// activate, rather than an enemy it should stop beside. See <see cref="GoalIsQuest"/>.
+        /// </summary>
+        public bool GoalQuestActivate;
+
         public CollisionWindow Grid;
 
         /// <summary>True when the sensor could not produce a usable picture this frame.</summary>
@@ -635,6 +825,7 @@ namespace Drelay.Bootstrap
             Threats.Clear();
             Bodies.Clear();
             FarmTargets.Clear();
+            Quests.Clear();
             Portals.Clear();
             GoalHasPoint = false;
             GoalX = 0.0f;
@@ -642,6 +833,8 @@ namespace Drelay.Bootstrap
             GoalFromRoute = false;
             GoalIsPortal = false;
             GoalKeepWalking = false;
+            GoalIsQuest = false;
+            GoalQuestActivate = false;
         }
     }
 
@@ -1225,6 +1418,38 @@ namespace Drelay.Bootstrap
         /// </summary>
         public float FarmSwitchMargin;
 
+        /// <summary>
+        /// Whether the farmer walks to an ACTIVE QUEST MARKER when the client has one
+        /// (`World.Quest`, or an entry of `World.EventQuests`). On by default for a farm run, and
+        /// off is `DRELAY_DODGE_FARM_QUEST=0`.
+        ///
+        /// WHY IT IS A SEPARATE SWITCH AND NOT ALWAYS ON. A quest marker is a goal the OPERATOR may
+        /// not want -- a delivery NPC, an event vendor, a level-50 dungeon whose boss this farmer
+        /// cannot kill -- and the one thing a goal source must never do is take the character away
+        /// from the operator's chosen farming loop without a way to say no. The switch makes the
+        /// feature A/B-able: `0` restores the pre-quest decisions exactly, with the same reader
+        /// running and publishing nothing.
+        ///
+        /// THE MARKER OUTRANKS AN ENEMY TARGET while it exists, because otherwise a realm with a
+        /// mob every twenty units would never reach a quest that is across the map: the acquisition
+        /// radius would re-target the character onto the next pack forever. The dodge's admission
+        /// rules are untouched -- the quest is a PREFERENCE for a direction, not a rule.
+        /// </summary>
+        public bool FarmQuest;
+
+        /// <summary>
+        /// HOW CLOSE the farmer has to be to an ACTIVATABLE quest marker before it calls the
+        /// client's own `Activate(0)`, world units.
+        ///
+        /// IT IS THE CLIENT'S OWN ACTIVATION DISTANCE, measured rather than guessed: the 2026-10-18
+        /// session's four portal walks ended 0.16, 0.44, 0.59 and 0.00 units from the target and
+        /// `ActivatableObject.ActivateDistance` is 2. `2.0` is inside that, and it is deliberately
+        /// larger than `FarmPortalRadius`'s 1.5 because a quest target's own collision disc may be
+        /// what stops the walk. A non-activatable quest target (an enemy) uses `FarmStopRadius`
+        /// instead; the solver picks between the two from <see cref="DodgeSnapshot.GoalQuestActivate"/>.
+        /// </summary>
+        public float FarmQuestRadius;
+
         // --- The routes (PLAN-AUTOFARM.md section 7) --------------------------------------
         //
         // A ROUTE IS A THIRD SOURCE OF THE GOAL, and it is the same kind of thing the farmer is: a
@@ -1516,6 +1741,11 @@ namespace Drelay.Bootstrap
             c.FarmPortalRadius = 1.5f;
             // HOW FAR THE ROAM WAYPOINT IS when there is nothing to fight. See `FarmTravelRadius`.
             c.FarmTravelRadius = 25.0f;
+            // THE QUEST WALKER, ON BY DEFAULT FOR A FARM RUN. `DRELAY_DODGE_FARM_QUEST=0` is the
+            // off-switch; see `FarmQuest`. The activation radius is the client's own 2-unit
+            // `ActivateDistance`, rounded to the number the portal path already measured.
+            c.FarmQuest = true;
+            c.FarmQuestRadius = 2.0f;
             // THE ROUTES, OFF, WITH SECTION 7'S OWN STARTING VALUES. `RouteMode` ships false and
             // `RouteName` ships empty, which is the same switch: one variable names the route and
             // turns the mode on. The deviation is a THIRD of the spacing (1.0 against 3.0), which is
@@ -1734,6 +1964,11 @@ namespace Drelay.Bootstrap
             if (ignore != null) { c.FarmIgnore = ignore; }
             c.FarmPortalRadius = FloatAllowZero("DRELAY_DODGE_FARM_PORTAL", c.FarmPortalRadius);
             c.FarmTravelRadius = Float("DRELAY_DODGE_FARM_TRAVEL", c.FarmTravelRadius);
+            // THE QUEST WALKER'S SWITCH IS `!= "0"` RATHER THAN `== "1"` ON PURPOSE: it ships ON, and
+            // a variable that is absent must keep the default. `=0` is the only value that turns it
+            // off; see `FarmQuest`.
+            c.FarmQuest = Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM_QUEST") != "0";
+            c.FarmQuestRadius = FloatAllowZero("DRELAY_DODGE_FARM_QUEST_RADIUS", c.FarmQuestRadius);
             // THE ROUTE'S KNOBS. `DRELAY_DODGE_ROUTE=<name>` is both the switch and the name, for the
             // reason the field records; the four numbers move one at a time from the command line.
             string routeName = Environment.GetEnvironmentVariable("DRELAY_DODGE_ROUTE");
@@ -1944,9 +2179,11 @@ namespace Drelay.Bootstrap
         public string DescribeFarm()
         {
             return string.Format(CultureInfo.InvariantCulture,
-                "farm on={0} engage={1} stop={2} margin={3} ignore='{4}' portal={5} travel={6}",
+                "farm on={0} engage={1} stop={2} margin={3} ignore='{4}' portal={5} travel={6} "
+                + "quest={7} questradius={8}",
                 FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin,
-                FarmIgnore ?? "", FarmPortalRadius, FarmTravelRadius);
+                FarmIgnore ?? "", FarmPortalRadius, FarmTravelRadius,
+                FarmQuest, FarmQuestRadius);
         }
 
         /// <summary>

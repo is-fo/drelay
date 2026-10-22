@@ -94,6 +94,12 @@ namespace Drelay.Bootstrap
         /// <summary>Transitions where the held target was lost rather than beaten.</summary>
         public long ForcedReleases;
 
+        /// <summary>
+        /// Holds dropped because the character stopped closing on the target (`PLAN-AUTOFARM.md`
+        /// section 14.7). Always zero here, and named so the two builds report one shape.
+        /// </summary>
+        public long StuckReleases;
+
         /// <summary>Frames the farmer would have wanted a target and had none.</summary>
         public long FramesNoTarget;
 
@@ -133,6 +139,31 @@ namespace Drelay.Bootstrap
         public long TravelFrames;
         public long RoamWaypoints;
 
+        /// <summary>
+        /// The quest walker's counters (`PLAN-AUTOFARM.md` section 14). Always zero here, and named
+        /// so the public build's report and the private module's report have one shape.
+        /// </summary>
+        public long QuestFrames;
+        public long QuestsAcquired;
+        public long QuestAttempts;
+        public long QuestActivations;
+        public long QuestFailures;
+        public string QuestFailure;
+        public string QuestTitle;
+
+        /// <summary>False here: the public stub never walks to a quest.</summary>
+        public bool Questing => false;
+
+        /// <summary>Player-to-marker distance. Always zero here.</summary>
+        public float QuestDistance => 0.0f;
+
+        /// <summary>Distance to the published point (marker or step). Always zero here.</summary>
+        public float QuestGoalDistance => 0.0f;
+
+        /// <summary>The marker's own position. Always zero here.</summary>
+        public float QuestX => 0.0f;
+        public float QuestY => 0.0f;
+
         /// <summary>False here: the public stub never travels.</summary>
         public bool Traveling => false;
 
@@ -153,7 +184,15 @@ namespace Drelay.Bootstrap
             Acquired = 0;
             Switches = 0;
             ForcedReleases = 0;
+            StuckReleases = 0;
             FramesNoTarget = 0;
+            QuestFrames = 0;
+            QuestsAcquired = 0;
+            QuestAttempts = 0;
+            QuestActivations = 0;
+            QuestFailures = 0;
+            QuestFailure = null;
+            QuestTitle = null;
         }
 
         /// <summary>

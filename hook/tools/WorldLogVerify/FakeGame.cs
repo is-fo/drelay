@@ -59,17 +59,54 @@ namespace DarzasDominion.Nodes
     public class Node
     {
         public Microsoft.Xna.Framework.Vector3 Position;
+
+        /// <summary>
+        /// `Node.ExactPosition` (the client's accumulated float position). Present here because the
+        /// quest reader's origin guard samples both: a marker whose `Position` is a local (0,0)
+        /// vector still has a world point in `ExactPosition`, and the fake has to be able to prove
+        /// that path rather than the resolver's assumptions about it.
+        /// </summary>
+        public Microsoft.Xna.Framework.Vector3 ExactPosition;
     }
 }
 
 namespace DarzasDominion.Darza.Game.Objects
 {
+    /// <summary>
+    /// `DarzasDominion.Darza.Game.Objects.GameObjectData` -- the base every object's data derives
+    /// from, and the reason the flags are not found by walking up from `Data`'s declared type:
+    /// `Quest`/`EventQuest` are declared BELOW it on `EntityData`.
+    /// </summary>
+    public class GameObjectData
+    {
+        public string Name;
+        public string Class;
+    }
+
     /// <summary>`DarzasDominion.Darza.Game.Objects.GameObject`.</summary>
     public class GameObject : DarzasDominion.Nodes.Node
     {
         public int GameId;
         public string Tag;
         public float Radius = 16.0f;
+
+        /// <summary>`Data` is declared `GameObjectData`; the instance is an `EntityData`.</summary>
+        public GameObjectData Data;
+    }
+}
+
+namespace DarzaCore.Data.Entities
+{
+    /// <summary>
+    /// `DarzaCore.Data.Entities.EntityData` -- where the client declares `Quest` and `EventQuest`,
+    /// the two flags `QuestReader` scans `World.Objects` for. `EntityData : GameObjectData` is the
+    /// client's own declaration, and the shape is what makes a hierarchy walk from `Data` fail.
+    /// </summary>
+    public class EntityData : DarzasDominion.Darza.Game.Objects.GameObjectData
+    {
+        public bool Quest;
+        public bool EventQuest;
+        public string EventQuestType;
     }
 }
 
@@ -194,6 +231,18 @@ namespace DarzasDominion.Darza.Game
         public bool Space;
         public List<DarzasDominion.Darza.Game.Objects.Map.Activatable.ActivatableObject> Activatables
             = new List<DarzasDominion.Darza.Game.Objects.Map.Activatable.ActivatableObject>();
+
+        // The quest markers `QuestReader` reads. `Quest` is the tracked marker, `EventQuests` the
+        // event list; both are public fields on the client's World.
+        public DarzasDominion.Darza.Game.Objects.GameObject Quest;
+        public List<DarzasDominion.Darza.Game.Objects.GameObject> EventQuests
+            = new List<DarzasDominion.Darza.Game.Objects.GameObject>();
+
+        // `World.Objects` -- the live-object registry `QuestReader` uses to refuse a marker that
+        // survived a map change. A real `Dictionary<int, GameObject>` so the reader's `IDictionary`
+        // path is the one under test, not a stand-in with different semantics.
+        public Dictionary<int, DarzasDominion.Darza.Game.Objects.GameObject> Objects
+            = new Dictionary<int, DarzasDominion.Darza.Game.Objects.GameObject>();
 
         // THE ONLY byte[,] ON World, which is how the hook finds the collision grid. The name is
         // deliberately meaningless: nothing may depend on it.

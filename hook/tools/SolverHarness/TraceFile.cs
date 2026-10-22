@@ -158,6 +158,38 @@ namespace Drelay.SolverHarness
         public byte[] Cells;
 
         /// <summary>
+        /// WHERE EACH CELL CAME FROM, in the same order as <see cref="Cells"/>: `0` unpainted,
+        /// `1` the server's collision byte, `2` a `NoWalk` tile, `3` floor, `4` outside the map.
+        ///
+        /// IT IS WHAT TELLS A DUNGEON'S WALL FROM A HOLE IN THE STREAMED MAP. Null for a trace
+        /// recorded before the field existed, and readers must treat that as "not recorded".
+        /// </summary>
+        public byte[] Source;
+
+        /// <summary>One cell's source constant, or -1 when the trace did not record sources.</summary>
+        public int SourceAt(int index) => Source == null ? -1 : Source[index];
+
+        /// <summary>
+        /// WHERE THIS WINDOW'S SOLID CELLS CAME FROM, counted by the recorder: the server's collision
+        /// bytes (plus the out-of-map border), a `NoWalk` tile, and the cells whose tile had not
+        /// streamed in yet. They are zero in a trace recorded before the counters existed.
+        ///
+        /// THEY ARE THE MEASUREMENT `PLAN-AUTOFARM.md` SECTION 14.10 TURNS ON. A room that reads as
+        /// solid with `NoTile > 0` is a room whose map has not arrived -- the defect -- and one with
+        /// `NoTile == 0` is a room that is really sealed, which no grid rule can fix.
+        /// </summary>
+        public int CollisionWalls;
+        public int TileWalls;
+        public int NoTile;
+
+        /// <summary>Walkable cells that carry a tile -- count them against the player's own reachable set.</summary>
+        public int FloorCells;
+
+        /// <summary>The most common terrain id among the solid `NoWalk` cells and among the floor cells.</summary>
+        public int WallType;
+        public int FloorType;
+
+        /// <summary>
         /// The solver's own window type, rebuilt from the record.
         ///
         /// THE TRUNCATION IS THE GAME'S. `World` turns a float position into a grid index with a C
@@ -434,6 +466,14 @@ namespace Drelay.SolverHarness
             g.OriginY = record["oy"].AsInt();
             g.Width = record["w"].AsInt();
             g.Height = record["h"].AsInt();
+            // The three source counts are absent from a trace recorded before they existed, and
+            // `AsInt`'s fallback is what keeps such a trace readable (zero, not a parse failure).
+            g.CollisionWalls = record["colWall"].AsInt();
+            g.TileWalls = record["tileWall"].AsInt();
+            g.NoTile = record["noTile"].AsInt();
+            g.FloorCells = record["floorCells"].AsInt();
+            g.WallType = record["wallType"].AsInt();
+            g.FloorType = record["floorType"].AsInt();
             g.Cells = new byte[Math.Max(0, g.Width * g.Height)];
 
             List<Json> rle = record["rle"].Items;
@@ -445,6 +485,23 @@ namespace Drelay.SolverHarness
                 for (int k = 0; k < run && cell < g.Cells.Length; k++)
                 {
                     g.Cells[cell++] = value;
+                }
+            }
+            // THE SOURCE MAP, WHEN THE TRACE HAS ONE. A trace from before the field existed leaves
+            // `Source` null, which `SourceAt` reports as -1 rather than as unpainted.
+            if (record.Has("src"))
+            {
+                g.Source = new byte[g.Cells.Length];
+                List<Json> src = record["src"].Items;
+                cell = 0;
+                for (int i = 0; i + 1 < src.Count; i += 2)
+                {
+                    byte value = (byte)src[i].AsInt();
+                    int run = src[i + 1].AsInt();
+                    for (int k = 0; k < run && cell < g.Source.Length; k++)
+                    {
+                        g.Source[cell++] = value;
+                    }
                 }
             }
             return g;

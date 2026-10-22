@@ -79,9 +79,10 @@ namespace Drelay.Bootstrap
         /// route around a corridor of fire toward a point on the player's own line, and with a 24-cell
         /// radius the search would be aiming at a target it cannot see the far side of.
         ///
-        /// At one world unit per cell this is 128 units across, and the recorder copies it only when
-        /// the player's tile changes -- so the wider window also changes LESS OFTEN, which is why the
-        /// trace does not grow by the 7x the cell count does. It is written run-length encoded (see
+        /// At one world unit per cell this is 128 units across, and the recorder copies it when the
+        /// player's tile changes and every `GridRefreshFrames` -- the live window's own cadence, for
+        /// the reason stated there: a stationary character in a dungeon sees its map stream in, and
+        /// a recorder keyed only on movement would miss it. It is written run-length encoded (see
         /// `WriteGridWindow`), and a window is mostly one value.
         ///
         /// IT MUST STAY EQUAL TO `DodgeAdapter`'s OWN, because the harness reproduces the live
@@ -102,6 +103,26 @@ namespace Drelay.Bootstrap
         // The grid window, reused between frames. The layout is row-major over [x, y] so that a
         // reader can index it the way `World` indexes its own `byte[x, y]`.
         private static byte[] _gridCells = new byte[(2 * GridRadius) * (2 * GridRadius)];
+
+        /// <summary>
+        /// PER CELL, WHERE ITS VALUE CAME FROM. `0` unpainted, `1` collision byte, `2` `NoWalk`
+        /// tile, `3` floor (a tile that is walkable), `4` outside the map.
+        ///
+        /// IT IS WRITTEN INTO THE `G` RECORD AS ITS OWN RLE because the merged bytes cannot answer
+        /// the question a dungeon asks: a room can be enclosed by the server's collision, by
+        /// `NoWalk` terrain, or by cells that have not streamed in, and the three are the same `1`
+        /// in the merged window. The 2026-10-20 Frost Cavern session needed exactly this -- the
+        /// window had 1 204 reachable cells, 2 546 `NoWalk` cells, 563 collision cells and 11 945
+        /// unpainted ones, and which of them formed the ring around the room could only be inferred.
+        /// </summary>
+        private static byte[] _gridSource = new byte[(2 * GridRadius) * (2 * GridRadius)];
+        private static bool _tileResolved;
+        private static Func<object, object> _getTilemap;
+        private static Func<object, bool> _getTileNoWalk;
+        private static Func<object, int, int, object> _getTileData;
+
+        /// <summary>The tile id, for the `G` record's `wallType`/`floorType`. Optional.</summary>
+        private static Func<object, int> _getTileType;
         private static int _gridWidth;
         private static int _gridHeight;
         private static int _gridOriginX;
@@ -110,6 +131,97 @@ namespace Drelay.Bootstrap
         private static bool _gridWindowValid;
         private static bool _gridDirty;
         private static long _gridGeneration;
+
+        /// <summary>The grid array the cached window was read from, so a map change re-reads it.</summary>
+        private static object _gridArrayLast;
+
+        /// <summary>Calls to `RefreshGrid`, and the call the window was last built on. See `GridRefreshFrames`.</summary>
+        private static long _gridClock;
+        private static long _gridReadClock;
+
+        /// <summary>Whether the cached window was built WITH tile data. See `GridRefreshFrames`.</summary>
+        private static bool _gridTileReady;
+
+        /// <summary>
+        /// How often the window is re-read even without a tile change, and it must stay equal to
+        /// `DodgeAdapter.GridRefreshFrames` for the reason `GridRadius` must stay equal: a trace is
+        /// the live window or it is a different world. Half a second covers `GmTiles` arriving while
+        /// the character stands still, which is exactly a dungeon entry.
+        /// </summary>
+        private const int GridRefreshFrames = 30;
+
+        /// <summary>Distinct terrain ids tracked per class in a `G` record's `wallType`/`floorType`.</summary>
+        private const int ModeSlots = 8;
+
+        // The `src` RLE's alphabet. See `_gridSource`.
+        //
+        // THE VALUES ARE `DungeonMap.SourceUnknown`..`SourceOutOfMap` AND MUST STAY SO. The dungeon
+        // solver takes these numbers directly--`SolverHarness` feeds a recorded `src` array whole
+        // into `DungeonMap.Observe`--so a recording whose alphabet drifted would be a map built
+        // from another vocabulary: floor would be read as unpainted and every dungeon would look
+        // empty.
+        private const byte SourceUnpainted = 0;
+        private const byte SourceCollision = 1;
+        private const byte SourceNoWalkTile = 2;
+        private const byte SourceFloor = 3;
+        private const byte SourceOutOfMap = 4;
+
+        /// <summary>Appends one run-length encoded byte array, `(value, run)` pairs, as `[..]`.</summary>
+        private static void AppendRle(StringBuilder line, byte[] cells, int count)
+        {
+            line.Append('[');
+            int i = 0;
+            bool first = true;
+            while (i < count)
+            {
+                byte value = cells[i];
+                int run = 1;
+                while (i + run < count && cells[i + run] == value)
+                {
+                    run++;
+                }
+                if (!first)
+                {
+                    line.Append(',');
+                }
+                first = false;
+                line.Append(value).Append(',').Append(run);
+                i += run;
+            }
+            line.Append(']');
+        }
+
+        /// <summary>
+        /// The most common id in a tiny fixed histogram, updated in place.
+        ///
+        /// A COUNTED MODE AND NOT "THE FIRST TILE SEEN", because a window contains decorative tiles
+        /// as well as the terrain in question and one stray id would name the wrong thing. The table
+        /// fills after `ModeSlots` distinct ids; cells past that still count in the totals, only the
+        /// mode stops being exact for the rarest kinds.
+        /// </summary>
+        private static int ModeOf(int[] types, int[] counts, int type, int current)
+        {
+            for (int i = 0; i < ModeSlots; i++)
+            {
+                if (counts[i] == 0 || types[i] == type)
+                {
+                    types[i] = type;
+                    counts[i]++;
+                    break;
+                }
+            }
+            int best = current;
+            int bestCount = 0;
+            for (int i = 0; i < ModeSlots; i++)
+            {
+                if (counts[i] > bestCount)
+                {
+                    bestCount = counts[i];
+                    best = types[i];
+                }
+            }
+            return best;
+        }
 
         // Accessors, resolved once. All optional: a missing one degrades the trace, never the run.
         private static Func<object> _getWorld;
@@ -349,6 +461,67 @@ namespace Drelay.Bootstrap
             {
                 _gridResolved = false;
             }
+
+            // THE RECORDING HAS TO MATCH WHAT THE LIVE PLANNER SEES, or the offline replay is a
+            // decision about a different world. `DodgeAdapter.RefreshGrid` merges the tile half
+            // (`GetTile`/`NoWalk`) into the collision bytes; this does the same thing for the same
+            // reason.
+            ResolveTilemap(worldType, any);
+        }
+
+        /// <summary>
+        /// The tile half of walkability (`GetTile`/`NoWalk`) and the lava fields on `TileData`, for
+        /// the recording. Mirrors `DodgeAdapter.ResolveTilemap`; a failure records the collision
+        /// grid alone, which is what every older trace carried.
+        /// </summary>
+        private static void ResolveTilemap(Type worldType, BindingFlags any)
+        {
+            try
+            {
+                FieldInfo tilemapField = FieldLookup.Find(worldType, out _, "Tilemap");
+                if (tilemapField == null)
+                {
+                    _tileResolved = false;
+                    return;
+                }
+                _getTilemap = FieldAccessor.Reference(tilemapField);
+                Type tilemapType = tilemapField.FieldType;
+
+                MethodInfo getTile = tilemapType.GetMethod(
+                    "GetTile", BindingFlags.Public | BindingFlags.Instance, null,
+                    new[] { typeof(int), typeof(int) }, null);
+                Type tileDataType = getTile != null ? getTile.ReturnType : null;
+                if (tileDataType != null)
+                {
+                    try
+                    {
+                        // EMITTED, NOT BOUND -- see `FieldAccessor.MethodObject2Int`.
+                        _getTileData = FieldAccessor.MethodObject2Int(getTile);
+                    }
+                    catch (Exception) { _getTileData = null; }
+                    FieldInfo noWalk = FieldLookup.Find(tileDataType, out _, "NoWalk");
+                    if (noWalk != null && noWalk.FieldType == typeof(bool))
+                    {
+                        _getTileNoWalk = FieldAccessor.Bool(noWalk);
+                    }
+                    // THE TILE'S ID, FOR ONE QUESTION ONLY: which terrain makes the ring around a
+                    // dungeon room that the player cannot walk through. `TileData` derives from
+                    // `GameObjectData`, where `Type` is the id the map names; see the `G` record's
+                    // `wallType`/`floorType`. `Int` converts a `short` for the same reason it does
+                    // everywhere else in this file.
+                    FieldInfo tileType = FieldLookup.Find(tileDataType, out _, "Type");
+                    if (tileType != null)
+                    {
+                        try { _getTileType = FieldAccessor.Int(tileType); }
+                        catch (Exception) { _getTileType = null; }
+                    }
+                }
+                _tileResolved = _getTilemap != null;
+            }
+            catch (Exception)
+            {
+                _tileResolved = false;
+            }
         }
 
         // ===================================================================================
@@ -438,10 +611,12 @@ namespace Drelay.Bootstrap
                 }
             }
 
-            // THE GRID RECORD IS WRITTEN BEFORE THE FRAME THAT REFERENCES IT, AND ONLY WHEN THE
-            // WINDOW HAS MOVED. The window is a property of the map and of which tile the player
-            // is standing on; writing it every frame would multiply the file for no information,
-            // and writing it *after* the frame would mean the reader sees a dangling id.
+            // THE GRID RECORD IS WRITTEN BEFORE THE FRAME THAT REFERENCES IT. It is rewritten when
+            // the window has moved, when the grid array or the tile map changes, and every
+            // `GridRefreshFrames` -- the live window's own cadence. Writing it every frame would
+            // multiply the file for no information, and writing it *after* the frame would mean the
+            // reader sees a dangling id; writing it only when the WINDOW MOVED was the third
+            // mistake, because a dungeon's map arrives while the character stands still.
             RefreshGrid(world, px, py);
 
             Line.Length = 0;
@@ -620,13 +795,24 @@ namespace Drelay.Bootstrap
         // ===================================================================================
 
         /// <summary>
-        /// Re-reads the window when the player's tile has moved, and writes the `G` record.
+        /// Re-reads the window when the player's tile has moved, when the grid array is a new one,
+        /// when the tile map first arrives and every <see cref="GridRefreshFrames"/>, and writes the
+        /// `G` record.
         ///
         /// THE WINDOW'S ORIGIN IS THE PLAYER'S TILE MINUS THE RADIUS, AND THE ARITHMETIC IS THE
         /// GAME'S. `World` indexes its grid with a C cast of the float position (`conv.i4`,
         /// truncation toward zero), so this does the same and the offline harness can therefore
         /// reproduce the game's own walkability answer exactly -- which is the whole point of
         /// recording the grid rather than recording a boolean.
+        ///
+        /// THE THREE REASONS ARE `DodgeAdapter.RefreshGrid`'S, AND THAT IS NOT TIDINESS: a trace
+        /// whose window is older than the live one is an offline replay of a different map. The
+        /// stationary case is the one that matters for a dungeon -- the map STREAMS IN
+        /// (`GmTiles`), so a character standing still in a room sees its floor and walls arrive
+        /// while its position does not change, and a recorder keyed only on the player's tile
+        /// writes the first, mostly-unpainted window and never corrects it. The live planner had a
+        /// 30-frame refresh for exactly that reason; without it here, the trace of the session that
+        /// proves the dungeon fix would not contain the fixing data.
         /// </summary>
         private static void RefreshGrid(object world, float px, float py)
         {
@@ -644,13 +830,22 @@ namespace Drelay.Bootstrap
                 _gridDirty = true;
             }
 
-            if (!_gridDirty)
+            object array = _getGridArray(world);
+            if (array == null)
             {
                 return;
             }
+            object tilemap = _tileResolved && _getTilemap != null ? _getTilemap(world) : null;
+            _gridClock++;
+            bool rebound = !ReferenceEquals(array, _gridArrayLast);
+            bool due = _gridWindowValid && _gridClock - _gridReadClock >= GridRefreshFrames;
+            bool tileArrived = tilemap != null && !_gridTileReady;
+            if (rebound || due || tileArrived)
+            {
+                _gridDirty = true;
+            }
 
-            object array = _getGridArray(world);
-            if (array == null)
+            if (!_gridDirty)
             {
                 return;
             }
@@ -661,15 +856,47 @@ namespace Drelay.Bootstrap
             {
                 _gridCells = new byte[w * h];
             }
+            if (_gridSource.Length < w * h)
+            {
+                _gridSource = new byte[w * h];
+            }
+
+            Array dimensions = array as Array;
+            int mapW = dimensions != null && dimensions.Rank == 2 ? dimensions.GetLength(0) : 0;
+            int mapH = dimensions != null && dimensions.Rank == 2 ? dimensions.GetLength(1) : 0;
+
+            // THE THREE SOURCES OF A SOLID CELL, COUNTED IN THE `G` RECORD. They are the answer to
+            // the one question the merged bytes cannot answer by themselves -- "is this wall the
+            // server's collision, a `NoWalk` tile, or a cell that has not arrived yet" -- and the
+            // dungeon diagnosis in `PLAN-AUTOFARM.md` section 14.10 needed exactly that. A trace
+            // whose `noTile` count falls while its `tileWall` count rises is a map streaming in; a
+            // trace whose room is solid with `noTile == 0` is a room that is really sealed.
+            int noTile = 0;
+            int tileWall = 0;
+            int collisionWall = 0;
+            int floorCells = 0;
+            int wallType = 0;
+            int floorType = 0;
+            // A FIXED, TINY HISTOGRAM RATHER THAN A DICTIONARY, because this runs on the frame path
+            // (every `GridRefreshFrames`) and a map has a handful of terrain kinds, not hundreds.
+            // When the tables fill, the cells past them still count -- only `wallType`/`floorType`
+            // stop being exact for the rarest kinds, which is not what the field is for.
+            int[] wallTypes = new int[ModeSlots];
+            int[] wallCounts = new int[ModeSlots];
+            int[] floorTypes = new int[ModeSlots];
+            int[] floorCounts = new int[ModeSlots];
 
             for (int gy = 0; gy < h; gy++)
             {
                 for (int gx = 0; gx < w; gx++)
                 {
+                    int wx = originX + gx;
+                    int wy = originY + gy;
+                    int index = (gy * w) + gx;
                     byte c = 0;
                     try
                     {
-                        c = _gridAt(array, originX + gx, originY + gy);
+                        c = _gridAt(array, wx, wy);
                     }
                     catch (Exception)
                     {
@@ -679,7 +906,62 @@ namespace Drelay.Bootstrap
                         // cannot see.
                         c = 0;
                     }
-                    _gridCells[(gy * w) + gx] = c;
+                    // OUTSIDE THE MAP IS NOT WALKABLE -- the same rule `DodgeAdapter` applies, so
+                    // the recording and the live decision agree about the map's border.
+                    if (mapW > 0 && mapH > 0 && (wx < 0 || wy < 0 || wx >= mapW || wy >= mapH))
+                    {
+                        c = 1;
+                        collisionWall++;
+                        _gridCells[index] = c;
+                        _gridSource[index] = SourceOutOfMap;
+                        continue;
+                    }
+                    if (c != 0)
+                    {
+                        collisionWall++;
+                        _gridSource[index] = SourceCollision;
+                    }
+                    else if (tilemap != null && _getTileData != null)
+                    {
+                        // `World`'s move test is `bounds && Tilemap.CanWalk && collision == 0`, and
+                        // the window carries both -- through the SAME rule the live window uses
+                        // (`CollisionWindow.MergeCell`), because a trace that disagrees with the live
+                        // grid is an offline result for a different world. A tile that has not
+                        // streamed in yet is no information, not a wall: that distinction is what
+                        // keeps a dungeon navigable (see the rule's own comment).
+                        object tileData = _getTileData(tilemap, wx, wy);
+                        if (tileData == null)
+                        {
+                            noTile++;
+                            _gridSource[index] = SourceUnpainted;
+                        }
+                        else
+                        {
+                            bool noWalk = _getTileNoWalk != null && _getTileNoWalk(tileData);
+                            int type = _getTileType != null ? _getTileType(tileData) : 0;
+                            if (noWalk)
+                            {
+                                tileWall++;
+                                wallType = ModeOf(wallTypes, wallCounts, type, wallType);
+                                _gridSource[index] = SourceNoWalkTile;
+                            }
+                            else
+                            {
+                                // A WALKABLE TILE IS FLOOR, AND IT IS COUNTED EVEN WHEN THE PLAYER
+                                // CANNOT REACH IT. `floorCells` against the player's own component is
+                                // the measurement that says "this map contains other rooms": the
+                                // 2026-10-20 Frost Cavern window had **1 204 reachable cells and 126
+                                // walkable tiles outside that component**, i.e. the dungeon's other
+                                // rooms are painted and separated from the player's by a wall of
+                                // `NoWalk` terrain -- no doorway in the 128-unit window at all.
+                                floorCells++;
+                                floorType = ModeOf(floorTypes, floorCounts, type, floorType);
+                                _gridSource[index] = SourceFloor;
+                            }
+                            c = CollisionWindow.MergeCell(c, true, noWalk);
+                        }
+                    }
+                    _gridCells[index] = c;
                 }
             }
 
@@ -688,6 +970,9 @@ namespace Drelay.Bootstrap
             _gridWindowValid = true;
             _gridDirty = false;
             _gridGeneration++;
+            _gridArrayLast = array;
+            _gridReadClock = _gridClock;
+            _gridTileReady = tilemap != null;
 
             // RLE over the linear cell order, which is the encoding the game's own `GmTiles`
             // uses for the same field: (value, runLength) pairs. A window is mostly one value, so
@@ -698,26 +983,27 @@ namespace Drelay.Bootstrap
             Line.Append(",\"oy\":").Append(originY);
             Line.Append(",\"w\":").Append(w);
             Line.Append(",\"h\":").Append(h);
-            Line.Append(",\"rle\":[");
-            int i = 0;
-            bool first = true;
-            while (i < _gridCells.Length)
-            {
-                byte value = _gridCells[i];
-                int run = 1;
-                while (i + run < _gridCells.Length && _gridCells[i + run] == value)
-                {
-                    run++;
-                }
-                if (!first)
-                {
-                    Line.Append(',');
-                }
-                first = false;
-                Line.Append(value).Append(',').Append(run);
-                i += run;
-            }
-            Line.Append("]}\n");
+            Line.Append(",\"rle\":");
+            AppendRle(Line, _gridCells, w * h);
+            // AND ITS OWN RLE FOR WHERE EACH CELL CAME FROM, because the merged bytes answer "solid"
+            // for three different things -- the server's collision, a `NoWalk` tile, and a cell that
+            // has not arrived -- and a dungeon room's ring has to be told apart from a streamed map's
+            // hole. See `_gridSource`; a reader that does not know the field ignores it.
+            Line.Append(",\"src\":");
+            AppendRle(Line, _gridSource, w * h);
+            // AND WHERE THE SOLID CELLS CAME FROM, so a reader can tell a wall from a hole in the
+            // streamed map without a live run. See the counters above; `colWall` includes the cells
+            // outside the map, which the border rule also makes solid.
+            Line.Append(",\"colWall\":").Append(collisionWall);
+            Line.Append(",\"tileWall\":").Append(tileWall);
+            Line.Append(",\"noTile\":").Append(noTile);
+            // AND WHICH TERRAIN THEY ARE. A ring of `NoWalk` around a room is a wall if it is rock
+            // and could be a fog/void filler if it is the same id as everything else unexplored; the
+            // two are one run apart with these two numbers.
+            Line.Append(",\"floorCells\":").Append(floorCells);
+            Line.Append(",\"wallType\":").Append(wallType);
+            Line.Append(",\"floorType\":").Append(floorType);
+            Line.Append("}\n");
             _writer.Write(Line.ToString());
         }
 
@@ -733,7 +1019,18 @@ namespace Drelay.Bootstrap
             Line.Append(",\"player\":\"").Append(EscapeJson(ManagedArmingProbe.PlayerTypeName)).Append('"');
             Line.Append(",\"projectile\":\"").Append(EscapeJson(SensorRead.ProjectileTypeName)).Append('"');
             Line.Append(",\"samples\":").Append(Trajectory.MaxSamples);
-            Line.Append(",\"gridSource\":\"").Append(_gridResolved ? "World.byte[,]" : "none").Append('"');
+            // THE TILE HALF IS NAMED IN THE HEADER, because "World.byte[,]" is no longer the whole
+            // walkability answer the recording carries. See `ResolveTilemap`. The clause says the
+            // rule and not just the source: `NoWalk` tiles are walls and a missing tile is NOT
+            // (dungeon maps stream in), so a reader of the trace can tell which merge produced its
+            // `G` records.
+            Line.Append(",\"gridSource\":\"")
+                .Append(_gridResolved
+                    ? (_tileResolved
+                        ? "World.byte[,]+Tilemap.GetTile/NoWalk (a missing tile is not a wall)"
+                        : "World.byte[,]")
+                    : "none")
+                .Append('"');
             Line.Append('}');
             Line.Append('\n');
             _writer.Write(Line.ToString());

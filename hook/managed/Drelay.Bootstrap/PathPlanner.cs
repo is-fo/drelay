@@ -183,6 +183,18 @@ namespace Drelay.Bootstrap
         public long DisabledFrames;
         public long UnreachableFrames;
         public long NoGoalFrames;
+
+        /// <summary>
+        /// Searches refused because the search's END cell was solid. <see cref="PathReason.NoTarget"/>.
+        ///
+        /// IT EXISTED AND WAS NOT COUNTED, AND THAT COST A LIVE SESSION ITS DIAGNOSIS. `Plan`'s
+        /// `BeginFrame`-failed path increments `Searches` and returns without touching `NoPath`, so
+        /// the 2026-10-19 report read `868 search: 541 found, 0 none` while 327 frames had a goal the
+        /// planner could not aim at -- and those are precisely the frames where the path term
+        /// contributes nothing and the goal term walks the character into the wall. A refusal that
+        /// `NoPath` does not count is a refusal the report calls a success.
+        /// </summary>
+        public long NoTargetFrames;
     }
 
     /// <summary>
@@ -708,6 +720,13 @@ namespace Drelay.Bootstrap
             {
                 Fail(_reason, snapshot);
                 _stats.Searches++;
+                // COUNTED HERE, BECAUSE `BeginFrame`'s REFUSALS ARE THE ONES `NoPath` DOES NOT SEE.
+                // `NoTarget` returns through this branch; `NoGrid` is counted by `Fail`; the rest of
+                // `Plan`'s refusals increment `NoPath` at their own sites.
+                if (_reason == PathReason.NoTarget)
+                {
+                    _stats.NoTargetFrames++;
+                }
                 _stats.MicrosecondsTotal += Elapsed(startTicks);
                 return;
             }
@@ -773,7 +792,23 @@ namespace Drelay.Bootstrap
             int waypointNode = -1;
             // THE WAYPOINT'S DISTANCE IS A FACT ABOUT WHICH KIND OF GOAL THIS IS, and the farmer's
             // point goal is a different kind. See `_pointTarget` for the measurement that forced it.
-            float waypointReach = _pointTarget
+            // THE WAYPOINT'S DISTANCE IS A FACT ABOUT WHICH KIND OF GOAL THIS IS, and the farmer's
+            // point goal is a different kind. See `_pointTarget` for the measurement that forced it.
+            //
+            // AND A POINT GOAL OUTSIDE THE WINDOW IS THE SAME KIND, WHICH IT WAS NOT BEFORE.
+            //
+            // `_pointTarget` is false for a goal further than the 128-unit window, so the target was
+            // the RAY's end and the waypoint was `PathWaypointFraction` (0.75) of the whole path --
+            // which is fine in open ground and WRONG the moment the route turns a corner. On the
+            // operator's stuck frames the path was 36.9 units with its first steps east and its 0.75
+            // point south-west, so `WaypointHeading` pointed 150 degrees at a wall while the only
+            // free direction was 30 degrees: the path term could not vote for the step that was
+            // actually available, and the character never took the turn. The waypoint a follower
+            // needs is the LOCAL direction of the route, so a far point goal uses
+            // `PathWaypointUnits` (2.5) exactly as a near one does. The fraction stays for a pure
+            // ray, where there is no place to arrive at and the far end is the only information.
+            bool farPoint = !_pointTarget && _config.PointGoal && snapshot.GoalHasPoint;
+            float waypointReach = (_pointTarget || farPoint)
                 ? _config.PathWaypointUnits
                 : _length * _config.PathWaypointFraction;
             if (waypointReach < _config.PathWaypointUnits)
@@ -1020,16 +1055,55 @@ namespace Drelay.Bootstrap
                 // walks to a portal"), because the character then has no route and, with a portal
                 // goal, stands at the arrival radius doing nothing.
                 //
-                // SO THE TARGET SNAPS TO THE NEAREST WALKABLE CELL, within `PathPointSnapCells`
-                // cells, in rings so the first hit is the nearest. The goal POINT is untouched --
-                // the score terms, the goal distance and the arrival policy still see the real
-                // place -- and only the search's end cell moves. If no walkable cell is within the
-                // radius the search still refuses, honestly, as before.
-                if (TrySnapToWalkable(_targetIndex, out int snapped))
+                // SO THE TARGET SNAPS TO THE NEAREST WALKABLE CELL, in rings so the first hit is the
+                // nearest, first within `PathPointSnapCells`. THE WIDER RETRY IS THE TRAVEL FIX: a
+                // roam waypoint 25 units away is covered by the window but can sit deep inside the
+                // void (the 2026-10-19 session's first freeze, 3 700 frames at one spot), and a
+                // three-cell search finds nothing there. The second pass searches the whole window,
+                // so the target becomes the closest walkable cell toward the waypoint and the route
+                // is the part of the way the map allows. The goal POINT is untouched -- the score
+                // terms, the goal distance and the arrival policy still see the real place -- and
+                // only the search's end cell moves. If the window contains no walkable cell at all
+                // (nowhere to go from here) the search still refuses, honestly, as before.
+                int nearRings = PathPointSnapCells;
+                if (!TrySnapToWalkable(_targetIndex, nearRings, out int snapped)
+                    && !TrySnapToWalkable(_targetIndex, _gridW > _gridH ? _gridW : _gridH,
+                                          out snapped))
                 {
-                    _targetIndex = snapped;
-                    _targetSet = true;
+                    _reason = PathReason.NoTarget;
+                    return false;
                 }
+                _targetIndex = snapped;
+                _targetSet = true;
+            }
+            else if (!_targetSet && !pointTarget)
+            {
+                // AND THE RAY GETS THE SAME TREATMENT, WITH A SHORT REACH, BECAUSE THE OLD ANSWER WAS
+                // "GIVE UP" ON THE FRAMES THAT NEED A ROUTE MOST.
+                //
+                // The ray's end is `PathTargetSeconds` of travel (~12 units at the measured speed)
+                // along the direction of the goal. When the goal is a marker in the next room, that
+                // direction points AT A WALL, so the end cell is solid and the search never ran:
+                // the 2026-10-20 Frost Cavern session (`20261020-175713-p15344`) reads
+                // `PHASE 3 DODGE PATH | 8054 search: 1576 found, 0 none (... notarget 6478 ...)` --
+                // **80% of the session's frames had a goal the planner refused to aim at**, which is
+                // exactly the frames where the character was pressed against the room's wall with
+                // nothing but the goal term to guide it. Replayed offline with the same goal, 3684 of
+                // 8385 frames refused for the same reason (`SolverHarness --trace <run> --goal`).
+                //
+                // THE REACH IS SHORT ON PURPOSE. A ray names a DIRECTION, not a place, so snapping it
+                // across the whole window would let it jump backwards to ground behind the player and
+                // produce a route that has nothing to do with the goal. A few cells is "end beside the
+                // wall" -- the waypoint is then the local direction of the route along it, which is
+                // the most a ray can mean. A ray whose end is deep inside a wall still refuses, and
+                // that refusal is the honest one.
+                if (!TrySnapToWalkable(_targetIndex, PathPointSnapCells, out int snapped))
+                {
+                    _reason = PathReason.NoTarget;
+                    return false;
+                }
+                _targetIndex = snapped;
+                _targetSet = true;
             }
             if (!_targetSet)
             {
@@ -1553,8 +1627,24 @@ namespace Drelay.Bootstrap
         /// The nearest walkable cell to <paramref name="index"/>, searched in rings so the first
         /// ring with a hit is the nearest. See the call site: a point goal on a solid cell is
         /// "end beside it", not `NoTarget`.
+        ///
+        /// THE RING LIMIT IS A PARAMETER BECAUSE THE GOAL ITSELF DECIDES HOW FAR IS NEAR ENOUGH. A
+        /// portal or a mob is an object standing on a tile, so `PathPointSnapCells` is the whole
+        /// story; a TRAVEL WAYPOINT is a blind point 25 units out and is routinely inside the map's
+        /// void, and three cells of tolerance turned that into `NoTarget` on 327 of one live
+        /// session's 868 searches -- invisible in the report, because `NoTarget` had no counter --
+        /// with the character walking into the wall for the rest of the freeze. The wider search
+        /// below finds the nearest walkable cell on the way to it, which is a route the character can
+        /// actually take.
+        ///
+        /// THE RING IS WALKED AS A PERIMETER AND NOT AS A SQUARE, which is a frame-budget fact and
+        /// not a style choice: testing the whole `(2r+1)^2` box per ring is O(r^3) to reach ring r,
+        /// and the wide search can reach ring 64 -- two and a half million cell reads, several
+        /// milliseconds, on every frame whose goal is in a wall. The perimeter version is O(r^2)
+        /// summed, about four thousand reads at ring 32 and sixteen thousand at ring 64, and it
+        /// visits each cell exactly once.
         /// </summary>
-        private bool TrySnapToWalkable(int index, out int snapped)
+        private bool TrySnapToWalkable(int index, int maxRings, out int snapped)
         {
             snapped = -1;
             if (index < 0 || _grid.Cells == null)
@@ -1563,7 +1653,11 @@ namespace Drelay.Bootstrap
             }
             int cx = index % _gridW;
             int cy = index / _gridW;
-            for (int ring = 1; ring <= PathPointSnapCells; ring++)
+            if (maxRings < 1)
+            {
+                maxRings = 1;
+            }
+            for (int ring = 1; ring <= maxRings; ring++)
             {
                 int best = -1;
                 int bestD2 = int.MaxValue;
@@ -1571,39 +1665,17 @@ namespace Drelay.Bootstrap
                 int x1 = cx + ring;
                 int y0 = cy - ring;
                 int y1 = cy + ring;
-                for (int y = y0; y <= y1; y++)
+                // The two horizontal runs of the ring, then the two vertical ones without their
+                // corners (already tested by the runs above).
+                for (int x = x0; x <= x1; x++)
                 {
-                    if (y < 0 || y >= _gridH)
-                    {
-                        continue;
-                    }
-                    int row = y * _gridW;
-                    for (int x = x0; x <= x1; x++)
-                    {
-                        if (x < 0 || x >= _gridW)
-                        {
-                            continue;
-                        }
-                        // The ring only: the interior was searched by an earlier pass or does not
-                        // exist at ring 1.
-                        if (x != x0 && x != x1 && y != y0 && y != y1)
-                        {
-                            continue;
-                        }
-                        int cell = row + x;
-                        if (_grid.Cells[cell] != 0)
-                        {
-                            continue;
-                        }
-                        int dx = x - cx;
-                        int dy = y - cy;
-                        int d2 = (dx * dx) + (dy * dy);
-                        if (d2 < bestD2)
-                        {
-                            bestD2 = d2;
-                            best = cell;
-                        }
-                    }
+                    Consider(x, y0, cx, cy, ref best, ref bestD2);
+                    Consider(x, y1, cx, cy, ref best, ref bestD2);
+                }
+                for (int y = y0 + 1; y < y1; y++)
+                {
+                    Consider(x0, y, cx, cy, ref best, ref bestD2);
+                    Consider(x1, y, cx, cy, ref best, ref bestD2);
                 }
                 if (best >= 0)
                 {
@@ -1612,6 +1684,28 @@ namespace Drelay.Bootstrap
                 }
             }
             return false;
+        }
+
+        /// <summary>One cell of a snap ring, if it is inside the window and walkable.</summary>
+        private void Consider(int x, int y, int cx, int cy, ref int best, ref int bestD2)
+        {
+            if (x < 0 || y < 0 || x >= _gridW || y >= _gridH)
+            {
+                return;
+            }
+            int cell = (y * _gridW) + x;
+            if (_grid.Cells[cell] != 0)
+            {
+                return;
+            }
+            int dx = x - cx;
+            int dy = y - cy;
+            int d2 = (dx * dx) + (dy * dy);
+            if (d2 < bestD2)
+            {
+                bestD2 = d2;
+                best = cell;
+            }
         }
 
         private bool WalkableIndex(int index)

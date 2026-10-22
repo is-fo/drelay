@@ -1467,3 +1467,879 @@ aimbot's `GetEnemyPriority` — which the reader does not resolve today and woul
 edge with the target name and the lobby/travel counters on it, and the tail it would have lost is
 exactly the part a session that never left the spawn needs. `PHASE 3 DODGE FARM` keeps the target
 numbers; `PHASE 3 DODGE PILOT` carries `lobby=`, `portal=` and `travel=`.
+
+### 14.6 The quest goal, and the wall half of the walk test
+
+Two defects survived every rule added between §14.6 and §14.12 of the previous revision of this
+section: the grid did not always know what a wall was, and a distant quest point had no route. The
+compensations (a far-window-edge retry, partial paths, a waypoint pull-back, a blind 20-unit quest
+step, a lava preference, an unstick rule, and dungeon-boss / quest-flag enemy fallbacks) are removed.
+What remains is the smallest statement of each fix.
+
+**(a) The window asks the client's tile map.** The client's move test is
+`in bounds && Tilemap.CanWalk(x, y) && collision[x, y] == 0`. `CollisionWindow.Cells` carried only
+the third term, so a `NoWalk` tile with a zero collision byte (the black void, and `NoWalk` terrain
+the server never sends collision for) read as open ground. `DodgeAdapter.ResolveTilemap` resolves
+`World.Tilemap` and `Tilemap.GetTile(x, y)`; `RefreshGrid` marks a cell solid when the tile EXISTS
+and `TileData.NoWalk` is true. The arm-time line is `dodge grid | collision World.byte[,] | tile
+walls ON (NoWalk; a missing tile reads as open, not as wall)` or `... MISSING`, and a run that says
+`MISSING` still has the old defect. `TraceRecorder` applies the same merge -- `CollisionWindow.
+MergeCell`, one function for both call sites -- so an offline replay is a decision about the grid the
+live planner saw. The window is also re-read when the collision array reference changes and every
+`GridRefreshFrames` (30), because `GmTiles` streams in and a realm change allocates a new array; the
+recorder uses the same three triggers, because a trace taken while the character stands still in a
+dungeon otherwise misses the map arriving.
+
+**A CELL WITH NO TILE IS NOT A WALL, AND THE FIRST VERSION OF (a) SAID IT WAS.** That reads like a
+detail of the same fix and it is a different bug with its own session; §14.10 is the measurement.
+
+The live log confirms all of it: `dodge grid | collision World.byte[,] | tile walls ON
+(Tilemap.GetTile/NoWalk)`, and the dump's own `gridSource` on the trace is
+`World.byte[,]+Tilemap.GetTile/NoWalk`. The dump also settles what the collision bytes mean: the
+server sends **1** and **2**, not only 0/1, and both are blocked -- a distance measurement below
+puts the client's refusal boundary at exactly **0.400** from a `2`.
+
+**(b) The quest is the client's own marker.** `QuestReader` resolves `World.Quest` and
+`World.EventQuests`, samples `Position` (with `ExactPosition` only as the fallback for a marker that
+has not been placed) and publishes a `QuestTarget` per marker. A marker that reads `(0,0)` is
+refused and counted (`qskip=`). The private farmer walks the tracked marker first, then the nearest
+event marker, publishes its real position as the point goal, and calls `ActivatableObject.Activate(0)`
+when standing on an activatable one. There is no step, no dungeon-boss guess and no enemy-data
+fallback: if the client offers no marker, the farmer falls through to its enemy/travel branches and
+the log says `qsrc=none`.
+
+**(b.1) The operator takes the pathing back by moving.** A point goal is resolved only while the
+player is NOT holding a movement input (`!playerWalking`, i.e. not `Moving && IntentValid`). With the
+keyboard live, the ordinary goal ladder answers from `PlayerIntent` exactly as it does with the
+farmer off; the farmer still reports the marker/target it is holding, so a session can tell "the
+operator took over" from "the goal was lost". Releasing the input resumes the point goal on the next
+frame. This is a goal selection, not an admission rule, so the dodge's safety boundary is unchanged.
+
+**(b.2) A marker from another map is refused, and that was the "quest pathing does not work".**
+`World.ClearWorld()` clears `Objects` and `EventQuests` and calls `GameUI.SetQuest(null)`, but it
+does **not** clear `World.Quest`. A tracked quest therefore survives a portal, a death and a dungeon
+exit as a reference to the previous map's object, and its `Position` is a coordinate in a map that is
+no longer loaded. The 2026-10-19 `20261019-170821-p7272` session is the measurement: the tracked
+marker was `id=460422 at 343.6,1364.1 primary=True activatable=False name='Aspect of Corruption'`,
+the character was in the Tavern at (118,125), and the farmer held that marker for **165 frames**
+(`quest=165/1 qsrc=worldquest`) before `World.Quest` was finally replaced -- 165 frames of walking at
+a Tavern wall toward a realm. `QuestReader` now resolves `World.Objects` (the live-object registry,
+keyed by `GameId`) and refuses a marker whose id is not in it, counted separately as `qstale=` and
+named once in the log. `World.Quest` is only ever assigned from a key of that dictionary, so
+membership IS "this marker is in this world". A legitimately tracked quest in another realm is then
+not a goal: the farmer falls through to the lobby pilot exactly as it does with no marker.
+
+**(c) What is still open.** The planner searches a 128-unit window; a marker farther than that is
+reached a frame at a time through the ray fallback, and a target cell the map does not connect to
+produces no path (`nodecap`/`unreachable`). That is the honest state: the release below is what stops
+the character pressing the wall, and the next fix is still a real map-scale route. The lines to read
+are the arm-time `tile walls` clause, `qsrc=`/`qstale=`, and `PHASE 3 DODGE PATH`'s
+`unreachable`/`nodecap`/`notarget` counts.
+
+### 14.7 The stuck character: the footprint, a refusal nobody counted, and the release
+
+`20261019-211704-p7732` is the session the operator described as *"having trouble with the character
+getting stuck on walls or terrain when autofarming ... when it is locked on an enemy, it will never
+try to path around something when it's stuck"*, and it separates that one sentence into three
+defects. Each has a measurement and each has a fixture now.
+
+**(a) The walk test has a FOOTPRINT, not a cell.** The client's movement resolver
+(`World.hehe...EF73`, which calls `EF74`) does not test the single cell under the destination point:
+it tests `(int)(x ± n)` and `(int)(y ± n)` and their diagonals, twice, at two offsets. So the player
+has a **square footprint of half-width 0.4** on the axis test and may not come closer than that to a
+nonzero collision cell even with its centre in an open one. Measured on the two sessions:
+`20261019-211704-p7732` closest approach while moving **0.401** over 252 frames (median 0.487);
+`20261019-220335-p16416` **0.403** over 352 frames next to a value-2 cell, and moving at 0.008 next
+to *tile-derived* cells -- which is the other half of the finding: the client's move test reads the
+server's collision bytes and knows nothing about `Tilemap.NoWalk`, so `EF74` and `Tilemap.CanWalk` are
+two different tests for two different questions.
+
+`CollisionWindow.Walkable` now tests the footprint, so rules 2 and 3 agree with the game. The claim
+that this was THE cause of the frozen character was WRONG, and §14.8 is the correction: the freeze was
+a `stand` winning the score. The footprint is still right -- a centre-only rule admits steps `EF73`
+discards -- and the harness's `W7` is what holds it: the first version of this rule admitted seven
+such steps on the live trace, which is `NoAdmissible` renamed.
+
+**The escape that IS in the rule.** The sweep in rule 3 starts at the player, so a position already
+inside a footprint violation (a knockback, a teleport, a server correction, a sliding tile) makes every
+candidate fail the sweep -- including the one that steps out -- and the character is held still by the
+rule that exists to keep it out of walls. Rule 3 is therefore not asked when `Walkable(player)` is
+already false. Rule 2, which is the client's own test, still refuses every blocked destination, so
+nothing the game would discard is admitted: the skip only stops the sweep from being the thing that
+keeps the player in. On `20261019-220335-p16416` the frames with no admissible candidate fall from
+**938 to 3**.
+
+**(b) A third of the planner's refusals were invisible.** The same report read `868 search: 541
+found, 0 none (unreachable 0, nodecap 0, nogrid 0)`: 327 searches produced no path and the line said
+`0 none`. `Plan`'s `BeginFrame`-failed branch increments `Searches` and returns without touching
+`NoPath`, so `NoTarget` -- the search's end cell is solid -- was counted nowhere. It is now
+`PathStats.NoTargetFrames` and is printed (`notarget`, beside `nogoal`), because a refusal the report
+does not count is a refusal the report calls a success.
+
+And the `NoTarget` that mattered was the TRAVEL WAYPOINT IN THE VOID. The farmer's roam point is 25
+units out in one of eight directions; in the session above, the first one was deep inside the
+cave's wall, and the planner's point-goal snap only looked three cells for walkable ground. With no
+path the path term is zero and the goal term points at the wall -- the 62-second freeze. The snap now
+falls back to a ring search over the WHOLE window, so the search's end cell is the closest walkable
+cell toward the waypoint and the route is the part of the way the map allows. The goal POINT is
+untouched: the score terms, the distance and the arrival policy still see the real place. The fixture
+is `--scenario farmertravelwall` (`W1f`): a block laid where the first waypoint goes, `NoTargetFrames
+== 0`, and the character covers 30 units. Reverting the second snap makes that same fixture report
+**309 notarget refusals in 600 frames**, which is the falsification.
+
+**(c) A target with no route is released, not pressed.** What is left after (a) and (b) is a mob the
+map does not connect to -- a sealed room, a corridor narrower than the player, a walled-off ledge.
+`Unreachable` (or the node cap) is the planner's honest answer there, and no local rule can invent a
+route. The hold is what makes it permanent. The private farmer now tracks the BEST distance to the
+held target since the hold began and drops it after `FarmStuckFrames` (180, ~3 s) without improving by
+`FarmStuckUnits` (0.5) while still outside `FarmStopRadius + 0.5`; it then travels for
+`FarmDetourFrames` (150, ~2.5 s) rather than re-acquiring the same mob on the next frame, and
+re-acquires it from wherever the detour put it. `StuckReleases` counts it, separately from
+`ForcedReleases` (the mob did not die or leave the radius -- the character simply never got closer),
+and `stuck=` carries it in the pilot line. The fixture is `--scenario farmersealed` (`W1g`): a mob in
+a nine-cell box twelve units east, one release, and 34 units walked instead of a character against a
+wall.
+
+**(d) The instruments.** `--scenario farmertravelwall`, `--scenario farmersealed` and the harness's
+`W7` are the three that fail without these fixes. The live lines to read are the arm-time
+`tile walls` clause, `PHASE 3 DODGE PATH`'s `notarget`, `PHASE 3 DODGE DETAIL`'s `blocked` count
+(671 of 868 in the frozen session; it must fall), `qstale=` in the pilot line, and `stuck=`. The
+harness's closed loop also stopped being an idealisation: it now applies the client's refusal (the
+destination footprint, then the two axis slides, then nothing) instead of adding the step
+unconditionally, so a fixture can no longer "reach" a target by walking through scenery.
+
+**What (c) does not cover, and why.** A mob that is CLOSER than `FarmStopRadius` but through a wall
+is not released: the farmer is meant to stand and shoot at that range, and the one measurement that
+would tell "the shot lands" from "the shot hits a wall" is the client's own hit report, which this
+module does not read. The live session has no example of it (every freeze was out of range), and
+inventing a rule without one is what §14.6's removals were about. The line that would show it is
+`PHASE 3 DODGE PILOT`'s `stand held for range` climbing beside a `target=` that never dies.
+
+### 14.8 The `stand` that would not walk, and the waypoint a follower cannot use
+
+`20261019-220335-p16416`, the run after §14.7. The quest resolved correctly (`qsrc=event`, marker
+`Vesta, Axis Gatesguard`) and the character still stopped dead for **40 seconds** at (1209.4, 544.6),
+then **15 seconds** at (540.4, 983.6), and the operator walked it out by hand both times. The report
+said `Move` on those frames and `blocked` counted 65 % of the session. Two defects, and the first one
+is the real answer to *"it does not path around walls, trees and so on"*.
+
+**(a) The `stand` candidate was never actually suppressed, and it won the score.**
+`PLAN-AUTOFARM.md` §4.3's arrival policy sets `standSafe = false` while the farmer is closing, which
+suppresses the `stand` EARLY-OUT. `stand` is also candidate index 0 in the scored set, and with no
+bullets in the air it collects the maximum clearance term (+1.2), the maximum durability (+0.6), the
+heading-alignment term (+1.0, because it inherits the player's last intent as its heading) and the
+stand bias (+0.15) -- while every real MOVE pays `WeightMove` (0.25). On the operator's stuck frame
+2000: **`stand` scored 2.95, the best move scored 1.713**. `Filled` then turns the winner into
+`Move | SpeedScale = 0` -- a command that writes `MoveSpeed = 0`, stops the character, and is counted
+as a move by every aggregate in the report. That is the freeze, and it only ever happens when the
+path's direction is momentarily blocked: a wall, a tree, a corner. Which is exactly the state the
+operator described as "stuck on walls and never pathing around them".
+
+The fix: while `_pointDriven` is true, the `stand` candidate's score is `-Infinity` before
+`BestAdmissible`, so a closing farmer cannot answer "do nothing". Nothing is admitted or refused by
+this; the candidate set, the rules and the score are unchanged, and if every move is refused the frame
+reports `NoAdmissible` -- the honest answer, and one the log can be read for. The harness's **`W8`**
+("no emitted move has zero length") is the fixture: 294 zero-length moves on the stuck trace's replay
+before the fix, 0 after.
+
+**(b) The far goal's waypoint was 75 % of the way along the route, so it pointed through walls.**
+A farm goal is usually far outside the planner's 128-unit window (the quest marker here is ~1 000
+units away), so `_pointTarget` is false and the target is the RAY's end. The waypoint is then
+`PathWaypointFraction` (0.75) of the path's length -- a *reporting* choice made when a near waypoint
+looked like the goal direction. With a route that turns a corner it is a control error: on frame 2000
+the path was 36.9 units long, its first steps went EAST around the wall, and its 0.75 point was
+south-west, so `WaypointHeading` was 150 degrees -- into the wall -- while the only free direction was
+30 degrees. The path term could never vote for the step that was available.
+
+A point goal outside the window now uses `PathWaypointUnits` (2.5) like a point goal inside it: a
+follower needs the LOCAL direction of the route. The fraction stays for a pure ray, where there is no
+place to arrive at and the far end is the only information. Same frame after the fix: waypoint at
+(1212.5, 544.5), heading 0 degrees (east, along the wall and toward the opening), path term +1.0, and
+the chosen move is east at full scale.
+
+**(c) Reading a live farm session offline.** `--goal x,y` on the harness replays a recorded trace with
+a FIXED point goal, because a trace does not carry the farmer's goal or its enemy list and a session
+that walked to a quest otherwise cannot be replayed as itself. It sets farm mode, publishes the point
+after `ChooseTarget`, and marks T7 not-evaluated (the game's hit decisions belong to the operator's
+inputs, not to a synthetic goal). The frame-2000 numbers above are that replay: `--trace
+<run>/trace.jsonl --goal 340.5,1065.5 --frame 2000`.
+
+**(d) What the operator will see in the next run.** `PHASE 3 DODGE FARM`'s `blocked` share collapses
+(the 22:03 run was `(268 observed, 2387 blocked)`), `PHASE 3 DODGE REASONS` gains `NoAdmissible` on
+the frames where nothing is genuinely available instead of `OverrideUnsafe` on a zero-scale move, and
+the character walks along the wall it used to stand against. The counters that would still mean
+"stuck" are `stuck=` in the pilot line (a held target with no progress) and `blocked` climbing beside
+`Move`.
+
+### 14.9 The quest the client knew about and `World.Quest` did not
+
+`20261019-223603-p19004`: Tavern -> Darza's Dominion -> **Infested Cellar** -> Tavern, with a quest
+indicator on screen for `Athena, Queen of Arachnids`. Every report in the run, the cellar included
+(frames 3 812-7 082), read:
+
+```
+PHASE 3 DODGE PILOT | ... travel=2519/15 quest=0/0 qname='' qact=0/0 qpos=0,0 qskip=0 qstale=0 qsrc=none
+```
+
+So the answer to the operator's question is **no: the farmer never tried to path to a quest, because
+it never had a marker**. `QuestFrames` stayed 0, and the "circles" are the travel fallback -- a roam
+waypoint 25 units out (`FarmTravelRadius`), rotated when it is reached or after five seconds, which
+is exactly `travel=2519/15`, until an enemy came inside `FarmEngageRadius` and the enemy hold took
+over. `qskip=0` and `qstale=0` say the refusals never fired either: the reader was not evaluating
+markers at all.
+
+`World.Quest` was null and `World.EventQuests` empty for the whole session. The client knows a quest
+object in **two** places, and only one of them is those fields:
+
+- the TRACKED reference, `World.Quest` / `World.EventQuests` -- what the minimap draws and the quest
+  arrow points at, and what `QuestReader` has always read;
+- the OBJECT'S OWN DATA -- `EntityData.Quest` and `EntityData.EventQuest`
+  (`DarzaCore.Data.Entities.EntityData`). The client's own UI reads the second one: `DesktopMMOUI`'s
+  `SetQuest` keeps the arrow alive for a dungeon boss by testing `Boss?.Data is EntityData d &&
+  d.EventQuest`, and `EntityData.EventQuestType` names the arrow sprite. A boss is announced by the
+  boss-health-bar packet, and its data flag does not require `World.Quest` to be set.
+
+`QuestReader` now scans `World.Objects` for both flags, every `QuestScanFrames` (10) frames, and
+publishes what it finds as markers with `Scanned = true`. The scan resolves the flags by walking the
+**assembly's types** for classes below `GameObject.Data`'s declared type that declare `Quest` /
+`EventQuest` -- the fields live on `EntityData`, which is BELOW `GameObjectData`, so a hierarchy walk
+from `Data`'s static type finds nothing. That was the first version's failure, caught by the new
+fixture before a live run.
+
+**The instruments, because this is a source question and not a pathing question.** First, a report
+line of its own:
+
+```
+PHASE 3 DODGE QUEST | Quest=<none|id=.. name='..' at x,y> | events=<n> | scan=<n> obj, <m> flagged
+| seen=<n> skip=<n> stale=<n>
+```
+
+Second, the pilot line carries `qseen=` (`MarkersSeen`) and `qdata=` (`DataMarkers`) beside `qskip=`
+and `qstale=`, and `qsrc=` now distinguishes `worldquest`, `event` and **`data`**. A session that
+still never quests will say which of the three it is:
+
+- `scan=0 obj, 0 flagged` with `events=0` -- the client flags nothing, and the next step is a third
+  source, not another pathing fix;
+- `flagged>0` with `seen=0` -- the reader sees them and the fill does not publish them (a counter bug);
+- `seen>0` with `quest=0` -- published and declined, and `qname`/`qpos` say what was declined.
+
+The fixture is in `WorldLogVerify`: an `Enemy` at (320, 240) called `Athena, Queen of Arachnids`,
+whose `EntityData.Quest` is true, present in `World.Objects` and absent from both tracked
+collections. `QuestReader.Fill` finds it as a marker, and the check fails without the scan.
+
+### 14.10 The dungeon that read as a sealed box: a tile that has not streamed in is not a wall
+
+`20261020-171352-p40648` is the session with the fix of §14.6(a) in it, and the operator's report on
+it was two sentences: *"the quest/boss locator works in the world, it however does not work inside
+dungeons ... when entering a dungeon the pathfinder falls back to the circular discovery movement"*,
+with the observation that the client presents the boss as a dot and a direction arrow rather than as
+a place a route can be drawn to. The dot was not the problem. The grid was.
+
+**The measurement.** *Frost Cavern* (frames 27 604-29 340 of the run; `MapInfo.Name` = `Frost
+Cavern`, `Difficulty` 2). The character entered at (513.4, 503.7), next to the exit portal, and spent
+the whole segment inside a circular entry room of radius ~19 (1 094 cells). The only enemy and the
+tracked quest marker were the same object: `Gradvale, Mage of Winter`, `qsrc=worldquest`,
+`qpos=649.5,561.5` -- 130 units east, behind the room's wall. The two reports inside that segment
+read `quest=24703/22` and `quest=25603/22` with `qname='Gradvale, Mage of Winter'` unchanged and
+`stuck=0`, so the farmer held that marker throughout and the character covered 30 units. The trace's
+own grid says why:
+
+| frame | player | walkable cells in the window | player's walkable component |
+|---|---|---|---|
+| 27 640 | (513.0, 504.4) | 474 | |
+| 28 000 | (522.1, 521.6) | 880 | 1 027, does **not** touch the window's edge |
+| 28 500 | (527.2, 533.6) | 1 094 | 1 027, same |
+| 29 300 | (528.4, 533.4) | 1 094 | 1 027, same |
+
+The window is 128x128 and the room is ~37 units across, so the component is the room: **a closed
+island, 1 027 walkable cells, with rock on every side inside the planner's whole horizon.** The
+pathfinder answered `Unreachable`/no route on those frames, the path term was zero, the goal term
+pointed into the wall, and the character bumped around its room -- the "circular discovery movement".
+
+**And the rock was not rock.** Comparing the same absolute cells between frames 27 640 and 29 300 --
+the character moved 30 units inside one room, so this is not a map change:
+
+- **620 cells went `1 -> 0`** (solid -> open floor),
+- **364 cells went `1 -> 2`** (solid -> solid, but now with the server's own byte on it),
+- 10 203 were unchanged.
+
+`Tilemap` does not arrive with the world. `GmTiles` streams it in, and `Tilemap.GetTile(x, y)` answers
+**null** for a cell that has not arrived yet (it answers null for out-of-map too, which the callers
+already handle with the map's dimensions). §14.6(a)'s rule was `tileData == null || NoWalk -> solid`,
+so every cell whose tile had not streamed in became a wall: the room's own floor was 474 cells on the
+entry frame and 1 094 three seconds later, and the 1 027-cell island is exactly the part of the room
+the streamer had not reached. A dungeon's map is bigger than its first room and arrives a piece at a
+time, so the rule that fixed the overworld's black void sealed every dungeon.
+
+**The rule now, in one function for both call sites.** `CollisionWindow.MergeCell(collision,
+hasTile, noWalk)`:
+
+1. a nonzero collision byte is a wall (`1` and `2`; the 0.400 footprint measurement of §14.8 is
+   against the `2`);
+2. a tile that EXISTS and says `NoWalk` is a wall -- the black void, which is what §14.6(a) was for;
+3. **a cell with no tile is no information, so the collision byte answers.** In a dungeon those
+   bytes are `0` for everything the server has not painted, which is the intended reading: the
+   planner may route through unexplored space and the character discovers it, and the client's
+   streamer paints ahead of the character (this session walked 30 units through cells that had read
+   solid a second earlier).
+
+The reverse direction is bounded by the client, not by us: `Tilemap.CanWalk` refuses a cell with no
+tile, so a mis-predicted step is ONE refused step at a frontier the server is already painting
+through, and the 30-frame `GridRefreshFrames` re-read is what turns the arrived tiles into a new plan.
+The prediction can be wrong about a wall and cannot be wrong about a collision byte.
+
+**Nothing about the waypoint changed, and that is the finding.** `ChooseQuest` publishes the marker's
+real `Position` (`PLAN-AUTOFARM.md` §14.6(b)) and it did so throughout this segment; the writer of the
+goal was right and the map the planner read said the goal did not exist. The approach the operator
+suspected -- setting the quest waypoint -- is the same code that works in the overworld, which is why
+"works in the realm, not in a dungeon" is a statement about the grid and not about the goal.
+
+**The instruments.** `TraceRecorder`'s window now uses the live window's three refresh triggers
+(player tile, grid array, `GridRefreshFrames`) instead of the player's tile alone: a character
+standing still in a dungeon is precisely the case where the map arrives and the position does not,
+and a trace keyed only on movement recorded the first, mostly-unpainted window and never corrected
+it -- so the recording that proves this fix could not have contained the fixing data. `SolverHarness`
+runs `G1` (the `MergeCell` truth table) and `G2` (a 41x41 room whose tiles have not arrived: 317
+walkable cells from the collision bytes, 317 under the rule now, **0** under `tileData == null ->
+wall`) on every invocation. The arm-time line reads `tile walls ON (NoWalk; a missing tile reads as
+open, not as wall)`, so a run can tell this rule from a run with no tile data at all. And each `G`
+record now carries **where its solid cells came from** -- `colWall` (the server's collision bytes plus
+the out-of-map border), `tileWall` (an existing `NoWalk` tile) and `noTile` (not arrived) -- which is
+the one question the merged bytes cannot answer for themselves: a room that is solid with
+`noTile > 0` is a room whose map has not arrived, and one solid with `noTile == 0` is a room that is
+really sealed. The next live dungeon session's lines are `PHASE 3 DODGE PATH`'s `unreachable` (it must
+fall for a marker across a room) and those three counts in a re-recorded trace's `G` records.
+
+**What is still open, and why it was not guessed at.** The target for a goal outside the window is
+still the RAY's end (`PathTargetSeconds`, ~12 units), and that cell is inside the grid's knowledge
+only as far as the window reaches. A dungeon corridor that leaves a room at a right angle, more than
+~12 units off the line to the boss, is therefore not on the ray: the search can answer `Unreachable`
+and the character walks at the room's wall until the streamed map turns the ray into a walkable
+straight line again. The obvious next rule -- when the target is unreachable, return the path to the
+REACHABLE cell nearest the goal instead of refusing -- is a change to what `Unreachable` means for
+every goal shape, including the dodge's own ray, and this file has one measurement of the sealed box
+and none of that. It is the first thing to try if the next dungeon session still presses a wall, and
+`PHASE 3 DODGE PATH`'s `unreachable` count is the number that would justify it.
+
+**And the next session supplied the first half of that.** §14.11 is `20261020-175713-p15344`, the run
+with the rule below in it: `notarget` had moved to the *ray's* end rather than to a streamed box, and
+it was 80% of the session. The ray now snaps beside a wall the same way a point does; the remaining
+question is a room the map itself encloses, which is where the `src` instrument comes in.
+
+### 14.11 The second Frost Cavern run: the goal ray that ends in a wall, and a room the map calls sealed
+
+`20261020-175713-p15344` is the first session with §14.10's rule in it, and the operator's report is
+*"new run, gets stuck in this room, boss location is to the north-west"*. Two findings: one in the
+planner, one in the map, and only the first is ours to fix blind.
+
+**What the run says.** Frost Cavern from frame 1 898. The character never leaves a 23x38-unit box
+(x 492.6-515.4, y 502.8-541.2) for 7 100 frames while the farmer holds the quest marker on almost
+every one of them (`quest=7854/2`, `qsrc=worldquest`, `qname='Gradvale, Mage of Winter'`,
+`qpos=426.5,654.5` -- 145 units away, the only enemy in the map). The planner line is
+
+```
+PHASE 3 DODGE PATH | 8054 search: 1576 found, 0 none (unreachable 0, nodecap 0, nogrid 0, notarget 6478, nogoal 0)
+```
+
+read at the end of the run, and it grows by ~900 `notarget` per 900-frame report from the dungeon
+entry onward -- **every frame of the dungeon refused with a target the planner would not aim at**, and
+`unreachable` never fires at all because the search never ran.
+
+**(a) A goal beyond the window is a RAY, and its end was landing in the wall.** `BeginFrame` takes a
+point goal's own cell only when the point is inside the 128-unit window; a marker in the next room is
+outside it, so the target is `PathTargetSeconds` of travel (~12 units) along the direction to it --
+which in a dungeon is the wall between the rooms. A solid target answered `PathReason.NoTarget`, so
+the path term contributed nothing on exactly the frames a route was needed, and the character had
+only the goal term to press the wall with. A point goal has been snapped to the nearest walkable cell
+since §14.7(b) ("a point on a solid cell is not `NoTarget`, it is `end beside it`"); the ray had been
+left refusing on the argument that a ray has nowhere to route to. That argument is about where the
+target IS, not about whether a route can exist.
+
+The ray now snaps within `PathPointSnapCells` (three), and no further, because a ray names a
+DIRECTION: snapping it across the window would let it jump behind the player and produce a route with
+nothing to do with the goal. Measured on this very trace, with the recorded grid and the boss as a
+fixed goal (`SolverHarness --trace <run>/trace.jsonl --goal 426.5,654.5`):
+
+| | path found | `notarget` | `unreachable` |
+|---|---|---|---|
+| before | 4 700 of 8 385 (56%) | 3 684 (44%) | 0 |
+| after | 7 186 of 8 385 (86%) | 1 147 (14%) | 40 |
+
+The remaining 14% are frames whose 12-unit ray end is more than three cells inside the wall, and that
+refusal is honest -- a direction that deep into rock says nothing about a way round. The live session's
+rate should fall from ~80% to roughly this, which is 5 000 more frames with a path term. The fixture is
+`SolverHarness`'s `G3`: a one-cell wall in open ground gives `Found`, and a six-cell wall (the whole
+three-ring solid) still gives `NoTarget`.
+
+**(b) The room is sealed in the client's own walkability, and that is the finding.** With §14.10's
+merge in place, the window at frame 9 008 contains 13 275 `0` cells of which 11 945 are unpainted, 563
+collision cells and 2 546 `NoWalk` tiles -- so **1 330 cells are real floor**. The player's own
+reachable component is **1 204 cells and does not touch the window's edge**: the room is an island
+surrounded by painted `1`s and `2`s, and the ~126 floor tiles outside the component are other areas of
+the map, painted and disconnected. So there is no walkable exit within 128 units of the room, and
+`Tilemap.CanWalk` refuses the ring: the character cannot walk out, and no waypoint choice can change
+that. It is not the goal selection -- §14.6(b)'s marker writer is doing exactly what it should.
+
+And the room is not featureless: it holds a `LootShrine` at (508.5,518.5) and -- intermittently -- the
+dungeon portal. `World.Activatables` reports `Darza's Dominion@511,502` at frames 1 898-1 958, nothing
+from 2 138 to 5 047, the portal again at 5 048, nothing again after 5 078. What the game's own way out
+of that room is -- a door that opens, a portal that must be activated, a pit, or a room generated as a
+dead end -- is not in the client's tile or collision data, and this file has no measurement of it. It
+is the next question, and it is a question about the DUNGEON, not about the planner.
+
+**(c) The instrument for that question is now in every `G` record.** The merged bytes cannot tell the
+three kinds of solid apart, so each grid record now carries **`src`**, a second run-length encoded
+array with one byte per cell: `0` unpainted, `1` the server's collision byte, `2` a `NoWalk` tile, `3`
+floor, `4` outside the map. Alongside it: `floorCells` (walkable cells that carry a tile, i.e. floor
+including the parts the player cannot reach), `wallType` and `floorType` (the commonest terrain id in
+each class). One more dungeon session therefore answers, from the file rather than by inference: where
+the painted map ends, what the ring around the room is made of, and whether the other rooms' floors are
+`NoWalk` or merely unreachable. `TraceFile` reads all of it (`GridWindow.Source`, `SourceAt`, and a
+`-1` for a trace recorded before the field existed).
+
+**What the next session should read.** `PHASE 3 DODGE PATH`'s `notarget` (it must collapse, and
+`unreachable` should replace it where a room really is closed), the `G` record's `src` around the stuck
+room, and the `others` block in `worlds.jsonl` for whatever object the room's way out turns out to be.
+
+### 14.12 The route longer than the window: River Maze, Frost Cavern, and the map that streams
+
+`20261020-181445-p4196` is the run the `src` instrument from §14.11 was built for, and it settles the
+two questions the previous two sections could not. The operator's report is two cases:
+
+> River Maze: walked up, got stuck in a room the boss room was to the east of, but the walkable path
+> had to continue walking north, then east, then south to reach it.
+> Frost Cavern: Stuck in spawn room.
+
+**(a) An unexplored cell is first painted `NoWalk`, and only later becomes floor.** One boss-room cell
+in River Maze, frame by frame, from the new per-cell `src` map:
+
+| frames | source |
+|---|---|
+| 1 599 - 2 073 | unpainted (`src` 0) |
+| 2 079 - 2 147 | a `NoWalk` tile (`src` 2) |
+| 2 165 - 3 946 | floor (`src` 3) |
+
+That is the missing fact behind the last three sections. §14.6(a) said a `NoWalk` tile is a wall and
+`GetTile == null` was the streaming problem; §14.10 concluded a missing tile is not a wall; §14.11
+found rooms that looked sealed. The truth is the row above: **the map is filled with a `NoWalk`
+placeholder before the real tiles arrive**, so a `NoWalk` tile is sometimes rock and sometimes the
+frontier of a map still loading, and no single reading of the merged window can tell them apart. The
+cell above was "inside a wall" for seventy frames and then was the boss's floor.
+
+**(b) River Maze: a 79-cell route between two cells 32 apart.** The boss (`Adzul, River Scourge`) sat
+32 units east of the character and the floor that reaches it runs **south, then east, then north** --
+exactly the operator's description, in reverse. Over the floor the whole run discovered (3 228 cells),
+a breadth-first walk from the character's cell reached a cell **1 unit from the boss in 78 steps**,
+and the bounding box of that route (x 514-545, y 561-586) is *inside* the planner's 128-unit window at
+the stuck frame. The local planner still could not find it, and the run says why: `nodecap` 1 050 of
+2 355 frames (the 1 200-node budget spent before the search finished) and, when given a 20 000-node
+budget offline, `unreachable` on 56.6% of frames -- because the route's middle cells were still
+`NoWalk` placeholders *at that moment*. The route was not there yet. It arrived as the character moved.
+
+**(c) So the route is over what is KNOWN to be floor, and it is re-planned as the map grows.** New
+module `MapRoute.cs`:
+
+* a `byte[]` per map cell -- `1` = a floor tile has been seen here, `0` = nothing is known. A `NoWalk`
+  cell, a collision cell and an unpainted cell are all "not known" (the row in (a) is why), so the
+  route can never be built through the placeholder the way §14.6 wanted to;
+* the adapter already reads every cell of the 128-unit window every 30 frames, so it feeds this cache
+  in the same pass (`DodgeAdapter.RefreshGrid`); the cache grows as the character explores and is
+  reallocated on a map change, keyed on the grid array's identity exactly as the window is;
+* a breadth-first walk (uniform cost, a queue, a 40 000-node budget) from the character to the
+  reachable cell **nearest the goal** -- the frontier when the goal is beyond it;
+* when the character is *on* that nearest cell already, the route's job becomes "go and look": it
+  picks the reachable cell that **touches unknown floor** and is still nearest the goal, because a
+  dungeon does not reveal itself to a character that stands still -- the increment in (a) happened
+  while the character moved, not while it waited;
+* the published goal is a waypoint 6 units along that route, and `GoalKeepWalking` keeps the arrival
+  policy from stopping at each one.
+
+**It only takes over a QUEST goal, and only when the local planner could not aim.** The condition is
+the previous frame's `PathReason` being `NoTarget`/`Unreachable`/`NodeCap` (or the goal being beyond
+80 units), plus a 45-frame hold, because the two goal sources would otherwise alternate every few
+frames: the waypoint has a path, the boss's own position does not. An enemy goal is deliberately
+excluded -- the farmer stops three units from a mob and lets auto-fire work, and a chain of waypoints
+would walk the character through the mob it was meant to shoot. Every safety property is untouched:
+this module writes `GoalX`/`GoalY` and nothing else, and the planner, admission, the score and the
+escape floor are the same code.
+
+**The verification is on the real run.** `SolverHarness --trace <run> --goal 546.1,563.5` now feeds
+the recorded `src` windows into `MapRoute` and walks the result from the recording's first position:
+
+```
+map route (trace): map route ON (1400x1400, 3228 floor cell(s), 10 plan(s), 19 waypoint(s), 0 refused);
+19 waypoint(s) walked from (513.2,512.0) to (545.5,564.5), 1.166 unit(s) from the goal (arrived)
+```
+
+Nineteen waypoints from where the character entered to 1.2 units from `Adzul`, over the floor that
+session discovered -- the U the operator described, found by the module. `G4` is the assertion:
+a single-width U-corridor with a wall straight between the character and the goal must give a first
+waypoint *east along the U*, walking it must arrive, an empty cache must be refused, and a character
+standing on the closest known floor must still be given somewhere to go.
+
+**(d) Frost Cavern is the same thing with less map.** The spawn room is where the character stayed
+for 1 695 frames and where only **617 floor cells** were ever revealed, the nearest reachable floor to
+`Gradvale, Mage of Winter` being **127 units short** of it. The map route will walk it along the
+room's frontier and ask for movement, which is the only thing that can reveal more -- whether a
+doorway appears is exactly what the next session's `PHASE 3 DODGE MAPROUTE` line will say, together
+with `floor cell(s)` (it must grow) and `goal from the route` (it must be non-zero). If `floor cell(s)`
+stops growing while the character is moving, the room is genuinely closed and the next answer is not
+a route but a decision to leave -- §8.4's nexus, which needs no per-dungeon knowledge.
+
+**The instruments.** `PHASE 3 DODGE MAPROUTE` (once per report): the cache's dimensions, its floor
+cells, plans, waypoints and refusals, and the frames the goal came from the route. `Src` and the
+per-cell source map in every `G` record (§14.11) are what made (a) visible at all; the trace replay's
+`map route (trace)` line is the offline twin.
+
+**§14.13 REPLACES TWO THINGS IN THIS SECTION, AND THE OPERATOR FOUND OUT WHY.** Infested Cellar
+(`20261020-183555-p37604`) was stuck in its spawn room for 6 039 frames with the route pacing between
+two points: the cache above stored only floor and not-floor, so the room's wall stayed a frontier for
+ever, and the target was recomputed from the goal distance every frame. The cache is a three-state
+map now (unknown / open / wall, with a `NoWalk` wall revisable), the frontier walk is committed and
+spends dead ends, and the trace replay keys its cache per map -- the 3 228-cell line quoted above was
+eight maps merged into one cache. See §14.13.
+
+### 14.13 The dungeon that would not be left: a map with walls in it, a committed frontier, and a dead end that is spent
+
+`20261020-183555-p37604` is the run the operator summarised in two sentences:
+
+> Did manage to complete a River Maze although it was a quite easy map (up, right, up).
+> Failed in an Infested Cellar, stuck in spawn room, would eventually path up out of spawn room but
+> retreat back in. The pathfinder needs to build an internal map inside dungeons to map them out. It
+> needs to be able to backtrack if it hits a dead end. All dungeons are always solveable, but there
+> might be paths that are dead ends.
+
+**(a) The measurement: 6 039 frames in one room, between two points.** The character enters the
+Infested Cellar at `(512.5, 511.5)` on frame 7 251 and the session ends on frame 13 290. Over those
+**6 039 frames -- 100 seconds** -- the recorded position stays inside the spawn room and, in the last
+4 000 frames, shuttles between **x 507.4 and x 520.6 at y 511.6**. The run's own `PHASE 3 DODGE
+MAPROUTE` line reports the cache at **1 054 floor cells** and the plans/refusals climbing 131/79 ->
+1 344/1 205. The replay of the module over that recorded map reproduces the cycle exactly: the
+published waypoint alternates between `(521.5, 510.5)` -- the room's north-east corner, the reachable
+cell nearest the boss at `(563, 506)` -- and `(519.5, 516.5)`, the frontier the old "go and look"
+fallback picked once the character was standing on the first.
+
+**The exit was known floor the whole time.** The corridor that leaves the room opens at
+`(513..515, 553..555)`. It is in the recorded window from early in the session, and **the character
+never went south of y 536**. It did not need to discover anything to leave; it needed a reason to walk
+away from the goal.
+
+**(b) Why it retreated: a wall and a hole were the same byte, and a frontier never retired.** The
+first cache (§14.12(c)) stored `1` = a floor tile has been seen, `0` = nothing is known. A `NoWalk`
+wall and an unpainted cell are both `0`, so **every cell of the spawn room's wall was a frontier for
+ever**, and the one nearest the boss was the east wall. "Walk to the boss" and "explore" were the
+same instruction, so the character pressed the east wall, drifted to the next-nearest frontier, was
+pulled back toward the boss, and repeated that until the session ended. The second half is the goal
+gradient itself: the target was recomputed from the goal's distance **every frame**, so nothing the
+character did could ever be finished.
+
+**(c) The cache is now a map with three states.** New `MapRoute`:
+
+* `0` **unknown**: nothing has been painted here. Only this is a frontier neighbour;
+* `1` **open**: a tile exists and it is walkable. The route is built over these cells and no others;
+* `2` **wall**: a nonzero collision byte, or outside the map;
+* `3` **wall (tile)**: a `NoWalk` tile -- a wall, but **a placeholder while the map streams**
+  (§14.12(a) measured one cell at seventy frames of `NoWalk` before it became the boss's floor). A
+  later floor observation overrides it; a floor cell is never overridden back.
+
+The adapter already classifies every cell of its window every refresh (`RefreshGrid`), so it now
+hands `MapRoute.Observe` **which case the cell fell into** instead of just "floor or not", in
+`TraceRecorder`'s own source codes. A frontier is therefore *an open cell with an unknown
+neighbour*, and nothing else: the room's `NoWalk` rock stops being unexplored space. On the
+Infested Cellar's recorded map the frontier set collapses from "every wall cell in the window" to
+the handful of cells at the corridor's mouth, and the route heads south.
+
+**(d) Commit to a frontier; spend a dead end; backtrack.** Exploration is now a walk of the map:
+
+* the route to the quest goal is taken **whenever the known floor connects to it** -- the question a
+  dungeon asks is connectivity, answered by a breadth-first walk from the character, not by a
+  distance;
+* otherwise a frontier is chosen **by path length** (breadth-first depth), nearest first, with the
+  goal's distance only as a tie-break. Nearest-first is what makes a dead end cheap: it is walked,
+  spent, and the next choice is generally the junction it came from;
+* the choice is **committed**. It is not re-derived from the goal distance every frame -- that is
+  the ping-pong in (a) -- and it survives the boss walking, because two units of boss movement do
+  not change which corridor has been explored;
+* a frontier is **spent** when the character has stood on it and the map did not grow for
+  `DwellFrames` (60, one second), or when walking to it took longer than `ExploreTimeoutFrames`
+  (300). It is marked tried and never chosen again: the next choice is the nearest untried frontier,
+  and from a dead end that **is** the way back. While the character is waiting out the dwell the
+  frontier cell itself is published, so it stands still beside the unknown and lets the streamer
+  paint -- a dungeon does not reveal itself to a character that keeps walking;
+* when no untried frontier is reachable, the component has been mapped and `TryWaypoint` says so
+  (`Status()` reads `... frontier left`, `dead end`, `timeout`, `explored`), returning `false` so the
+  caller keeps its own goal instead of this module inventing one.
+
+It is still a goal source and nothing else: one point, and the planner, admission, the score, the
+hysteresis and the escape floor are untouched.
+
+**(e) The verification, and an instrument that was wrong.** Two new assertions, both on the real
+module:
+
+* `G4`'s third block is the Infested Cellar room made undeniable: floor, `NoWalk` walls, the goal
+  **east** beyond the wall, and one **unpainted opening to the south**. The first waypoint must be
+  south. It is: `13.5,18.5` from `12.5,12.5`. A cache whose non-floor cells are all "unknown" aims
+  east at the wall and fails here.
+* `G5` is a dungeon walk: `GmTiles`-style reveal around the character, a U with a **blind stub toward
+  the goal** at its first junction, and a goal at the far end. The stub must be entered, found
+  closed, and abandoned; the goal must be reached; and no cell may be entered more than a handful of
+  times. It is: the stub was entered and backtracked, the goal reached in **86 frames**, the
+  most-visited cell entered **5** times. The revisit bound is what a per-frame goal-distance retarget
+  fails. A dry frontier in an isolated room is also spent (3 dead ends marked, 3 retargets), which
+  is the case where standing still would otherwise be for ever.
+
+**AND THE TRACE REPLAY HAD BEEN MEASURING A CHIMERA.** The replay fed every `G` record of a recording
+into **one** cache, and a recording holds the lobby, a realm and two or three dungeons at overlapping
+coordinates. The line §14.12(c) quoted -- 3 228 floor cells, nineteen waypoints, arrived -- was the
+union of eight maps, so some of the floor it routed over belonged to another dungeon. The harness now
+keys the cache per map (a teleport of more than 40 units, `--map N` to choose which one) and the
+honest numbers are these, both from `20261020-183555-p37604`:
+
+```
+map route (trace, map 4): ... 2546 floor cell(s), 4987 wall, 22 frontier left, 10 plan (10 goal),
+19 waypoint ... 19 waypoint(s) walked from (511.5,513.5) to (592.5,563.5), 1.503 unit(s) from the
+goal (arrived)
+map route (trace, map 7): ... 1054 floor cell(s), 2559 wall, 7 frontier left, 4 plan (0 goal),
+9 waypoint ... 8 waypoint(s) walked from (512.5,511.5) to (512.5,554.5), 70.235 unit(s) from the
+goal (SHORT)
+```
+
+The first is the River Maze the operator completed, and **2 546 is exactly the number the live
+`PHASE 3 DODGE MAPROUTE` line printed** for that map -- the offline cache and the live one are now
+the same cache. The second is the Infested Cellar: from the spawn cell the route walks eight
+waypoints **south to the corridor's end at y 554.5** instead of pacing the room at y 511.6, and stops
+there because the recorded map has never seen beyond it. In the live game the streamer paints that
+corridor as the character walks into it and the frontier moves on; that is what the next session's
+line has to show (`floor cell(s)` growing, `dead end(s)` only where the map really ends).
+
+**(f) What is still open.** The route can only spend frontiers it can reach and see; a dungeon that
+streams slower than one second per cell costs one dwell per cell. A component with no frontier left
+and no route to the marker is a dungeon this module cannot solve, and the answer there is not a route
+but the decision to leave (§8.4's nexus) -- deliberately still unwritten. And the only proof that
+matters is the next run: one Infested Cellar session whose `MAPROUTE` line shows the floor growing
+while the character is moving, and a boss reached.
+
+### 15. The rewrite: `DungeonMap` + `DungeonSolver` replace `MapRoute`
+
+Written on branch `feat/dungeon-solver`, after the operator's decision that §14.12-14.13's
+`MapRoute.cs` was not worth repairing:
+
+> This code might be unsalvageable. Make a worktree and we are starting from scratch. Tiledata is
+> streamed from GmTile. There needs to be a special class/solver for dungeons, it needs to build a
+> map based on incoming tile data. Every dungeon is solveable, there are dead ends it will need to
+> backtrack from. There's code that identifies walkable tiles and unwalkable (like walls, void or
+> other terrain). If a room only has one entrance, it is a dead end and the solver will need to back
+> track. Inside a dungeon, there's a marker for the quest/boss, I think the code correctly identifies
+> it so it can be used as a goal. You can re-use code, but things regarding state has to be redone.
+
+**What was reused, deliberately.** `QuestReader` (the marker), `CollisionWindow.MergeCell` and the
+adapter's tile/collision classification (walkability), the trace recorder's `src` alphabet, and the
+point-goal plumbing in `DodgeSnapshot`/`DodgeSolver`/`PathPlanner`. All of those were measured and
+correct; none of them is dungeon state.
+
+**What was rewritten.** The dungeon's knowledge, search, commitment, exploration memory and route
+now live in two instance classes, `DungeonMap.cs` and `DungeonSolver.cs`. There is no static cache,
+no global mode flag, no path shared across maps, and no re-derivation of the frontier from the goal
+distance. `Bind` is the only map transition, keyed on the collision array's reference and
+dimensions; a map over two million cells is refused by name.
+
+**The four rules that changed, and why each has a measurement behind it:**
+
+1. **Four cell states, not two.** `Unknown`, `Floor`, `Wall`, and `ProvisionalWall` (a `NoWalk`
+   tile). A later floor tile overrides the provisional state; a hard wall never does. This is the
+   River Maze boss-room cell that read `NoWalk` for seventy frames and then became floor.
+2. **A hard wall is final.** The previous draft let a `NoWalk` or collision cell be overwritten by
+   a later `Floor` observation; `D1` caught it before the first run because a collision cell
+   upgraded to floor, which would route through a wall the server had painted.
+3. **Exploration is a committed frontier walk.** The nearest untried frontier by BFS depth is
+   chosen, with the goal distance only as a tie-break, and the choice survives the goal moving. The
+   old rule re-derived the target from the goal distance every frame, which is the Infested Cellar's
+   6 039-frame shuttle between x 507.4 and x 520.6.
+4. **A closed stub is a dead end, not an exploration.** When a committed frontier stops being a
+   frontier, the solver asks whether the map opened there (a floor neighbour other than the way in)
+   or closed (only the way back). `MarkTried` then makes the next choice the way back to the
+   junction. `D3` is the fixture: the stub is entered, found closed, one dead end and one backtrack
+   are counted, and the goal beyond it is reached in 86 frames with no cell entered more than five
+   times.
+
+**The report line is renamed** `PHASE 3 DODGE DUNGEON`, and its counters are `floor`, `wall`,
+`provisional`, `frontier`, `plan (goal)`, `waypoint`, `refused`, `dead end`, `timeout`, `backtrack`
+and `explored`. `MAPROUTE` no longer exists, and a run that reads it is reading an older build.
+
+**Offline verification.** `SolverHarness` now runs `D1` (cell states and per-map identity), `D2`
+(the U-corridor route), `D3` (a dry frontier, a blind stub, a backtrack and the goal), `D4` (a room
+with one entrance), `D5` (state per map) and `D6` (the placeholder-sealed room of §16) on every
+invocation; `Test-HookOffline.ps1` passes all nine checks with them. **No live run of §16 yet.** The
+next dungeon session's `DUNGEON` line -- `floor` and `edge` moving while the character probes,
+`frontier` falling, `dead end` only where the map really ends -- is the measurement that turns this
+from an offline result into a solved dungeon. The design and the full limit list are in
+[`DUNGEON-SOLVER.md`](DUNGEON-SOLVER.md).
+
+### 16. The first live dungeon run: a room sealed by `NoWalk` placeholders
+
+`20261020-223237-p14412` ran the §15 build. The operator's report:
+
+> Chasm of Dread: did make some progress, eventually got stuck walking in circles inside a room. Not
+> a dead end, it should have chosen one of two exits to continue.
+> River Maze: stuck in spawn room walking up and down.
+
+The `DUNGEON` line at the end of River Maze read:
+
+```
+dungeon map ON (1024x1024, 518 floor, 87 wall, 2102 provisional, 17 frontier (mapped),
+                 6993 plan (0 goal), 485 waypoint, 6950 refused, 1 dead end, 0 timeout,
+                 0 backtrack, 39 explored)
+```
+
+`(mapped)` was wrong, and the numbers say why: `plans` and `refused` climbed by thousands while
+`waypoint` stayed at 485. The solver was refusing every frame, not routing. Flood-filling the last
+River Maze `G` record from the player's cell gives **424 floor cells and zero unknown neighbours** --
+the room's boundary was 68 collision cells and 78 `NoWalk` cells, and the other **94 floor cells in
+the same window were disconnected**. The doorway was still a `NoWalk` placeholder and the corridor
+was already visible on the far side of it. Chasm of Dread had the same signature (2 044 floor, 3 828
+provisional, 3 frontiers, 8 plans).
+
+So the hard-frontier definition -- floor beside *unknown* -- had nothing to find. The fix is in
+`DUNGEON-SOLVER.md` §8: the search also collects **boundary cells** (floor beside a `NoWalk`
+placeholder), and when no hard frontier is reachable the solver probes one. The probe is ranked by
+the distance to a **disconnected floor patch** in the same window, because that is the exit corridor
+seen through the placeholder; the goal is the tie-break. The probe dwells 30 frames, then marks the
+cell tried and moves to the next candidate. The report line gained `edge`, the number of unspent
+boundary cells.
+
+Offline, `D6` is the fixture: the whole window pre-painted `NoWalk`, two exits whose door cells are
+placeholders, and a reveal that turns a door into floor when the character stands near it. It passes;
+it fails at the first `TryWaypoint` on the §15 build. The static trace replay now walks a boundary
+candidate in each room (`map 9`: 5 waypoints to (494.5,521.5), 2.2 units from the outside floor;
+`map 5`: 18 waypoints to (539.5,578.5)) -- the selection is pointed at the exit, and the live
+streamer is what must turn the placeholder into floor. **The next live run is the test**: `floor` and
+`edge` must move while the character is probing, and `(mapped)` must not appear on a room with an
+exit.
+
+### 16.1 The second live run: doorways did convert, and the probe order was wrong
+
+`20261020-224816-p12992` is Infested Cellar with the first boundary build in it. The operator's
+report is the screenshot at the intersection: *"It never progresses past the room with the
+intersection"* (the red enemy on the minimap is in another room, not the boss).
+
+The last window is a **1 108-cell component**, 0 unknown neighbours, 352 collision and 126 `NoWalk`,
+with zero other floor touching it. Over 6 239 frames the status moves floor **994 -> 1 139**, `edge`
+**102 -> 79**, plans **171 -> 348**, dead ends **25**, timeouts **6**, backtracks **15** -- and the
+position cycles between y ≈ 503-516 and y ≈ 530-550, visiting the intersection cell 63 times.
+
+The per-cell transition count is what rules out the streamer as the culprit: **601 cells went
+`2 -> 3`** (`NoWalk` -> floor) and **zero went `1 -> 3`** (collision -> floor) in that window. The
+doorways are placeholders and they do convert. Two things were wrong:
+
+1. **Boundary dwell was 30 frames.** The measured placeholder-to-floor delay is up to 70 frames
+   (§14.12), so the probe left before the tile arrived. It is now **75**.
+2. **The rankings pointed the wrong way.** Hard frontiers were nearest-by-path-depth, which
+   explored the whole south half before the boss side; boundaries were outside-floor-first, which
+   walked back to the spawn-room walls on every probe. Frontiers are now **goal distance first**.
+   The first boundary probe is goal-directed too, but once a sequence is running the next probe is
+   the **nearest unspent boundary to the player**, with the goal as a tie-break: the second run was
+   spending ~400 frames per probe crossing the room, and a perimeter sweep is the same experiment
+   without the travel. A failed probe also spends its neighbourhood (`BoundarySpendRadius` = 2), so
+   a wall costs a few probes, not one per cell.
+
+The static replay of the latest map now moves toward the marker side (`map 11`: 4 waypoints east to
+(521.5,510.5)) instead of back to the spawn. The next run's `DUNGEON` line is the live test:
+`edge` must fall while `floor` grows through the doorway, and a probe that converts must produce a
+goal route. If `edge` reaches 0 with the boss unreachable, the component is genuinely sealed and the
+answer is §8.4's exit, not another probe.
+
+### 16.2 The third live run: it reached the boss twice, and the spawn room is still slow
+
+`20261020-230932-p36548` has two Infested Cellars back to back. Both reached the boss room. The
+operator's remaining complaint is efficiency: *"it spends a lot of time discovering spawn room"*.
+
+The position record agrees. In the **first** visit (frames 7 409-14 147) the character first gets
+more than 25 units from spawn at frame 7 639, but spends roughly frames 8 409-10 408 within ~10
+units of it, and reaches the boss side around frame 11 409. In the **second** (frames 14 159-23 069)
+it briefly leaves at frame 14 546, comes back, and stays within ~10 units of spawn until about frame
+18 158 -- roughly **3 600 frames** -- before the route to the boss opens.
+
+The `DUNGEON` line says where that time goes: the second run is around `73 edge` with only 15 dead
+ends and 11 timeouts over 8 000 frames -- about **400 frames per probe**. The dwell is 75 frames; the
+rest is **travel between boundary cells on opposite sides of the room**, because the ranking was
+goal-first and the goal was far away. The probes were correct experiments, just spread across the
+whole component.
+
+The fix is the local sweep: the first probe stays goal-directed, then each next probe is the nearest
+unspent boundary cell to the player (goal as tie-break), so the character walks the room's perimeter
+instead of crossing it. With `BoundarySpendRadius` = 2, a room's wall now costs a handful of
+probes rather than one per cell. The transient answer to the operator's question is **yes, the tile
+map only arrives near the character** -- `GmTiles` streams and `NoWalk` is the placeholder for
+"not yet sent" -- but the solver does not need to *collide* with a wall; it needs to be near it, and
+a perimeter pass is the cheapest way to be near all of it.
+
+### 16.3 The fourth live run: optimistic planning through the placeholders
+
+`20261020-233845-p12720` is the Infested Cellar the operator called *"painfully slow"*. Floor grows
+1 047 -> 1 682 by about frame 4 002, then stays at **1 682 for roughly 7 000 frames**; the first goal
+plan appears at frame **11 602**, about 8 700 frames after entry. `edge` falls 99 -> 33 and plans
+rise 18 -> 333.
+
+The cause is structural: the exact search only traverses `Floor`, so when the boss is across a
+`NoWalk` doorway the map has no route and the solver falls back to per-wall probes. The boss
+position was known; the route was not.
+
+The fix is a goal-directed **optimistic A*** (`DungeonMap.SearchOptimistic`): it traverses `Floor`
+normally and `ProvisionalWall` at cost 40, returns the **first provisional wall on the shortest route
+to the boss**, and the character walks to the floor cell before it. If the tile converts, the route
+opens; if it does not, that wall is `MarkBlocked` and the search recomputes around it. Hard walls and
+unknown cells are never traversed. This is the mouse loop, and it replaces "sweep the room" with
+"walk at the boss and learn the wall that blocks you".
+
+`D7` is the offline fixture: a real `NoWalk` wall straight east, a placeholder door south. The first
+waypoint is east, all 10 wall rows are blocked, the route re-plans through the south door, and the
+goal is reached in 1 052 frames. `D1`-`D7` and `Test-HookOffline.ps1` (9/9) pass.
+
+**The next live `DUNGEON` line is the test**: `dead end` rising in bursts as real walls are bumped,
+`floor` growing after a burst as a doorway converts, and much less time spent walking the spawn
+room's perimeter. If `floor` stays flat while walls are blocked, the blocking wall is collision (not
+a placeholder) and the answer is the exit decision, not another probe.
+
+### 16.4 The fifth live run: the probe stopped being asked mid-dwell
+
+`20261020-235250-p33652` is two Infested Cellars. The first eventually reached the boss (goal plans
+start at frame 12 047, after ~8 500 frames). The second was aborted after ~1 500 frames with the
+character sitting in a 3x3 space around **(521, 515)** for over a thousand frames; `dead end` moved
+only 29 -> 31 and `timeout` 13 -> 14 in that time, while 43 boundary cells were still unspent.
+
+That is not the map failing. The adapter called the dungeon solver only while the local planner was
+blind (`NoTarget`/`Unreachable`/`NodeCap`) or during a 45-frame hold. Once the solver published the
+**floor cell before a wall**, the planner had a good route to that cell, stopped being blind, and
+the solver stopped being called mid-dwell. The probe never reached 75 frames, so the wall was never
+converted or blocked.
+
+`DungeonSolver.HasActiveProbe` is the fix: the adapter keeps asking while a probe is committed, even
+if the local planner has a route. `DungeonHoldFrames` is 120 now (longer than one dwell), and a
+failed wall blocks `BlockedRadius` = 2 around it, so a solid wall costs a handful of probes.
+
+The next run's test is the second-cellar shape: while standing at a wall, `dead end` or `timeout`
+must advance at least once per ~75 frames, and a converted tile must appear as floor growth. A
+stationary position with frozen probe counters is this integration bug, not an unsolvable map.
+
+### 16.5 The sixth live run: why the spawn room is slow and the rest is not
+
+`20261021-000135-p35056` has Infested Cellar twice and Frost Cavern; both Cellars reached the boss.
+The operator's observation is exact: the spawn room takes a long time, then the rest of the route is
+efficient.
+
+That is an information asymmetry, not a pathing defect. At entry the map knows the spawn room and
+almost nothing else: the boss is outside, every connection is still a `NoWalk` placeholder, and
+there is no floor route. The solver must walk to room boundaries and let the streamer paint a
+doorway. Once one converts, the next corridor's floor arrives and the rest is mostly known floor --
+hence the quick finish.
+
+Two ordering fixes came out of this run:
+
+1. **Hard frontiers are walked before the optimistic wall plan.** The wall plan had been tried
+   first, so a room with real unpainted edges was wall-probed instead of exploring them.
+2. **A provisional wall with disconnected floor on its far side is priced at `DoorwayCost` (2)**
+   instead of `ProvisionalCost` (40). That is the corridor seen through a doorway; a solid wall with
+   no floor beyond is the expensive case.
+
+The unavoidable part is unchanged: a doorway that has never been streamed cannot be known until the
+character is near it. The goal is one perimeter pass, not a wall-cell-by-cell probe.
