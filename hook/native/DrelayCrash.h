@@ -30,6 +30,13 @@
 // error is still printed, and the process still dies.  This observes; it does
 // not intervene.  A diagnostic that swallows the fault it is measuring would be
 // worth less than no diagnostic at all.
+//
+// AND THE SECOND THING: IT MUST NOT RAISE AN EXCEPTION OF ITS OWN.  `OutputDebugStringA`
+// raises `0x40010006`, and raising it from inside another exception's dispatch
+// re-enters the handler chain -- which, on a thread the runtime has just hijacked
+// for a collection, used to turn the hijack trip into a CLR assert and a `0xC0000602`
+// death.  That is why the debugger channel is now last-chance only; the argument is
+// above STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT in DrelayCrash.cpp.
 
 #ifndef DRELAY_CRASH_H
 #define DRELAY_CRASH_H
@@ -61,6 +68,23 @@ void DrelayInstallCrashReporter();
 //     invisible to a handler that had been silently overtaken.  Removing and
 //     re-adding puts this one back in front.
 void DrelayArmCrashReporter();
+
+// How many `STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT` (0x80000033) exceptions the
+// reporter has seen and passed through.  A trip is the runtime suspending a
+// managed thread for a collection under CET -- routine, not a fault, and no
+// longer written to `crash.txt` (see DrelayCrash.cpp: writing a report for one
+// used to kill the process).  The number is the evidence that the pass-through
+// is live and a measure of how hard the run is collecting.  Safe to call from any
+// thread; the handler only ever increments it.
+unsigned int DrelayHijackTripCount();
+
+// Removes both handlers and restores the filter that `DrelayInstallCrashReporter`
+// replaced.  Called from `DllMain(DLL_PROCESS_DETACH)` on an explicit unload --
+// the handler addresses live in this image, and a process that frees the DLL
+// without this dispatches its next exception into unmapped memory (measured: the
+// process then dies with `0xC0000409`).  The game never unloads the DLL; the ABI
+// self-test does.  Not for use while a fault is being handled.
+void DrelayDetachCrashReporter();
 
 } // namespace drelay
 

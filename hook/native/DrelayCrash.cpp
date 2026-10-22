@@ -29,9 +29,15 @@ ModuleInfo g_modules[kMaxModules] = {};
 uint32_t   g_moduleCount = 0;
 volatile LONG g_installed = 0;
 volatile LONG g_inHandler = 0;
-volatile LONG g_inResolve = 0;
 volatile LONG g_faults = 0;
+// CET hijack trips seen and passed straight through.  Not faults: each one is the
+// runtime suspending a managed thread for a collection.  See the comment above
+// STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT.
+volatile LONG g_hijackTrips = 0;
 PVOID         g_veh = nullptr;
+// What `SetUnhandledExceptionFilter` replaced, so an explicit unload can put the
+// process back the way it was.  See DrelayDetachCrashReporter.
+LPTOP_LEVEL_EXCEPTION_FILTER g_previousFilter = nullptr;
 
 // ---------------------------------------------------------------------------
 // FATAL_JIT_EXCEPTION: THE EXCEPTION THE JIT RAISES WHEN IT GIVES UP ON A METHOD,
@@ -80,6 +86,54 @@ PVOID         g_veh = nullptr;
 // a process with a JIT hook in it.  It goes to `jit-internal.txt`, named for what it
 // is.
 #define FATAL_JIT_EXCEPTION 0x02345678u
+
+// ---------------------------------------------------------------------------
+// STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT: THE EXCEPTION THIS REPORTER MUST NEVER
+// WRITE A REPORT FOR, AND THE ONE IT USED TO KILL THE PROCESS WITH.
+//
+// The game's runtime is CET (shadow-stack) enabled -- .NET 9 turns it on by
+// default, and `coreclr!Thread::AreShadowStacksEnabled` is true in this process.
+// Under it the runtime does not suspend a running managed thread by overwriting
+// its instruction pointer.  It swaps the *return address* for a target the OS
+// supplies (`RtlGetReturnAddressHijackTarget`), and when that frame returns the
+// CPU's shadow-stack check fails and Windows raises `0x80000033`
+// (`vm/excep.cpp:6514`).  The runtime's own handler then moves `rip` to the
+// original return site and lets the thread reach a GC safe point.  In a healthy
+// process this happens on ordinary collections and is completely routine.
+//
+// WHAT WENT WRONG.  This handler ran first in the vectored chain, did not know
+// the code, and wrote a report -- which begins with `OutputDebugStringA`.  That
+// call raises `0x40010006` of its own.  The nested exception is dispatched from
+// the top of the chain again, so it reaches the runtime's handler *while the
+// outer `0x80000033` is still in flight*, and that handler unhijacks the current
+// thread for every exception it sees (`vm/excep.cpp:6561-6566` ->
+// `Thread::UnhijackThreadNoAlloc`, which restores the return address and clears
+// `TS_Hijacked`, `vm/threadsuspend.cpp:4659`).  When the outer exception resumed
+// dispatch, the runtime found a hijack trip on a thread it no longer believed was
+// hijacked:
+//
+//     _ASSERTE_ALL_BUILDS(pThread->HasThreadState(Thread::TS_Hijacked));   // excep.cpp:6524
+//
+// which fail-fasts the process through `RaiseFailFastException`, i.e.
+// `0xC0000602` with `coreclr+0x321531` -- an exception that raises nothing this
+// handler can see, so it left no report of its own.
+//
+// THE MEASUREMENT.  Across the runs in `%LOCALAPPDATA%\drelay\hook`, 60 wrote a
+// `0x80000033` report and 55 of them died within a second or two of writing it;
+// the other five kept running for another 16 to 249 seconds.  The runtime returns
+// before the assert on a trip it declines as "not ours" (the thread is not in
+// cooperative mode), which is the most likely difference between the two groups --
+// this comment does not claim it is the only one.  The four dumps in `work\dumps`
+// are the same fail-fast, and their fail-fast thread's stack points at
+// `coreclr+0x137343` -- the instruction after the call that loads
+// `excep.cpp:6524`.  Autofarming makes it quick only because it collects far more
+// often: every collection is another trip.
+//
+// SO: PASS IT THROUGH, COUNT IT, NEVER REPORT IT.  The counter is the evidence;
+// `DrelayHijackTripCount` is read from an ordinary thread by the watcher.
+#ifndef STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT
+#define STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT 0x80000033u
+#endif
 
 // ---------------------------------------------------------------------------
 // The report is built in one static buffer, because allocating inside an
@@ -152,30 +206,14 @@ void Describe(const void* address, char* out, size_t cap) {
         }
     }
 
-    // The address may belong to a module loaded after the last snapshot -- a
-    // lazily loaded one such as crypt32.dll is exactly the sort of thing that
-    // would be missing.  Asking the loader takes the loader lock, so it is a
-    // fallback rather than the first move, and `g_inResolve` stops a fault
-    // *inside* this fallback from recursing into it again.
-    if (InterlockedCompareExchange(&g_inResolve, 1, 0) == 0) {
-        HMODULE module = nullptr;
-        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                               reinterpret_cast<LPCWSTR>(address), &module) != 0 &&
-            module != nullptr) {
-            wchar_t path[MAX_PATH] = {};
-            if (GetModuleFileNameW(module, path, MAX_PATH) != 0) {
-                const wchar_t* leaf = wcsrchr(path, L'\\');
-                leaf = (leaf != nullptr) ? leaf + 1 : path;
-                _snprintf_s(out, cap, _TRUNCATE, "%ls(unsnapshotted)+0x%llX", leaf,
-                            static_cast<unsigned long long>(
-                                value - reinterpret_cast<uintptr_t>(module)));
-                InterlockedExchange(&g_inResolve, 0);
-                return;
-            }
-        }
-        InterlockedExchange(&g_inResolve, 0);
-    }
+    // WHERE THE LOADER-LOCK FALLBACK USED TO BE.  It asked the loader
+    // (`GetModuleHandleExW`) for a module loaded after the last snapshot, which was
+    // worth a name for a lazily loaded DLL and cost the loader lock inside an
+    // exception handler.  `DrelayArmCrashReporter` re-snapshots at each checkpoint
+    // precisely so this handler never has to, and the failures that matter here --
+    // a JIT code-heap address such as the `ret` a hijack trip happens on -- belong
+    // to no module at all, so the fallback bought nothing for them while making
+    // "the handler takes no lock" untrue.  "(no module)" is the finding.
     _snprintf_s(out, cap, _TRUNCATE, "(no module)");
 }
 
@@ -192,6 +230,16 @@ const char* ExceptionName(DWORD code) {
         case 0x80131506u:                     return "COR_E_EXECUTIONENGINE (the CLR fatal error)";
         case 0xC0000409u:                     return "STACK_BUFFER_OVERRUN / fail-fast";
         case 0xE0434352u:                     return "CLR managed exception";
+        case STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT:
+                                              // Unreachable through the vectored
+                                              // handler, which now passes it through
+                                              // before building a report.  Named here
+                                              // anyway, because a report that says
+                                              // "unclassified" about the runtime's own
+                                              // hijack trip is what made the old runs
+                                              // look like a crash.
+                                              return "RETURN_ADDRESS_HIJACK_TRIP (the CLR's CET hijack "
+                                                     "trip: a GC suspending a managed thread, not a fault)";
         case FATAL_JIT_EXCEPTION:             return "FATAL_JIT_EXCEPTION (the JIT's own fatal path, "
                                                      "which the JIT catches itself)";
         default:                              return "unclassified";
@@ -255,11 +303,25 @@ void AppendStackWalk(const CONTEXT* context) {
     }
 }
 
-void WriteReport(const wchar_t* fileName) {
-    // Written to the run directory AND to the debugger channel.  The file is the
-    // one that survives a hard kill; the debugger channel is the one that
-    // survives a write failure.
-    OutputDebugStringA(g_text);
+// `secondChance` means the process is already dying (the last-chance filter ran),
+// and it is the *only* case in which the debugger channel may be used.
+//
+// WHY THE MOVED LINE MATTERS, AND WHY IT IS NOT A STYLE CHOICE.  `OutputDebugStringA`
+// raises `0x40010006` -- a real first-chance exception, raised whether or not a
+// debugger is attached (measured: a probe process with nothing but a vectored
+// handler installed saw exactly that code, and saw nothing from plain file I/O).
+// Raising it from inside another exception's dispatch
+// re-enters the handler chain, and the runtime's handler unhijacks the current
+// thread for every exception it sees.  On a thread the runtime has just hijacked
+// for a collection, that turns the hijack trip into the `excep.cpp:6524` assert --
+// which is the whole story in the comment above
+// STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT.  A live process must not be handed a
+// nested exception by its own diagnostic; a dying one can afford it, and that is
+// where the debugger channel still goes.
+void WriteReport(const wchar_t* fileName, bool secondChance) {
+    if (secondChance) {
+        OutputDebugStringA(g_text);
+    }
 
     if (g_runDir[0] == L'\0') {
         return;
@@ -277,7 +339,7 @@ void WriteReport(const wchar_t* fileName) {
     CloseHandle(file);
 }
 
-LONG CALLBACK VehHandler(EXCEPTION_POINTERS* pointers) {
+LONG ReportException(EXCEPTION_POINTERS* pointers, bool secondChance) {
     if (pointers == nullptr || pointers->ExceptionRecord == nullptr) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
@@ -311,6 +373,15 @@ LONG CALLBACK VehHandler(EXCEPTION_POINTERS* pointers) {
             return EXCEPTION_CONTINUE_SEARCH;
         default:
             break;
+    }
+
+    // AND THE RUNTIME'S OWN HIJACK TRIP, WHICH IS NOT NOISE AND IS NOT A FAULT.
+    // Passed through before any bookkeeping -- before the re-entrancy guard and
+    // before the `g_faults` budget, so a run that trips often never spends the
+    // budget that a real fault would need.  See the comment on the constant.
+    if (code == STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT) {
+        InterlockedIncrement(&g_hijackTrips);
+        return EXCEPTION_CONTINUE_SEARCH;
     }
 
     if (InterlockedCompareExchange(&g_inHandler, 1, 0) != 0) {
@@ -373,18 +444,28 @@ LONG CALLBACK VehHandler(EXCEPTION_POINTERS* pointers) {
                     : "=== end crash report ===\r\n");
 
     // Last, because it is the only step that can fail without losing the report.
-    WriteReport(jitInternal ? L"jit-internal.txt" : L"crash.txt");
+    WriteReport(jitInternal ? L"jit-internal.txt" : L"crash.txt", secondChance);
 
     InterlockedExchange(&g_inHandler, 0);
     return EXCEPTION_CONTINUE_SEARCH;
+}
+
+// The vectored entry point.  A plain one-argument function because that is the
+// type `AddVectoredExceptionHandler` takes; the shared body above carries the
+// `secondChance` distinction instead of a defaulted parameter, which would change
+// this function's type and quietly stop it converting to PVECTORED_EXCEPTION_HANDLER.
+LONG CALLBACK VehHandler(EXCEPTION_POINTERS* pointers) {
+    return ReportException(pointers, /*secondChance=*/false);
 }
 
 LONG WINAPI UnhandledFilter(EXCEPTION_POINTERS* pointers) {
     // A vectored handler runs before this one, so reaching here means the fault
     // is one the vectored handler filtered as benign, or the filter itself
     // failed.  Reported anyway rather than returning EXCEPTION_CONTINUE_SEARCH
-    // silently, because silence here is indistinguishable from "no crash".
-    VehHandler(pointers);
+    // silently, because silence here is indistinguishable from "no crash".  This
+    // is second chance: the process is going down, so the debugger channel is
+    // safe here and only here.
+    ReportException(pointers, /*secondChance=*/true);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -396,8 +477,36 @@ void DrelayInstallCrashReporter() {
     }
     SnapshotModules();
     g_veh = AddVectoredExceptionHandler(1, VehHandler);
-    SetUnhandledExceptionFilter(UnhandledFilter);
+    g_previousFilter = SetUnhandledExceptionFilter(UnhandledFilter);
     (void)g_veh;
+}
+
+// THE HANDLERS POINT INTO THIS IMAGE, SO THEY MUST GO BEFORE IT IS UNMAPPED.
+//
+// In the game the DLL is never unloaded, so this only matters to a host that calls
+// `FreeLibrary` -- and `Test-HookAbi.ps1` is exactly that host: it loads the DLL,
+// calls `DrelayHook_Init` (which arms both handlers) and frees it.  ntdll keeps the
+// handler addresses regardless, so the next exception in that process dispatches
+// into unmapped memory.  The measured symptom was the whole offline suite dying with
+// `0xC0000409` the instant the ABI self-test finished, and it reproduced against the
+// DLL built from the sources before the CET fix, so it is not a regression: it is an
+// unload that was never safe.  `DllMain(DLL_PROCESS_DETACH)` with `lpReserved == NULL`
+// is the one place that runs on an explicit unload, and it is where this is called.
+//
+// The one thing this cannot do is synchronise with an exception that is already being
+// dispatched on another thread; `RemoveVectoredExceptionHandler` does not wait for it.
+// That is a narrower race than a guaranteed dangling pointer, and it does not arise in
+// the game, which never unloads.
+void DrelayDetachCrashReporter() {
+    if (g_veh != nullptr) {
+        RemoveVectoredExceptionHandler(g_veh);
+        g_veh = nullptr;
+    }
+    // Restoring the previous filter rather than clearing it keeps the promise the
+    // header makes: this observes, and when it leaves it leaves nothing behind.
+    SetUnhandledExceptionFilter(g_previousFilter);
+    g_previousFilter = nullptr;
+    InterlockedExchange(&g_installed, 0);
 }
 
 void DrelayArmCrashReporter() {
@@ -406,6 +515,14 @@ void DrelayArmCrashReporter() {
         RemoveVectoredExceptionHandler(g_veh);
     }
     g_veh = AddVectoredExceptionHandler(1, VehHandler);
+}
+
+unsigned int DrelayHijackTripCount() {
+    // Read from an ordinary thread (the watcher), never from the handler, which
+    // only ever increments it.  The compare-exchange is a portable atomic read:
+    // `InterlockedCompareExchange` with the same value both ways leaves the
+    // counter untouched and returns what it was.
+    return static_cast<unsigned int>(InterlockedCompareExchange(&g_hijackTrips, 0, 0));
 }
 
 } // namespace drelay

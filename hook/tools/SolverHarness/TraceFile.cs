@@ -105,6 +105,22 @@ namespace Drelay.SolverHarness
         /// </summary>
         public readonly List<EntityBody> Bodies = new List<EntityBody>();
 
+        /// <summary>
+        /// The enemies the FARMER may walk to, at this frame's positions.
+        /// (`PLAN-AUTOFARM.md` section 4.2.)
+        ///
+        /// IT IS A SECOND LIST AND NOT `Bodies` WITH AN ID BOLTED ON, for the reason
+        /// `Drelay.Bootstrap.FarmTarget` records: the two are culled by different radii and gated by
+        /// different switches, and a test that could not tell `DRELAY_DODGE_ENEMIES=0` from
+        /// `DRELAY_DODGE_FARM=0` would be unable to A/B either of them.
+        ///
+        /// NO RECORDING CARRIES ONE YET. `TraceRecorder` does not write a farm-target array -- the
+        /// same gap `PLAN-ENEMY-THREATS.md` section 8.8.7 records for `bodies` -- so a live trace
+        /// replays with this list empty and the farmer with nothing to choose from. That is the
+        /// honest reading rather than a silent pass: the harness reports it by name.
+        /// </summary>
+        public readonly List<FarmTarget> FarmTargets = new List<FarmTarget>();
+
         public int Skipped;
 
         /// <summary>
@@ -219,6 +235,16 @@ namespace Drelay.SolverHarness
         /// test the plan says needs a live run.
         /// </summary>
         public bool Synthetic;
+
+        /// <summary>
+        /// WHETHER THE SOLVER'S OWN EMITTED MOVE DRIVES THE PLAYER, rather than the trace's scripted
+        /// path. The farmer's scenarios only. See `Harness._simX`.
+        ///
+        /// IT IS A PROPERTY OF THE SCENARIO AND NOT OF A RECORDING, and a recorded trace can never
+        /// set it: a recording is a record of a world that already happened, and re-integrating the
+        /// player from the solver's answers inside it would be measuring a world nobody played.
+        /// </summary>
+        public bool ClosedLoop;
 
         public readonly List<RecordedFrame> Frames = new List<RecordedFrame>();
         public readonly List<GridWindow> Grids = new List<GridWindow>();
@@ -502,6 +528,23 @@ namespace Drelay.SolverHarness
                     Y = b["y"].AsFloat(),
                     Radius = b["rad"].AsFloat(),
                     DangerRadius = 0.0f,   // the harness fills it from the config it is running
+                });
+            }
+
+            // THE FARMER'S TARGETS, ON THE SAME TERMS AND WITH THE SAME HONESTY. `TraceRecorder`
+            // does not write a `farm` key yet, so a live recording reads as the empty list and the
+            // farmer has nothing to choose from on a replay -- which the run reports by name rather
+            // than passing over. The key exists in the format because the synthetic writer writes it
+            // (`SyntheticTrace.WriteJsonLines`), which is what makes the recorder growing one a
+            // compatible change; and `PLAN-ENEMY-THREATS.md` section 8.8.7 is the record of what
+            // waiting until later costs.
+            foreach (Json t in record["farm"].Items)
+            {
+                frame.FarmTargets.Add(new FarmTarget
+                {
+                    GameId = t["id"].AsInt(),
+                    X = t["x"].AsFloat(),
+                    Y = t["y"].AsFloat(),
                 });
             }
             return frame;

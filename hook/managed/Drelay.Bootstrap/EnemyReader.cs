@@ -84,6 +84,77 @@ namespace Drelay.Bootstrap
         private static Func<object, float> _getRadius;
 
         /// <summary>
+        /// `Health` and `MaxHealth`, read for the WORLD LOG and for nothing else.
+        ///
+        /// THEY ARE OPTIONAL AND THEY ARE A DIFFERENT QUESTION FROM RULE 7'S. The dodge has never
+        /// needed an enemy's health -- it reasons about geometry -- and `PLAN-ENEMY-THREATS.md`'s
+        /// reader deliberately resolves the smallest set that answers "can this damage me". The world
+        /// log (`PLAN-AUTOFARM.md` section 6) wants health because "the 8 nearest" is how the
+        /// operator's session names a boss later, and a boss is a health number. So they are resolved
+        /// here, where the enumeration already is, and a build where they moved costs a column.
+        ///
+        /// THE NAMES ARE `AutoAim`'s, WHICH HAS READ BOTH LIVE: `Health` and `MaxHealth` on the
+        /// element type. See `AutoAim.Resolve`.
+        /// </summary>
+        private static Func<object, float> _getHealth;
+        private static Func<object, float> _getMaxHealth;
+
+        /// <summary>
+        /// `GameObject.GameId`, read for the FARMER's target list and not for the body list.
+        ///
+        /// IT IS OPTIONAL FOR THE BODIES AND REQUIRED FOR THE FARMER, and that asymmetry is the same
+        /// `FieldLookup` lesson the header of that file records: `GameId` is declared on
+        /// `GameObject`, four levels up, so a lookup restricted to the element type would not find
+        /// it. Rule 7 has no use for an identity -- it compares geometry every frame -- so a build
+        /// where the field moved must not lose the body list over it. The farmer's stickiness rule
+        /// IS an identity ("keep the current target while it is alive and in range"), and a list of
+        /// targets all carrying id zero would make every enemy the same target, so the farm half is
+        /// switched off by name instead of silently collapsing.
+        /// </summary>
+        private static Func<object, int> _getGameId;
+
+        private static string _gameIdName;
+
+        /// <summary>
+        /// `GameObject.Data`, then `GameObjectData.Name` and `.Class` -- THE CRITTER FILTER'S INPUT.
+        ///
+        /// THE OPERATOR'S FIRST LIVE FARM SESSION IS WHY THIS EXISTS: the character walked at the
+        /// realm's ambient critters, which die when it walks over them. A critter is an ordinary
+        /// `Enemy` to `GetEnemies()`, an ordinary body to rule 7, and a valid target to every rule
+        /// the farmer had, so no geometric test separates it from a mob. The client's own name for
+        /// it does, and the name is two field reads away: `Enemy : Entity : GameObject` carries
+        /// `Data`, and `GameObjectData` carries `Name` and `Class` as public fields.
+        ///
+        /// THEY ARE OPTIONAL LIKE EVERY OTHER ACCESSOR HERE. A build where `Data` moved loses the
+        /// name (and the ignore list becomes a no-op) but keeps the body list and the farmer, which
+        /// is the same discipline `Health` and `GameId` follow.
+        /// </summary>
+        private static Func<object, object> _getData;
+        private static Func<object, object> _getName;
+        private static Func<object, object> _getClass;
+        private static Func<object, bool> _getNoDie;
+        private static string _nameSource;
+
+        /// <summary>
+        /// `Entity.Effects` and `StatusEffects.Unhittable()` -- the client's own "cannot be damaged"
+        /// predicate, and the CRITTER FILTER's second half. See `FarmTarget.Unhittable`.
+        ///
+        /// IT IS THE SAME PAIR `AutoAim` RESOLVES (its `_getEffects`/`_unhittable`), and the same
+        /// argument applies here: a target that cannot be damaged is not something to farm. The
+        /// dodge deliberately does NOT use it (an invulnerable enemy can still shoot at the player,
+        /// so rule 7 must still avoid it), which is why it belongs to the farm half only.
+        /// </summary>
+        private static Func<object, object> _getEffects;
+        private static IntPtr _unhittable;
+        private static string _unhittableSource = "not resolved";
+
+        /// <summary>The element type's own name, for the farm half's failure line.</summary>
+        private static string _enemyTypeName;
+
+        /// <summary>True when the farm half of the reader has everything it needs.</summary>
+        private static bool _farmUsable;
+
+        /// <summary>
         /// True when the game's own radius could not be read, so `DefaultPlayerRadius` is standing in
         /// for it.
         ///
@@ -103,6 +174,9 @@ namespace Drelay.Bootstrap
         private static long _bodiesRadiusFallback;
         private static long _skippedFrames;
 
+        /// <summary>Enemies that reached the FARMER's list, summed over the run.</summary>
+        private static long _farmTargetsAdded;
+
         /// <summary>Where the reader stands, for the run's own log.</summary>
         public static string Status()
         {
@@ -118,13 +192,30 @@ namespace Drelay.Bootstrap
                    + (_radiusFallback
                         ? ", Radius did NOT resolve -- DefaultPlayerRadius stands in and the"
                           + " fallback is COUNTED (a silent zero radius is a body to walk through)"
-                        : "");
+                        : "")
+                   + (_farmUsable
+                        ? ", farm targets use " + (_gameIdName ?? "GameId")
+                        : ", FARM TARGETS UNAVAILABLE: no GameId field on " + (_enemyTypeName ?? "?")
+                          + " or its bases");
         }
 
         /// <summary>Why the reader is not available; null when it is.</summary>
         public static string UnresolvedReason
         {
             get { return _rejectionReason ?? _unresolvedReason; }
+        }
+
+        /// <summary>
+        /// The farm half's filter, on its own line: which members the name filter and the
+        /// cannot-be-damaged rule resolved against. `PLAN-AUTOFARM.md` section 14.5.
+        ///
+        /// IT IS A SEPARATE LINE BECAUSE `Status()` IS ALREADY AT THE 256-BYTE EDGE, and because the
+        /// two halves of the filter can resolve independently: a build where `Data` moved still has
+        /// the `Unhittable()` rule, and the log has to be able to say which one is active.
+        /// </summary>
+        public static string FarmFilterStatus()
+        {
+            return "farm filter: name " + _nameSource + " | cannot-be-damaged " + _unhittableSource;
         }
 
         // ===================================================================================
@@ -216,6 +307,71 @@ namespace Drelay.Bootstrap
                 _getDead = FieldAccessor.Bool(deadField);
                 _getNpc = FieldAccessor.Bool(npcField);
                 _getRadius = radiusField != null ? FieldAccessor.Float(radiusField) : null;
+
+                // THE WORLD LOG'S TWO OPTIONAL FIELDS. See `_getHealth`: a missing one costs the log
+                // a column and nothing else, which is the same discipline every other accessor here
+                // follows.
+                FieldInfo healthField = FieldLookup.Find(enemyType, out _, "Health");
+                FieldInfo maxHealthField = FieldLookup.Find(enemyType, out _, "MaxHealth");
+                _getHealth = healthField != null ? FieldAccessor.Float(healthField) : null;
+                _getMaxHealth = maxHealthField != null ? FieldAccessor.Float(maxHealthField) : null;
+
+                // THE FARMER'S IDENTITY FIELD. Optional for the bodies, required for the farm
+                // half -- see `_getGameId`.
+                FieldInfo gameIdField = FieldLookup.Find(enemyType, out _gameIdName, "GameId", "_gameId", "ObjectId");
+                _getGameId = gameIdField != null ? FieldAccessor.Int(gameIdField) : null;
+                _farmUsable = gameIdField != null;
+                _enemyTypeName = enemyType.Name;
+
+                // THE CRITTER FILTER'S TWO STRINGS, on the same optional terms. `Data` is on
+                // `GameObject`, so it needs the hierarchy walk `GameId` and `Radius` do.
+                FieldInfo dataField = FieldLookup.Find(enemyType, out _, "Data");
+                if (dataField != null)
+                {
+                    _getData = FieldAccessor.Reference(dataField);
+                    Type dataType = dataField.FieldType;
+                    FieldInfo nameField = dataType.GetField("Name", Any);
+                    FieldInfo classField = dataType.GetField("Class", Any);
+                    _getName = nameField != null ? FieldAccessor.Reference(nameField) : null;
+                    _getClass = classField != null ? FieldAccessor.Reference(classField) : null;
+                    // `NoDie` IS ON `EntityData`, A BASE OF THE DATA TYPE, so it needs the hierarchy
+                    // walk `FieldLookup` exists for -- a `declaredOnly` lookup on `EnemyData` finds
+                    // nothing. It is the second half of the critter rule; see `FarmTarget.NoDie`.
+                    FieldInfo noDieField = FieldLookup.Find(dataType, out _, "NoDie");
+                    _getNoDie = noDieField != null ? FieldAccessor.Bool(noDieField) : null;
+                    _nameSource = (nameField != null ? dataType.Name + ".Name" : "no Name")
+                                  + (classField != null ? " / " + dataType.Name + ".Class" : " / no Class")
+                                  + (noDieField != null ? " / " + noDieField.DeclaringType.Name + ".NoDie"
+                                                        : " / no NoDie");
+                }
+                else
+                {
+                    _nameSource = "no GameObject.Data";
+                }
+
+                // THE CRITTER FILTER'S RULE, from the client's own predicate. See `FarmTarget.Unhittable`.
+                FieldInfo effectsField = FieldLookup.Find(enemyType, out _, "Effects");
+                if (effectsField != null && effectsField.FieldType != null)
+                {
+                    MethodInfo unhittable = effectsField.FieldType.GetMethod(
+                        "Unhittable", BindingFlags.Public | BindingFlags.Instance, null,
+                        Type.EmptyTypes, null);
+                    if (unhittable != null)
+                    {
+                        _getEffects = FieldAccessor.Reference(effectsField);
+                        _unhittable = unhittable.MethodHandle.GetFunctionPointer();
+                        _unhittableSource = effectsField.FieldType.Name + ".Unhittable()";
+                    }
+                    else
+                    {
+                        _unhittableSource = effectsField.FieldType.Name + ".Unhittable() not found";
+                    }
+                }
+                else
+                {
+                    _unhittableSource = "no Entity.Effects";
+                }
+
                 _getEnemies = getEnemies.MethodHandle.GetFunctionPointer();
 
                 _resolved = true;
@@ -274,7 +430,14 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static void Fill(DodgeSnapshot s, DodgeConfig config, float px, float py, float playerRadius)
         {
-            if (!_resolved || !config.EnemyBodies || _getEnemies == IntPtr.Zero || s == null)
+            // ONE ENTRY LOOP, TWO GATED OUTPUTS. `PLAN-AUTOFARM.md` section 4.2 asks for the
+            // enumeration to be shared rather than duplicated, so this is the same walk of the same
+            // `World.GetEnemies()` array; what differs is which list each enemy lands in and which
+            // radius cut it survived.
+            bool forBodies = config.EnemyBodies;
+            bool forFarm = config.FarmMode && _farmUsable;
+
+            if (!_resolved || _getEnemies == IntPtr.Zero || s == null || (!forBodies && !forFarm))
             {
                 if (_resolved)
                 {
@@ -301,6 +464,13 @@ namespace Drelay.Bootstrap
 
             float cull = config.EnemyCullRadius;
             float cull2 = cull * cull;
+            // THE FARMER'S OWN CUT, AND IT IS A DIFFERENT NUMBER ON PURPOSE. See `FarmTarget` for why
+            // the two lists cannot share a radius: the body cut is a frame-cost bound on what rule 7
+            // and the planner may reason about, and the farm cut is "how far away is an enemy still
+            // worth walking to". A single number would make `DRELAY_DODGE_ENEMY_CULL` silently limit
+            // the farmer's reach, or make a long farm range inflate rule 7's list.
+            float farm = config.FarmEngageRadius;
+            float farm2 = farm * farm;
             _framesFilled++;
 
             for (int i = 0; i < enemies.Length; i++)
@@ -317,7 +487,71 @@ namespace Drelay.Bootstrap
                 float d2 = (dx * dx) + (dy * dy);
                 // Written so a NaN coordinate fails the test instead of passing it -- the same shape
                 // `AutoAim.Choose` uses for the range test, and for the same reason.
-                if (!(d2 <= cull2)) { _bodiesCulled++; continue; }
+                bool inBodyRange = forBodies && d2 <= cull2;
+                bool inFarmRange = forFarm && d2 <= farm2;
+                if (!inBodyRange && !inFarmRange)
+                {
+                    _bodiesCulled++;
+                    continue;
+                }
+
+                if (inFarmRange)
+                {
+                    // THE IDENTITY IS READ FOR THE FARMER AND NOT FOR THE BODY, and it is read here
+                    // rather than in the farmer so the enumeration stays in one place. The farmer's
+                    // filter is this reader's own (`Dead`, `Npc`) plus the range cut; what it adds is
+                    // the stickiness rule, which is a fact about the farmer's own state.
+                    //
+                    // THE NAME AND CLASS ARE THE CRITTER FILTER'S INPUT -- see `FarmTarget.Name`.
+                    // They are read even when no ignore list is configured, because the farmer's
+                    // line reports the name of what it is walking at and that is how an operator
+                    // finds a name to ignore. `Data` is null-guarded because a missing data object
+                    // would otherwise be a null dereference inside a patched frame.
+                    string name = null;
+                    string className = null;
+                    bool noDie = false;
+                    if (_getData != null && (_getName != null || _getClass != null || _getNoDie != null))
+                    {
+                        object data = _getData(enemy);
+                        if (data != null)
+                        {
+                            if (_getName != null) { name = _getName(data) as string; }
+                            if (_getClass != null) { className = _getClass(data) as string; }
+                            if (_getNoDie != null) { noDie = _getNoDie(data); }
+                        }
+                    }
+                    // THE CANNOT-BE-DAMAGED PREDICATE. Null effects are treated as hittable, the
+                    // same rule `AutoAim.Unhittable` follows: a null here means an object being torn
+                    // down, not an invulnerable one.
+                    bool unhittable = false;
+                    if (_getEffects != null && _unhittable != IntPtr.Zero)
+                    {
+                        object effects = _getEffects(enemy);
+                        if (effects != null)
+                        {
+                            unsafe
+                            {
+                                unhittable = ((delegate* managed<object, bool>)(IntPtr)_unhittable)(effects);
+                            }
+                        }
+                    }
+                    s.FarmTargets.Add(new FarmTarget
+                    {
+                        GameId = _getGameId(enemy),
+                        X = ex,
+                        Y = ey,
+                        Name = name,
+                        Class = className,
+                        Unhittable = unhittable,
+                        NoDie = noDie,
+                    });
+                    _farmTargetsAdded++;
+                }
+
+                if (!inBodyRange)
+                {
+                    continue;
+                }
 
                 float radius;
                 if (_getRadius != null)
@@ -350,6 +584,117 @@ namespace Drelay.Bootstrap
                 });
             }
         }
+
+        /// <summary>
+        /// One enemy, as the WORLD LOG wants it. `PLAN-AUTOFARM.md` section 6.1.
+        ///
+        /// IT IS ITS OWN TYPE RATHER THAN `EntityBody`, and the difference is the point: `EntityBody`
+        /// is geometry rule 7 tests, and this is a row of evidence for a file. Sharing one type would
+        /// make every future addition to the log a change to the solver's input.
+        /// </summary>
+        public struct EnemySample
+        {
+            public int GameId;
+            public float X;
+            public float Y;
+            public float Radius;
+            public float Health;
+            public float MaxHealth;
+            public bool Npc;
+            public bool Dead;
+        }
+
+        /// <summary>
+        /// Copies up to <paramref name="max"/> enemies into <paramref name="into"/>, nearest first.
+        /// Returns the number written; zero when the reader did not resolve.
+        ///
+        /// IT IS THE SAME ENUMERATION AND A DIFFERENT FILTER, which is `PLAN-AUTOFARM.md` section
+        /// 4.2's instruction applied to the log: "factor the enumeration into the `EnemyReader` ...
+        /// and have both modules read it, keeping each module's own filter". The bodies drop dead and
+        /// NPC enemies and cull at `EnemyCullRadius`, because rule 7 must not reason about a corpse;
+        /// **the log drops nothing**, because "there were four corpses in view" is exactly the kind of
+        /// thing the operator's session is for. It sorts by distance and keeps `max`.
+        ///
+        /// IT IS CALLED FROM THE DIAGNOSTIC PATH ONLY. When the world log is off this method is never
+        /// entered, so its `List` sort costs the frame nothing -- the same accounting
+        /// `PLAN-ENEMY-THREATS.md` made for `EnemyReader.Fill` itself.
+        /// </summary>
+        public static int SampleEnemies(System.Collections.Generic.List<EnemySample> into, int max,
+                                        float px, float py, out int total)
+        {
+            total = 0;
+            if (into == null)
+            {
+                return 0;
+            }
+            into.Clear();
+            if (!_resolved || _getEnemies == IntPtr.Zero || max <= 0)
+            {
+                return 0;
+            }
+
+            object raw;
+            unsafe
+            {
+                raw = ((delegate* managed<object, object>)(IntPtr)_getEnemies)(WorldObject());
+            }
+            object[] enemies = raw as object[];
+            if (enemies == null || enemies.Length == 0)
+            {
+                return 0;
+            }
+
+            for (int i = 0; i < enemies.Length; i++)
+            {
+                object enemy = enemies[i];
+                if (enemy == null)
+                {
+                    continue;
+                }
+                into.Add(new EnemySample
+                {
+                    GameId = _getGameId != null ? _getGameId(enemy) : 0,
+                    X = _getX(enemy),
+                    Y = _getY(enemy),
+                    Radius = _getRadius != null ? _getRadius(enemy) : 0.0f,
+                    Health = _getHealth != null ? _getHealth(enemy) : 0.0f,
+                    MaxHealth = _getMaxHealth != null ? _getMaxHealth(enemy) : 0.0f,
+                    Npc = _getNpc(enemy),
+                    Dead = _getDead(enemy),
+                });
+            }
+
+            // NEAREST FIRST, AND THE SORT IS THE WHOLE OF "the 8 nearest". A log that wrote the
+            // first eight the world happened to return would be a sample of the array's order, which
+            // nothing guarantees -- `World` rebuilds it from a dictionary. The comparer is a closure
+            // over the player's position and it allocates once per call; the log runs at a few hertz
+            // on a diagnostic path, so that is the right trade for not carrying an index array.
+            //
+            // `total` IS THE WHOLE POPULATION AND NOT THE SAMPLE, because `PLAN-AUTOFARM.md` section
+            // 6.1 asks for "count, and the 8 nearest" as two different facts: how many mobs are in
+            // the realm is what says whether the realm is worth farming, and the eight rows are what
+            // names them.
+            total = into.Count;
+            if (into.Count > 1)
+            {
+                into.Sort((a, b) =>
+                {
+                    float adx = a.X - px;
+                    float ady = a.Y - py;
+                    float bdx = b.X - px;
+                    float bdy = b.Y - py;
+                    return ((adx * adx) + (ady * ady)).CompareTo((bdx * bdx) + (bdy * bdy));
+                });
+            }
+            if (into.Count > max)
+            {
+                into.RemoveRange(max, into.Count - max);
+            }
+            return into.Count;
+        }
+
+        /// <summary>True when the reader resolved and the world log may ask it for rows.</summary>
+        public static bool Available => _resolved && _getEnemies != IntPtr.Zero;
 
         /// <summary>
         /// The world, for the `GetEnemies` call.
@@ -388,6 +733,7 @@ namespace Drelay.Bootstrap
             _bodiesDropped = 0;
             _bodiesRadiusFallback = 0;
             _skippedFrames = 0;
+            _farmTargetsAdded = 0;
         }
 
         /// <summary>
@@ -410,8 +756,15 @@ namespace Drelay.Bootstrap
                 return "enemies=unresolved culled=0 fallbackRadius=0";
             }
             return string.Format(CultureInfo.InvariantCulture,
-                "enemies=live frames={0} culled={1} dropped={2} fallbackRadius={3} skipped={4}",
-                _framesFilled, _bodiesCulled, _bodiesDropped, _bodiesRadiusFallback, _skippedFrames);
+                "enemies=live frames={0} culled={1} dropped={2} fallbackRadius={3} skipped={4} "
+                + "farmTargets={5}{6}",
+                _framesFilled, _bodiesCulled, _bodiesDropped, _bodiesRadiusFallback, _skippedFrames,
+                _farmTargetsAdded,
+                // THE FARM HALF'S OWN NAMED FAILURE, and it is separate from the body half's because
+                // the two can succeed independently: a build where `GameId` moved still has a
+                // working rule 7, and a run with `DRELAY_DODGE_ENEMIES=0` still has working farm
+                // targets. `culled` counts enemies neither list wanted.
+                _farmUsable ? "" : " farm=unavailable(no GameId)");
         }
     }
 }

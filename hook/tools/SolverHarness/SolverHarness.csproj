@@ -42,14 +42,61 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- The pure-data contract and the solver. Nothing else from the hook may be added here:
-         these two files are the only ones guaranteed to compile without the game. -->
+    <!-- The pure-data contract and the solver. Nothing else from the hook may be added here: every
+         file in this group is guaranteed to compile without the game. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSnapshot.cs" Link="Solver\DodgeSnapshot.cs" />
     <Compile Include="..\..\managed\Drelay.Bootstrap\DodgeSolver.cs" Link="Solver\DodgeSolver.cs" />
     <!-- The frame's path (HANDOFF-DIRECTED-DODGE.md section 4). It is here for the same reason the
          other two are: it must compile with no game in sight, and a change that reaches for a game
          type has to break this build rather than the live one. -->
     <Compile Include="..\..\managed\Drelay.Bootstrap\PathPlanner.cs" Link="Solver\PathPlanner.cs" />
+    <!-- The farmer's target selection (`PLAN-AUTOFARM.md` section 4). It is here for exactly the
+         same reason as the three above: it must be a pure function of the snapshot, and a change
+         that reaches for a game accessor has to break this build rather than the live one. The
+         module's whole design point is that it publishes a goal point and touches nothing else,
+         which is only checkable if it compiles with no game in sight. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\Farmer.cs" Link="Solver\Farmer.cs" />
+    <!-- The lobby's portal reader, and the field-accessor builders it needs (`FieldAccessor`).
+         The private farmer calls `PortalReader.TryActivate` from its lobby branch, so the harness
+         cannot compile that module without this file. It is pure reflection with no game in sight,
+         which is the same contract as the five around it: it resolves nothing until it is handed an
+         assembly, and the harness never hands it one. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\PortalReader.cs" Link="Solver\PortalReader.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\FieldAccessor.cs" Link="Solver\FieldAccessor.cs" />
+    <!-- THE ROUTES (`PLAN-AUTOFARM.md` section 7). Same contract, same reason: the simplifier, the
+         resampler, the snap, the deviation and the file format must all be pure functions of plain
+         data, and a change that reaches for a game accessor has to break THIS build rather than the
+         live one. `RouteRuntime.cs`, the part that reads the client, is deliberately NOT here, which
+         is what keeps the split honest. -->
+    <Compile Include="..\..\managed\Drelay.Bootstrap\Route.cs" Link="Solver\Route.cs" />
+    <Compile Include="..\..\managed\Drelay.Bootstrap\RouteFollower.cs" Link="Solver\RouteFollower.cs" />
+  </ItemGroup>
+
+  <!--
+    THE PRIVATE FARM MODULE, ON THE SAME TERMS AS THE HOOK (`PLAN-AUTOFARM.md` section 13).
+
+    `..\..\managed\Drelay.Bootstrap\Farmer.cs` above is the public stub. When `hook/private` holds
+    sources they are compiled INSTEAD OF it, exactly as `Drelay.Bootstrap.csproj` does: the two
+    project files have to agree or the harness would be measuring a different farmer from the one
+    the hook ships. `Farmer.Installed` is how the harness knows which build it is running; the
+    `farmer*` fixtures are skipped when it is false rather than failed, because a public checkout
+    has not discovered a defect.
+
+    The private sources are compiled here for the same reason the stub is: the module's whole
+    design point is that it is a pure function of the snapshot, and that is only checkable if it
+    compiles with no game in sight.
+  -->
+  <ItemGroup>
+    <PrivateFarmSource Include="..\..\private\**\*.cs" />
+  </ItemGroup>
+
+  <PropertyGroup Condition="Exists('..\..\private')">
+    <DefineConstants>$(DefineConstants);DRELAY_PRIVATE_FARMER</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('..\..\private')">
+    <Compile Remove="..\..\managed\Drelay.Bootstrap\Farmer.cs" />
+    <Compile Include="@(PrivateFarmSource)" LinkBase="Solver" />
   </ItemGroup>
 
 </Project>

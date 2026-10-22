@@ -19,6 +19,35 @@
 // no pointer arithmetic of ours.
 //
 // The delegate is built once, on the resolve callback, and the frame path calls it.
+//
+// =====================================================================================
+// WHY EVERY NUMERIC ACCESSOR NOW CHECKS THE FIELD'S TYPE, AND WHAT THAT COST WHEN IT DID NOT
+// =====================================================================================
+//
+// An emitted accessor is a `ldfld` plus a `ret`, and the JIT takes the RETURN TYPE at its word.
+// For the shapes this project reads that is invisible -- a `float` field read into a `float`, a
+// `bool` into a `bool` -- but where the two disagree the runtime does NOT throw. It either
+// converts, or it reinterprets the bits, and the second one is a value that looks like a number:
+//
+//     a `double` field read by `Float`     -> 400      (RyuJIT inserts the narrowing; correct)
+//     an `int` field read by `Double`      -> 2.08E-322 (the raw bits; 42 read as 42 gives this)
+//     an `int` field read by `Float`       -> 5.9E-44
+//
+// The last two are the ones that bite: they are `> 0`, they print as `0` under a two-decimal
+// format, and a comparison against a threshold silently changes meaning rather than failing.
+//
+// THIS IS NOT HYPOTHETICAL AND IT IS NOT NEW. The shipped client declares `Entity.Health` as a
+// `double` and then, on `Player`, `public new int Health` -- so `Player.Health` is an INT that
+// shadows a double, and both `Type.GetField("Health")` and `FieldLookup.Find` return the int.
+// Every caller that built a `Double` accessor from it read 2.08E-322 per frame: the trace
+// recorder's health column, the dodge snapshot's `Player.Health`, and the world log's `hp`. The
+// 2026-10-18 collection run is the receipt -- `"hp":0` on all 292 frame lines, and the offline
+// verifier passed because its fake game declared the field as the `double` the accessor wanted.
+//
+// So each accessor now demands a field it can actually read, and converts when the field is
+// numeric but a different numeric type. A mismatch is an `ArgumentException` on the resolve
+// callback -- where it is a named module that did not arm -- rather than a denormal on the frame
+// path, where it is a decision made with a number nobody checked.
 
 using System;
 using System.Reflection;
@@ -28,38 +57,66 @@ namespace Drelay.Bootstrap
 {
     public static class FieldAccessor
     {
-        /// <summary>`float Get(object)` for a `float` field, with no boxing.</summary>
+        /// <summary>
+        /// `float Get(object)` for a numeric field, with no boxing.
+        ///
+        /// The field may be any of the four numeric widths this project reads -- `float`,
+        /// `double`, or one of the integer types -- and the conversion is emitted when they
+        /// differ. A non-numeric field throws here rather than reading garbage on the frame
+        /// path; see the header for the measurement that made that the rule.
+        /// </summary>
         public static Func<object, float> Float(FieldInfo field)
         {
+            DemandNumeric(field, "Float");
             DynamicMethod method = NewMethod(typeof(float), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
             EmitReceiver(il, field.DeclaringType);
             il.Emit(OpCodes.Ldfld, field);
+            EmitNumericConversion(il, field.FieldType, typeof(float));
             il.Emit(OpCodes.Ret);
             return (Func<object, float>)method.CreateDelegate(typeof(Func<object, float>));
         }
 
-        /// <summary>`int Get(object)` for an `int` field, with no boxing.</summary>
+        /// <summary>
+        /// `int Get(object)` for a numeric field, with no boxing.
+        ///
+        /// THE CONVERSION MATTERS HERE TOO, and in the other direction: `CollisionObservation` and
+        /// `TrajectorySampler` read `_startTime`/`AgeMs` for a clock subtraction, and a build that
+        /// widened one of those to `long` would otherwise be read as the low four bytes of the
+        /// value with no complaint.
+        /// </summary>
         public static Func<object, int> Int(FieldInfo field)
         {
+            DemandNumeric(field, "Int");
             DynamicMethod method = NewMethod(typeof(int), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
             EmitReceiver(il, field.DeclaringType);
             il.Emit(OpCodes.Ldfld, field);
+            EmitNumericConversion(il, field.FieldType, typeof(int));
             il.Emit(OpCodes.Ret);
             return (Func<object, int>)method.CreateDelegate(typeof(Func<object, int>));
         }
 
-        /// <summary>`double Get(object)` for a `double` field, with no boxing.</summary>
+        /// <summary>
+        /// `double Get(object)` for a numeric field, with no boxing.
+        ///
+        /// THIS IS THE ONE THE SHIPPED BUILD BROKE. `Player.Health` is an `int` that shadows
+        /// `Entity`'s `double`, so every caller that resolved it by name and built this accessor
+        /// read a denormal -- and `WorldLog`, `DodgeAdapter`, `TraceRecorder` and `SteeringPilot`
+        /// all did exactly that. The conversion below is the fix; the guard is why the next build
+        /// that moves the field says so instead of quietly reading 2.08E-322.
+        /// </summary>
         public static Func<object, double> Double(FieldInfo field)
         {
+            DemandNumeric(field, "Double");
             DynamicMethod method = NewMethod(typeof(double), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
             EmitReceiver(il, field.DeclaringType);
             il.Emit(OpCodes.Ldfld, field);
+            EmitNumericConversion(il, field.FieldType, typeof(double));
             il.Emit(OpCodes.Ret);
             return (Func<object, double>)method.CreateDelegate(typeof(Func<object, double>));
         }
@@ -75,6 +132,7 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static Func<object, bool> Bool(FieldInfo field)
         {
+            Demand(field, typeof(bool), "Bool");
             DynamicMethod method = NewMethod(typeof(bool), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
@@ -96,9 +154,11 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static Func<float> StaticFloat(FieldInfo field)
         {
+            DemandNumeric(field, "StaticFloat");
             DynamicMethod method = NewMethod(typeof(float), field.Name);
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldsfld, field);
+            EmitNumericConversion(il, field.FieldType, typeof(float));
             il.Emit(OpCodes.Ret);
             return (Func<float>)method.CreateDelegate(typeof(Func<float>));
         }
@@ -106,6 +166,7 @@ namespace Drelay.Bootstrap
         /// <summary>`void Set(object, bool)` for a `bool` field, with no boxing.</summary>
         public static Action<object, bool> BoolSetter(FieldInfo field)
         {
+            Demand(field, typeof(bool), "BoolSetter");
             DynamicMethod method = NewSetter(typeof(bool), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
@@ -132,6 +193,7 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static Action<object, float> FloatSetter(FieldInfo field)
         {
+            Demand(field, typeof(float), "FloatSetter");
             DynamicMethod method = NewSetter(typeof(float), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
@@ -145,6 +207,7 @@ namespace Drelay.Bootstrap
         /// <summary>`object Get(object)` for a reference field.</summary>
         public static Func<object, object> Reference(FieldInfo field)
         {
+            DemandReference(field, "Reference");
             DynamicMethod method = NewMethod(typeof(object), field.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
@@ -157,6 +220,7 @@ namespace Drelay.Bootstrap
         /// <summary>`object Get()` for a static reference field -- `World.Shared`, `DarzaWindow.Time`.</summary>
         public static Func<object> Static(FieldInfo field)
         {
+            DemandReference(field, "Static");
             DynamicMethod method = NewMethod(typeof(object), field.Name);
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldsfld, field);
@@ -171,6 +235,7 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static Func<object, float> NestedFloat(FieldInfo outer, FieldInfo inner)
         {
+            DemandNumeric(inner, "NestedFloat");
             DynamicMethod method = NewMethod(typeof(float), outer.Name + "." + inner.Name,
                                              typeof(object));
             ILGenerator il = method.GetILGenerator();
@@ -180,6 +245,7 @@ namespace Drelay.Bootstrap
             // second ldfld reads straight out of it -- no struct copy and no box.
             il.Emit(OpCodes.Ldflda, outer);
             il.Emit(OpCodes.Ldfld, inner);
+            EmitNumericConversion(il, inner.FieldType, typeof(float));
             il.Emit(OpCodes.Ret);
             return (Func<object, float>)method.CreateDelegate(typeof(Func<object, float>));
         }
@@ -207,6 +273,10 @@ namespace Drelay.Bootstrap
         /// </summary>
         public static Action<object, float> NestedFloatSetter(FieldInfo outer, FieldInfo inner)
         {
+            // A WRITE HAS NO CONVERSION TO FALL BACK ON. `stfld` must be given a value whose type
+            // is the field's own, so this one demands exactly `float` rather than accepting a
+            // numeric field the way the readers do.
+            Demand(inner, typeof(float), "NestedFloatSetter");
             DynamicMethod method = NewSetter(typeof(float), outer.Name + "." + inner.Name, typeof(object));
             ILGenerator il = method.GetILGenerator();
             il.Emit(OpCodes.Ldarg_0);
@@ -307,6 +377,117 @@ namespace Drelay.Bootstrap
             il.Emit(OpCodes.Ret);
 
             return (Func<object, int, int, byte>)method.CreateDelegate(typeof(Func<object, int, int, byte>));
+        }
+
+        /// <summary>
+        /// Refuses a field the accessor cannot read, naming the field and the accessor.
+        ///
+        /// THE MESSAGE IS THE PRODUCT. A caller that throws this has resolved the wrong member of a
+        /// hierarchy -- `Player.Health` rather than `Entity.Health`, or a `byte` flag where a `bool`
+        /// was expected -- and the two things it needs to know are which field it actually got and
+        /// what the accessor wanted. That is why the declaring type is in the text: `Player.Health
+        /// (Int32)` and `Entity.Health (Double)` are the same *name* and different fields, and it is
+        /// the difference that made every live `hp` column read zero.
+        /// </summary>
+        private static void Demand(FieldInfo field, Type wanted, string accessor)
+        {
+            if (field == null)
+            {
+                throw new ArgumentNullException(nameof(field), accessor + " needs a field");
+            }
+            if (field.FieldType == wanted)
+            {
+                return;
+            }
+            throw new ArgumentException(
+                accessor + " cannot read " + Describe(field) + ": the field is " + field.FieldType.Name
+                + " and this accessor returns " + wanted.Name,
+                nameof(field));
+        }
+
+        /// <summary>`Demand`, for the numeric accessors, which accept any numeric width.</summary>
+        private static void DemandNumeric(FieldInfo field, string accessor)
+        {
+            if (field == null)
+            {
+                throw new ArgumentNullException(nameof(field), accessor + " needs a field");
+            }
+            if (IsNumeric(field.FieldType))
+            {
+                return;
+            }
+            throw new ArgumentException(
+                accessor + " cannot read " + Describe(field) + ": the field is "
+                + field.FieldType.Name + ", which is not numeric",
+                nameof(field));
+        }
+
+        /// <summary>`Demand`, for the reference accessors, which cannot box a value type.</summary>
+        private static void DemandReference(FieldInfo field, string accessor)
+        {
+            if (field == null)
+            {
+                throw new ArgumentNullException(nameof(field), accessor + " needs a field");
+            }
+            if (!field.FieldType.IsValueType)
+            {
+                return;
+            }
+            throw new ArgumentException(
+                accessor + " cannot read " + Describe(field) + ": the field is "
+                + field.FieldType.Name + ", a value type, and this accessor returns object",
+                nameof(field));
+        }
+
+        private static string Describe(FieldInfo field)
+        {
+            return field.DeclaringType == null
+                ? field.Name
+                : field.DeclaringType.Name + "." + field.Name;
+        }
+
+        private static bool IsNumeric(Type type)
+        {
+            return type == typeof(float) || type == typeof(double)
+                || type == typeof(int) || type == typeof(uint)
+                || type == typeof(long) || type == typeof(ulong)
+                || type == typeof(short) || type == typeof(ushort)
+                || type == typeof(byte) || type == typeof(sbyte);
+        }
+
+        /// <summary>
+        /// The `conv.*` an accessor needs when the field's numeric type is not the one it returns.
+        ///
+        /// THIS IS WHAT REPLACES THE JIT'S SILENCE. `ldfld` pushes the field's own type and nothing
+        /// in the IL requires it to match the method's return type, so without this an `int` read
+        /// through a `double`-returning accessor is the int's bits reinterpreted -- 42 becomes
+        /// 2.08E-322, a positive denormal that passes every `> 0` test and formats as `0`.
+        ///
+        /// `conv.r.un` handles the unsigned widths, whose conversion to a floating type is the one
+        /// case `conv.r8` gets wrong (it would sign-extend `uint.MaxValue` to -1.0).
+        /// </summary>
+        private static void EmitNumericConversion(ILGenerator il, Type from, Type to)
+        {
+            if (from == to)
+            {
+                return;
+            }
+            if (from == typeof(uint) || from == typeof(ulong))
+            {
+                il.Emit(OpCodes.Conv_R_Un);
+            }
+            if (to == typeof(float))
+            {
+                il.Emit(OpCodes.Conv_R4);
+            }
+            else if (to == typeof(double))
+            {
+                il.Emit(OpCodes.Conv_R8);
+            }
+            else
+            {
+                il.Emit(OpCodes.Conv_I4);
+            }
         }
 
         /// <summary>

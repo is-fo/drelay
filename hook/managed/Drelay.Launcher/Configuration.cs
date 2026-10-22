@@ -65,8 +65,11 @@ namespace Drelay.Launcher
 
             //    THE FILE'S ACTING REQUEST IS REMEMBERED BEFORE THE COMMAND LINE IS APPLIED,
             //    because the command line can replace the *actuator* without touching the field
-            //    that asked for it.  See the note at the resolution below.
+            //    that asked for it.  See the note at the resolution below.  The auto-farmer is an
+            //    acting request too (`--autofarm` implies the same live actuator), so it is
+            //    remembered the same way and resolved the same way.
             bool actingRequestedByFile = options.DodgeAct;
+            bool farmRequestedByFile = options.AutoFarm;
 
             // 2. the command line, which wins over the config file for every field it sets.
             options.Apply(cli);
@@ -93,13 +96,25 @@ namespace Drelay.Launcher
             //
             // The file's `Dodge.Enabled` is NOT cleared: solving and logging do not contradict
             // "somebody else steers", and a field the operator set is not discarded silently.
-            if (actingRequestedByFile && !cli.DodgeAct.HasValue && !string.IsNullOrEmpty(cli.MoveSteer))
+            if ((actingRequestedByFile || farmRequestedByFile)
+                && !cli.DodgeAct.HasValue && !cli.AutoFarm.HasValue
+                && !string.IsNullOrEmpty(cli.MoveSteer))
             {
+                // BOTH ACTING REQUESTS ARE CLEARED, because both mean the same thing: this run's
+                // pilot is `--move-steer`, not the dodge. Leaving `AutoFarm` set would re-apply the
+                // implication after the resolution and put the dodge back in charge -- a run that
+                // quietly moved the player the way the flag it was told to ignore asked.
                 options.DodgeAct = false;
+                string what = actingRequestedByFile && farmRequestedByFile
+                    ? "\"Dodge\": {\"Act\": true} and \"Farm\": {\"Enabled\": true} from"
+                    : farmRequestedByFile
+                        ? "\"Farm\": {\"Enabled\": true} from"
+                        : "\"Dodge\": {\"Act\": true} from";
+                options.AutoFarm = false;
                 result.Notices.Add(
-                    "--move-steer '" + cli.MoveSteer + "' chose the actuator, so \"Dodge\": "
-                    + "{\"Act\": true} from the configuration file is off for this run. The solver "
-                    + "still runs and logs; set \"Dodge\": {\"Enabled\": false} as well to stop it.");
+                    "--move-steer '" + cli.MoveSteer + "' chose the actuator, so " + what
+                    + " the configuration file is off for this run. The solver still runs and logs; "
+                    + "set \"Dodge\": {\"Enabled\": false} as well to stop it.");
             }
 
             // 3. auto-discovery, and ONLY for a GamePath no other source supplied.

@@ -430,6 +430,45 @@ one thing an earlier draft of [RISKS.md](RISKS.md) had left open — **suppressi
 alternative architecture.** It would blind the server to a subset of hits it currently applies *because
 of* that claim, while removing none of the 74 % it resolves on its own.
 
+### 3.2 Reading it: `Player.Health` is an `int` that shadows `Entity`'s `double`
+
+A trap for every reflective reader in the hook, found the expensive way and worth stating as a client
+fact rather than a hook defect.
+
+```csharp
+// Entity.cs:84, :98   -- the base class's health, and the one every Enemy carries
+public double Health;
+public double MaxHealth;
+
+// Player.cs:1547, :1549 -- the local player's, an INT, declared `new` to shadow them
+public new int Health;
+public new int MaxHealth;
+```
+
+Consequences, all measured:
+
+- **A hierarchy walk from `Player` finds the `int`.** `Type.GetField("Health")` and
+  `FieldLookup.Find` both stop at the nearest declaration, so a reader that asks for `Player.Health`
+  and builds an accessor for a `double` gets an `int` field.
+- **An `int` field read through a `double`-returning emitted accessor does not throw.** RyuJIT takes
+  the return type at its word and reinterprets the bits: **42 reads as 2.08E-322**, a positive
+  denormal that formats as `0` and passes every `> 0` test. The *narrowing* direction is safe
+  (`Float` on a `double` field converts — 400 still reads 400), which is why the enemy rows of a
+  world log were right while the player's were zero.
+- **`Player.Health` is the one the client displays.** `World.cs:501` and `:16070` feed it to
+  `GameUI.UpdateHealth`, and `:16055` / `Player.cs:4951` are the only two paths that move it
+  (§3 above). `Entity.Health` is the enemy's.
+- **`Health` is `int` on `Player` and `double` on `Entity`, so a shared reader has to convert.**
+  `FieldAccessor` now converts any numeric width and refuses a field it cannot read, naming the
+  declaring type and the width in the exception — the two facts that tell `Player.Health (Int32)`
+  from `Entity.Health (Double)`, which are the same name and different fields.
+
+What that cost, and where: [PLAN-AUTOFARM.md](PLAN-AUTOFARM.md) §12.8. Every live `hp` column in
+`worlds.jsonl` and in the trace recorder read `0`, and the dodge's `PlayerView.Health` — the input
+to the escape gate's `ProjectedUnavoidableDamage > Health * LethalFraction` — was 2.08E-322 rather
+than the character's real HP. Nothing observable was wrong yet, because the gate's damage inputs are
+zero by construction; it would have been wrong on the first frame after Deliverable 3.4 armed them.
+
 ---
 
 ## 4. Player and world state

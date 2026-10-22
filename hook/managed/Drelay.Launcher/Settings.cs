@@ -63,11 +63,14 @@ namespace Drelay.Launcher
         public bool? Trace;
         public bool? Dodge;
         public bool? DodgeAct;
+        public bool? WorldLog;
+        public bool? AutoFarm;
 
         // Values that are not switches.
         public string AutoAim;
         public string MoveSteer;
         public string TestTargets;
+        public int? WorldLogEvery;
 
         /// <summary>Whether this source said anything at all. Used only for reporting.</summary>
         public bool IsEmpty
@@ -82,8 +85,10 @@ namespace Drelay.Launcher
                     && Off == null && Act == null && FullTrace == null && Verbose == null
                     && NoWait == null && PauseAfterRun == null && DbgDump == null
                     && FrameHelper == null && FrameReplacement == null && Trace == null
-                    && Dodge == null && DodgeAct == null
-                    && AutoAim == null && MoveSteer == null && TestTargets == null;
+                    && Dodge == null && DodgeAct == null && WorldLog == null
+                    && AutoFarm == null
+                    && AutoAim == null && MoveSteer == null && TestTargets == null
+                    && WorldLogEvery == null;
             }
         }
     }
@@ -310,6 +315,34 @@ namespace Drelay.Launcher
         // file, and it cost a session.
         public bool Trace;
 
+        // PLAN-AUTOFARM.md SECTION 6'S COLLECTION INSTRUMENT, AS A LAUNCH OPTION.
+        //
+        // THE PLAN NAMED THE SWITCH `--world-log` AND BUILT IT AS AN ENVIRONMENT VARIABLE
+        // (`WorldLog.cs`: `DRELAY_WORLDLOG=1`), because the hook has no command line. The launcher
+        // does, and the instrument cannot be switched on safely with the variable alone: the writer
+        // is called from the MANAGED FRAME REPLACEMENT's sensor path, so `DRELAY_WORLDLOG=1` with
+        // the sensor off resolves, writes a header, and records no frame -- a file that looks like
+        // "nothing happened in the game" rather than "the instrument was half-switched-on". That is
+        // the empty-trace failure this project has already paid a session for (see `Options.Trace`).
+        //
+        // SO THE FLAG SETS THREE THINGS, and `ApplyImplications` (the frame replacement) plus
+        // `EnvironmentBlock` (the sensor and the log) are the only places that decide them.
+        //
+        // IT IS NOT IN THE CONFIGURATION FILE, for the reason `--trace` is not (section 5.1, rule
+        // 3): it is a diagnostic recording, not a setting a double-click should start writing. A
+        // config that turned it on would fill the run directory with a JSON line every 30 frames
+        // for every session.
+        public bool WorldLog;
+
+        // HOW MANY FRAMES BETWEEN PERIODIC LINES.  `0` means "the launcher said nothing", which
+        // leaves `WorldLog.cs`'s own 30-frame default in charge -- the same sentinel rule
+        // `DodgeDisc` follows, so a default is not written down in two assemblies.
+        //
+        // IT IMPLIES `WorldLog`: a cadence is a request for the log it is the cadence of, and the
+        // alternative -- refusing the pair when only one was typed -- makes the operator type two
+        // flags to do one thing. `ApplyImplications` applies it once, for both sources.
+        public int WorldLogEvery;
+
         // PHASE 3'S ESCALATION TEST: call `World.RequestEscape()` once, under hook control.
         //
         // WHY IT IS A SWITCH AND NOT PART OF THE DODGE.  The escape is Phase 3's floor --
@@ -349,6 +382,31 @@ namespace Drelay.Launcher
         // reports `NoThreat` -- an empty recording's twin, and that one already cost a session.
         public bool Dodge;
         public bool DodgeAct;
+
+        // THE AUTO-FARMER, AS ONE SWITCH: `--autofarm`, or `"Farm": { "Enabled": true }` in the
+        // configuration file.
+        //
+        // IT IMPLIES EVERYTHING THE LOOP NEEDS, because the loop is not useful in pieces:
+        //
+        //   * `Dodge` -- the farmer publishes a POINT GOAL and the dodge's own solver turns it into
+        //     a heading. Without the solver the goal is a number nobody reads;
+        //   * `DodgeAct` -- the decision has to reach the input, or the character walks nowhere. This
+        //     is the same actuator `--dodge-act` names, set through the same implication, so
+        //     `--autofarm` cannot produce a second way to move the player;
+        //   * `AutoAim = "closest"` WHEN NOTHING ELSE CHOSE A MODE -- so the client's own
+        //     `Player.Shoot` aims at what the farmer walked to. A `--autoaim highesthp` or a config
+        //     `AutoAim` is left alone: the operator's choice of score is not the farmer's to
+        //     overwrite.
+        //
+        // IT DOES NOT START THE FARMER BY ITSELF. The module's own switch is
+        // `DRELAY_DODGE_FARM=1`, written by `EnvironmentBlock` from this flag, and the code that
+        // reads it is the PRIVATE module (`PLAN-AUTOFARM.md` section 13). On a public build the
+        // flag still parses, still turns the dodge on, and still writes the variable -- and the
+        // farmer cannot walk, which the adapter says out loud at arm time.
+        //
+        // FIRING IS NOT HERE, AND MUST NOT BE. `PLAN-AUTOFARM.md` section 3: auto-fire is the
+        // client's own `InputOptions.AutoFire`, and the hook writes no firing input on any run.
+        public bool AutoFarm;
 
         // THE RULE 6 DECISION WINDOW, PASSED AT STARTUP RATHER THAN REBUILT.
         //
@@ -472,6 +530,9 @@ namespace Drelay.Launcher
             if (from.Trace.HasValue) { Trace = from.Trace.Value; }
             if (from.Dodge.HasValue) { Dodge = from.Dodge.Value; }
             if (from.DodgeAct.HasValue) { DodgeAct = from.DodgeAct.Value; }
+            if (from.WorldLog.HasValue) { WorldLog = from.WorldLog.Value; }
+            if (from.AutoFarm.HasValue) { AutoFarm = from.AutoFarm.Value; }
+            if (from.WorldLogEvery.HasValue) { WorldLogEvery = from.WorldLogEvery.Value; }
 
             if (from.AutoAim != null) { AutoAim = from.AutoAim; }
             if (from.MoveSteer != null) { MoveSteer = from.MoveSteer; }
@@ -490,6 +551,17 @@ namespace Drelay.Launcher
         /// </summary>
         public void ApplyImplications()
         {
+            // THE AUTO-FARMER'S ONE SWITCH, FIRST IN THE PASS, so the aim-mode rule below sees the
+            // mode this sets and arms the frame replacement through it. Setting `AutoAim` here and
+            // hoping a later block notices would be two rules about one fact. See
+            // `Options.AutoFarm` for why each implication is a dependency rather than a preference.
+            if (AutoFarm)
+            {
+                Dodge = true;
+                DodgeAct = true;
+                if (string.IsNullOrEmpty(AutoAim)) { AutoAim = "closest"; }
+            }
+
             // `--escape-test` calls `World.RequestEscape()` from the frame replacement, so a run
             // without it reports "the test never armed" -- indistinguishable from a client that
             // refused to escape.
@@ -498,6 +570,12 @@ namespace Drelay.Launcher
             // Auto-aim must arm `Prefs.enable_aimbot` from the game's own thread before the
             // target method is ever compiled, and the frame replacement is that thread.
             if (!string.IsNullOrEmpty(AutoAim)) { FrameReplacement = true; }
+
+            // A cadence is a request for the log it times, and the log rides on the frame
+            // replacement's sensor path. Order matters: the cadence implies the log, and the log
+            // implies the frame replacement, so one `--world-log-every` produces all three.
+            if (WorldLogEvery > 0) { WorldLog = true; }
+            if (WorldLog) { FrameReplacement = true; }
 
             // `--dodge-act` puts the pilot in `dodge` mode, which is a value the actuator reads
             // by name.  Set here rather than in the parser for the same reason as the two above.
@@ -530,6 +608,19 @@ namespace Drelay.Launcher
                 error = "--dodge-act (or \"Dodge\": {\"Act\": true} in drelay.config.json) drives the "
                         + "actuator itself and cannot be combined with --move-steer '" + MoveSteer
                         + "'. Set \"Act\": false in the config file, or drop --move-steer.";
+                return false;
+            }
+            // AND THE SAME CONTRADICTION FOR THE FARMER, WHICH IS THE SAME ACTUATOR. `--autofarm`
+            // implies the dodge's live mode because a farmer that cannot steer is not farming, so a
+            // run carrying both flags is asking two different things to be the pilot. The
+            // config-file spelling resolves instead of refusing (`Configuration.Resolve` gives the
+            // command line the actuator and says so); two flags typed together are a mistake and
+            // this is the one place that can say which two.
+            if (AutoFarm && !string.IsNullOrEmpty(MoveSteer))
+            {
+                error = "--autofarm (or \"Farm\": {\"Enabled\": true} in drelay.config.json) steers the "
+                        + "player through the dodge's actuator and cannot be combined with --move-steer '"
+                        + MoveSteer + "'. Drop --autofarm, or drop --move-steer.";
                 return false;
             }
             return true;

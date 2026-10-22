@@ -123,10 +123,22 @@ namespace Drelay.Bootstrap
 
         private static DodgeConfig _config;
         private static DodgeSolver _solver;
+
+        /// <summary>
+        /// The farmer's target selection. See `Farmer` and `PLAN-AUTOFARM.md` section 4.
+        ///
+        /// IT IS ITS OWN OBJECT RATHER THAN STATE ON THE SOLVER, and the reason is the coupling
+        /// argument the plan makes twice: the solver is the decision, and the farmer is one input to
+        /// it. Putting the hold state on the solver would make the farmer's switch a thing that
+        /// changes the solver's own state machine, and the harness's T9 comparison (farm mode off is
+        /// byte-identical to before the farmer existed) would then depend on two objects rather than
+        /// one.
+        /// </summary>
+        private static readonly Farmer _farmer = new Farmer();
+
         private static readonly DodgeSnapshot Snapshot = new DodgeSnapshot();
 
-        private static Func<object> _getWorld;
-        private static Func<object, object> _getPlayer;
+        private static Func<object> _getWorld;        private static Func<object, object> _getPlayer;
         private static Func<object, float> _getPlayerX;
         private static Func<object, float> _getPlayerY;
         private static Func<object, float> _getPlayerRadius;
@@ -350,6 +362,27 @@ namespace Drelay.Bootstrap
         public static bool Enabled => _enabled && _resolved;
 
         /// <summary>
+        /// The collision window this frame's snapshot carries, for the callers that run BESIDE the
+        /// decision rather than inside it.
+        ///
+        /// IT EXISTS FOR ONE CALLER: `RouteRuntime`, whose recorder has to snap a recorded waypoint to
+        /// a walkable cell and whose whole reason for existing is that the grid is the client's own.
+        /// The alternative was a second resolution of the same `byte[,]` and a second window, which is
+        /// two answers to one question -- the defect `PLAN-ENEMY-THREATS.md` section 8.2 records for
+        /// `World.Shared` and the reason that reader resolves the instance separately.
+        ///
+        /// IT IS READ AFTER `OnFrame`, so on the frame tick it is the current frame's window.
+        /// </summary>
+        public static CollisionWindow CurrentGrid => Snapshot.Grid;
+
+        /// <summary>
+        /// The settings this run is using. See <see cref="CurrentGrid"/>: the route runtime needs the
+        /// same numbers the decision uses, and a second read of the environment would be a second
+        /// answer.
+        /// </summary>
+        public static DodgeConfig CurrentConfig => _config;
+
+        /// <summary>
         /// JIT every method on the frame path, before the patch goes live.
         ///
         /// A METHOD COMPILED ON ITS FIRST CALL IS COMPILED FROM WHEREVER THAT CALL COMES FROM, and
@@ -379,6 +412,12 @@ namespace Drelay.Bootstrap
             // two frame-path methods are named -- `Resolve` and `ResolveWorld` run at arm time.
             Prepare(typeof(EnemyReader), "Fill", BindingFlags.Public | BindingFlags.Static);
             Prepare(typeof(EnemyReader), "Describe", BindingFlags.Public | BindingFlags.Static);
+            // THE FARMER IS ON THE FRAME PATH AS WELL, and this is not decoration: it is called on
+            // EVERY frame whether or not the switch is on, and its first call would otherwise be
+            // compiled from inside a patched game frame. `Describe` is named for the same reason it
+            // is for `EnemyReader` -- the report calls it from the frame the report lands on.
+            Prepare(typeof(Farmer), "ChooseTarget", BindingFlags.Public | BindingFlags.Instance);
+            Prepare(typeof(Farmer), "Describe", BindingFlags.Public | BindingFlags.Instance);
             Prepare(typeof(DodgeSolver), "AnyThreatNearPlayer", BindingFlags.NonPublic | BindingFlags.Instance);
 
             Prepare(typeof(DodgeSolver), "Decide", BindingFlags.Public | BindingFlags.Instance);
@@ -497,6 +536,28 @@ namespace Drelay.Bootstrap
                 bool enemies = EnemyReader.Resolve(game);
                 HookEntry.AppendLog(enemies ? "INFO" : "WARN", EnemyReader.Status());
 
+                // THE LOBBY'S PORTALS (`PLAN-AUTOFARM.md` section 5.2, the operator's "it should have
+                // reconnect"). On the same terms as the enemy reader and for the same reason: the
+                // reader owns the reflection, this file owns the assembly and the `World.Shared`
+                // static. A failure disarms the lobby pilot and says so; it does NOT disarm the
+                // dodge or the farmer.
+                //
+                // IT IS RESOLVED ONLY WHEN THE FARMER IS ON, because resolving it walks the game
+                // assembly's type list (`GetTypes` over ~1900 types) and a dodge-only run has no
+                // use for a portal. The switch is read here rather than from `_config` because the
+                // config is built below, and `DRELAY_DODGE_FARM` is the one name both read.
+                if (Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM") == "1")
+                {
+                    HookEntry.AppendLog("INFO", EnemyReader.FarmFilterStatus());
+                    PortalReader.ResolveWorld(sharedField);
+                    bool portals = PortalReader.Resolve(game, ManagedArmingProbe.WorldTypeName);
+                    HookEntry.AppendLog(portals ? "INFO" : "WARN", PortalReader.Status());
+                }
+                else
+                {
+                    HookEntry.AppendLog("INFO", "portals: not read (the farmer is off)");
+                }
+
                 // The rest are optional and each one degrades a named thing rather than the run.
                 FieldInfo radiusField = FindRadius(playerType);
                 if (radiusField != null)
@@ -585,6 +646,26 @@ namespace Drelay.Bootstrap
                 // the weights. See `DodgeConfig.DescribePlan`.
                 HookEntry.AppendLog("INFO", "dodge config | " + _config.DescribePlan());
                 HookEntry.AppendLog("INFO", "dodge config | " + _config.DescribeWeights());
+                if (_config.FarmMode)
+                {
+                    // THE FARMER'S SETTINGS GET A LINE OF THEIR OWN, AND ONLY WHEN IT IS ON. The
+                    // 256-byte buffer is why it is not appended to the line above (see
+                    // `DodgeConfig.DescribePlan`); the switch is why it is conditional -- a run with
+                    // the farmer off has no farm settings to read back, and a line saying so on every
+                    // existing run is noise in the one place the project keeps noise out of.
+                    HookEntry.AppendLog("INFO", "dodge config | " + _config.DescribeFarm());
+                }
+                // THE SWITCH CAN BE ON IN A BUILD THAT HAS NO FARMER, and it is a deployment fact
+                // rather than a bug -- so it is named once, at arm time, where the operator will see
+                // it while the session starts. `PLAN-AUTOFARM.md` section 13: the farmer's decision
+                // code is a private module, the public tree carries a stub whose `ChooseTarget`
+                // publishes nothing, and a run that expects it to walk would otherwise look like a
+                // selection rule that never found a target.
+                if (_config.FarmMode && !Farmer.Installed)
+                {
+                    HookEntry.AppendLog("WARN", "DRELAY_DODGE_FARM is set but this build has the"
+                        + " public farmer stub: no target will be chosen (PLAN-AUTOFARM.md s.13)");
+                }
                 if (!_gridResolved)
                 {
                     // SHORT, for the truncation reason `Resolve` records.
@@ -865,6 +946,31 @@ namespace Drelay.Bootstrap
                 // nothing at all when the reader did not resolve, which is what leaves rule 7 vacuous
                 // on exactly the runs where it cannot be anything else.
                 EnemyReader.Fill(s, _config, px, py, radius);
+
+                // AND THE LOBBY'S PORTALS, which are the lobby pilot's input and nothing else. It
+                // fills nothing unless the farmer is on, so a run without the farmer pays one branch
+                // per frame -- the same accounting `EnemyReader.Fill` itself makes.
+                PortalReader.Fill(s, _config);
+
+                // THE FARMER, WHICH IS A SOURCE OF THE GOAL AND NOTHING ELSE. It runs here, on the
+                // sensor's side of the decision, because the enemy list it chooses from is the
+                // sensor's picture of the frame -- the same reason `EnemyReader.Fill` is here. It
+                // writes one field pair into the snapshot (`GoalHasPoint`/`GoalX`/`GoalY`) and
+                // touches no input, no aim and no admission rule; see `Farmer` for why that is the
+                // module's whole safety argument.
+                //
+                // IT IS ALWAYS CALLED, EVEN WITH THE SWITCH OFF. The call is one branch, and putting
+                // the switch inside the module rather than at the call site is what makes "farm mode
+                // off changes nothing" a property of one file instead of a property of every caller.
+                _farmer.ChooseTarget(s, _config);
+
+                // AND THE ROUTE, WHICH IS THE `TRAVEL` ANSWER OF `PLAN-AUTOFARM.md` SECTION 5.3: a
+                // target beats a route, so the farmer is asked first and the route only fills in when
+                // the snapshot still has no point. It writes the same three fields and touches nothing
+                // else -- the planner, admission, the score and the hysteresis are all row 2's code,
+                // unchanged. It returns without touching the snapshot when no route is loaded, when
+                // one was refused by its map block, or when the farmer already answered.
+                RouteRuntime.ApplyGoal(world, _config, s);
 
                 long t0 = Stopwatch.GetTimestamp();
                 DodgeDecision d = _solver.Decide(s);
@@ -1479,6 +1585,23 @@ namespace Drelay.Bootstrap
             // busy run names seven of them -- and sharing a line with anything else pushed that line
             // past the 256-byte buffer, which truncates silently.
             HookEntry.AppendLog("INFO", "PHASE 3 DODGE REASONS | " + ReasonHistogram());
+
+            // AND THE FARMER'S OWN LINE, ON ITS OWN FOR THE SAME REASON, AND ONLY WHEN IT RAN. It
+            // carries the plan's `stand held for range` counter, which is the one number that says
+            // the arrival policy of `PLAN-AUTOFARM.md` section 4.3 did anything -- and, by being
+            // absent on every run with the switch off, that it can only ever be nonzero in farm mode.
+            if (_config.FarmMode)
+            {
+                HookEntry.AppendLog("INFO",
+                    "PHASE 3 DODGE FARM | " + _farmer.Describe());
+                // THE LOBBY, TRAVEL AND ARRIVAL NUMBERS GET THEIR OWN LINE, because the farm line is
+                // at the 256-byte edge and `stand held for range` -- the one number that says the
+                // arrival policy of `PLAN-AUTOFARM.md` section 4.3 did anything -- would be the tail
+                // it loses. See `Farmer.DescribePilot`.
+                HookEntry.AppendLog("INFO", string.Format(CultureInfo.InvariantCulture,
+                    "PHASE 3 DODGE PILOT | {0} | stand held for range {1}",
+                    _farmer.DescribePilot(), _solver.StandHeldForRange));
+            }
             HookEntry.FlushLog();
         }
 

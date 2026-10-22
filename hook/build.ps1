@@ -339,6 +339,25 @@ if ($doManaged) {
     }
 
     $managedDir = Join-Path $root 'managed'
+    # ---------------------------------------------------------------------------------------
+    # THE PRIVATE FARM MODULE (`PLAN-AUTOFARM.md` section 13).
+    #
+    # `hook/private` is git-ignored and holds the auto-farmer's decision code. When it is present
+    # the two project files compile it INSTEAD OF the public `Farmer.cs` stub beside them; when it
+    # is absent the stub is compiled and the farmer cannot walk. Nothing here copies `private` into
+    # `out\`: the release artefact is `out\`, so a build made without the module is the only thing
+    # that can be packaged -- and this line is how a build made WITH it says so out loud, because
+    # the mistake that matters is a private build being mistaken for a distributable one.
+    $privateDir = Join-Path $root 'private'
+    $privateSources = @(Get-ChildItem -LiteralPath $privateDir -Recurse -Filter '*.cs' -File -ErrorAction SilentlyContinue)
+    $privateModule = $privateSources.Count -gt 0
+    if ($privateModule) {
+        Write-Note "private farm module: $($privateSources.Count) source(s) under hook\private"
+        Write-Bad  '  THIS BUILD IS NOT FOR DISTRIBUTION: it contains the private farmer module.'
+        Write-Note '  PLAN-AUTOFARM.md section 13 -- hook\private is git-ignored and never in a release.'
+    } else {
+        Write-Note 'private farm module: absent; the public Farmer stub is compiled and cannot walk'
+    }
     foreach ($proj in @('Drelay.Bootstrap', 'Drelay.Launcher')) {
         $projPath = Join-Path $managedDir "$proj\$proj.csproj"
         if (-not (Test-Path -LiteralPath $projPath)) { Write-Bad "missing project: $projPath"; exit 1 }
@@ -406,6 +425,32 @@ if ($doManaged) {
     }
 
     # ---------------------------------------------------------------------------
+    # WorldLogVerify, which is ALSO not part of the hook and IS built here.
+    # ---------------------------------------------------------------------------
+    #
+    # SAME ARGUMENT AS THE SOLVER HARNESS, one step further out.  It compiles the REAL
+    # `WorldLog.cs` and the REAL `EnemyReader.cs` against a fake game and parses every line the
+    # world log writes, so a writer that emits malformed JSON -- or that fails to escape a portal
+    # title -- breaks THIS build instead of the operator's one collection session.  That session is
+    # the only source of the map names and portal titles `PLAN-AUTOFARM.md` sections 5 and 8 are
+    # blocked on, and the project has already lost a recording to an unescaped newline once.
+    # `Test-HookOffline.ps1` runs it.
+    $worldLogProj = Join-Path $root 'tools\WorldLogVerify\WorldLogVerify.csproj'
+    if (Test-Path -LiteralPath $worldLogProj) {
+        Write-Note 'building WorldLogVerify (the world log, offline)'
+        $worldLogOut = & dotnet build $worldLogProj -c Release -v minimal --nologo 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Bad 'WorldLogVerify build FAILED -- and because it compiles WorldLog.cs and'
+            Write-Bad 'EnemyReader.cs from managed/Drelay.Bootstrap, that means those two no longer'
+            Write-Bad 'compile without the game in sight.'
+            $worldLogOut | Select-Object -Last 30 | ForEach-Object { Write-Host $_ }
+            $failures += 'WorldLogVerify'
+        } else {
+            Write-Ok 'WorldLogVerify built'
+        }
+    }
+
+    # ---------------------------------------------------------------------------
     # The launcher's configuration, offline: LauncherHarness, also NOT part of the hook.
     # ---------------------------------------------------------------------------
     #
@@ -414,7 +459,7 @@ if ($doManaged) {
     # those files are still a pure function of their inputs -- a change that reaches for the
     # registry, the console or the game breaks this build rather than the live one (the registry
     # itself is behind `DiscoveryWindows.cs`, which this project deliberately does not compile).
-    # `Test-HookOffline.ps1` runs its C1..C8 invariants.
+    # `Test-HookOffline.ps1` runs its C1..C9 invariants.
     $launcherHarnessProj = Join-Path $root 'tools\LauncherHarness\LauncherHarness.csproj'
     if (Test-Path -LiteralPath $launcherHarnessProj) {
         Write-Note 'building LauncherHarness (the launcher configuration, offline)'
@@ -449,10 +494,16 @@ $recordPath = Join-Path $root 'known-build.json'
 if (Test-Path -LiteralPath $recordPath) {
     $gameVersion = (Get-Content -LiteralPath $recordPath -Raw | ConvertFrom-Json).game.version
 }
+$farmStamp = if (@(Get-ChildItem -LiteralPath (Join-Path $root 'private') -Recurse -Filter '*.cs' -File -ErrorAction SilentlyContinue).Count -gt 0) {
+    'private (NOT FOR DISTRIBUTION)'
+} else {
+    'public stub'
+}
 $stamp = @(
     "drelay hook $version",
     "game build: Darza's Dominion $gameVersion",
-    "built: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+    "built: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))",
+    "farm module: $farmStamp"
 ) -join "`n"
 [System.IO.File]::WriteAllText((Join-Path $outDir 'VERSION.txt'), $stamp + "`n", [System.Text.UTF8Encoding]::new($false))
 Write-Note "  stamped out\VERSION.txt as drelay hook $version (game build $gameVersion)"

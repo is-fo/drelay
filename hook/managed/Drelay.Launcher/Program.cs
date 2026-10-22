@@ -285,6 +285,15 @@ namespace Drelay.Launcher
                 Console.WriteLine("game (discovered from auto-discovery): " + options.DiscoveredFrom);
             }
 
+            // THE AUTO-FARMER'S ONE LINE, because the one thing it cannot do for the operator is
+            // turn on the game's own Auto-Fire, and a transcript that names the switch is also how
+            // a farm run is identified later. The module's own presence is the hook's to report
+            // (the adapter logs the stub at arm time); this is the launcher's half.
+            if (options.AutoFarm)
+            {
+                Console.WriteLine("autofarm      : on (walk the nearest enemy; the game's Auto-Fire must be ON)");
+            }
+
             // The environment is built, not inherited.  This is the one place the
             // DOTNET_TieredCompilation hazard from HOOK-ARCHITECTURE.md section 1
             // can be closed, and closing it here is why the launcher exists at all
@@ -496,6 +505,31 @@ namespace Drelay.Launcher
             Console.WriteLine("---- evidence ----");
             Console.WriteLine("hook.log      : " + (File.Exists(logPath) ? "present" : "MISSING"));
 
+            // THE WORLD LOG, AND ITS SIZE RATHER THAN ONLY ITS EXISTENCE.
+            //
+            // A header-only `worlds.jsonl` is the instrument's failure mode (the writer runs on the
+            // sensor's frame path, so a half-switched launch still creates the file), and a
+            // "present" would read as success. The size is the check the operator is told to make,
+            // so the launcher makes it for them.
+            if (options.WorldLog)
+            {
+                string worldLogPath = Path.Combine(options.RunDirectory, "worlds.jsonl");
+                string size = "MISSING";
+                try
+                {
+                    if (File.Exists(worldLogPath))
+                    {
+                        size = new FileInfo(worldLogPath).Length.ToString(CultureInfo.InvariantCulture)
+                             + " bytes";
+                    }
+                }
+                catch (IOException)
+                {
+                    size = "unreadable";
+                }
+                Console.WriteLine("worlds.jsonl  : " + size);
+            }
+
             // THE BOOTSTRAP LINE IS IN `bootstrap.log`, NOT IN `hook.log`.
             //
             // This check looked only in `hook.log` and therefore reported
@@ -678,6 +712,21 @@ namespace Drelay.Launcher
   --trace              SPIKE 3.2: record trace.jsonl in the run directory. Sets the frame
                        replacement, the frame sensor and the recorder together, because any of
                        the three missing produces a valid, empty file.
+  --world-log          PLAN-AUTOFARM.md SECTION 6, THE OPERATOR'S COLLECTION INSTRUMENT: write
+                       worlds.jsonl in the run directory -- one line per world change, and one
+                       line every 30 frames carrying the map (name, asset, size, difficulty,
+                       solo-run), the world's flags, the player's position and health, every
+                       portal in World.Activatables (its title, tag, lock and called state), the
+                       eight nearest enemies, and whether the collision grid resolved.
+                       It is EVIDENCE: it writes a file and changes no decision. Sets the frame
+                       replacement, the frame sensor and DRELAY_WORLDLOG=1 together, because
+                       the writer runs on the sensor's frame path and the switch alone would
+                       write a header and no frames.
+                       Where it goes: <run dir>\worlds.jsonl, and the launcher prints the run
+                       directory at the top of the transcript.
+  --world-log-every N  write the periodic line every N frames rather than every 30 (N >= 1;
+                       a cadence of 0 is refused, because the hook would read it as 'not set'
+                       and use 30 while the command line said 0). This implies --world-log.
   --move-steer VALUE   PHASE 3 SPIKE 3.1: let the hook steer the player, using
                        the hook's own actuator. VALUE selects the experiment and is
                        documented in PHASE3-SCOPE.md; without this switch the
@@ -724,6 +773,20 @@ namespace Drelay.Launcher
                        in `dodge` mode. On any frame the adapter publishes no command the
                        pilot writes nothing, so the player's own input stands. Mutually
                        exclusive with --move-steer. The player WILL move; the log says where.
+  --autofarm           THE AUTO-FARMER: walk to the nearest enemy, stop at its edge, and let the
+                       client's own auto-fire and aimbot do the shooting. It implies --dodge and
+                       --dodge-act (the farmer publishes a POINT GOAL; the dodge's solver turns it
+                       into steering), and it sets AutoAim ""closest"" when no other source chose a
+                       mode -- so the shot goes at what the character walked to. It writes
+                       DRELAY_DODGE_FARM=1, which is the module's own switch. It moves the player:
+                       mutually exclusive with --move-steer.
+                       IT NEEDS TWO THINGS THE LAUNCHER CANNOT CHECK FOR YOU: the private farm
+                       module in the build (PLAN-AUTOFARM.md section 13 -- a public build accepts
+                       this flag and cannot walk), and the game's own Auto-Fire input option turned
+                       ON (the hook writes no firing input; without it the character walks to a
+                       mob and does not shoot). The run's log says both: the harness prints
+                       ""farm module: ..."" in out\VERSION.txt, and arm time logs either the farmer
+                       or ""public farmer stub: no target will be chosen"".
   --dodge-disc K       THE RULE 6 DECISION WINDOW, as a multiple of the time a projectile takes
                        to cross the collision disc (player radius + projectile radius). The
                        window is how much of a bullet's path counts as the frame being spent and is refused

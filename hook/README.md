@@ -33,9 +33,10 @@ Branch: `autododge-research`. The proxy stays Java; the hook is C++.
 .\\hook\tools\Test-Injection.ps1  # end-to-end, against a synthetic host (127 checks)
 .\\hook\tools\Test-HookOffline.ps1  # everything that needs NO game: the ABI self-test, the two generated tables,
                                     # both report fixtures, and the launcher's configuration
-                                    # invariants (C1-C8: the four sources, their per-field
-                                    # precedence, the discovery walk and the environment the child
-                                    # is given). The metadata reader's self-test joins them only
+                                    # invariants (C1-C10: the four sources, their per-field
+                                    # precedence, the discovery walk, the environment the child
+                                    # is given and the world log's launch surface). The metadata
+                                    # reader's self-test joins them only
                                     # when the game is installed -- it reads the game's own PE --
                                     # and is named as not run when it is not.
 ```
@@ -68,6 +69,109 @@ implies `--frame-replacement`, for the ordering reason in [`AUTOAIM.md`](../docs
 the flag has to be armed from the game's own thread before the target is ever called.
 The target is compiled only once a world exists, so the run's own log is in
 `<run dir>\bootstrap.log` — look for `auto-aim: the replacement answered its first call`.
+
+### Recording the world (`--world-log`, the farmer's collection instrument)
+
+This is [`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §6: the operator walks around and the hook
+writes everything the farmer cannot be written without — the map names, the lobby's portals and their
+titles, and which world-change signal actually fires. One switch:
+
+```powershell
+.\\hook\out\Drelay.Launcher.exe --world-log
+# the launcher prints "run directory : ..." at the top; the evidence is
+# <run dir>\worlds.jsonl   (plus hook.log and bootstrap.log beside it)
+```
+
+`--game PATH` is only needed when neither the configuration file nor discovery names the install.
+`--world-log-every 60` moves the periodic line from its 30-frame default (about twice a second at
+60 Hz), and implies `--world-log`.
+
+The file is JSON Lines: a header naming every accessor this build could not resolve, a frame line
+every N frames carrying the map block (`Name`, `AssetName`, `Width`, `Height`, `PlayerId`,
+`Difficulty`, `IsSoloRun`, `OpenedByKey`, `CanTeleport`, `Levels`), the world's flags (`SafeWorld`,
+`VaultWorld`, `Space`, `PlayerDead`), the player's position, radius and health, every object in
+`World.Activatables` with the portal's title, tag, lock and called state, the eight nearest enemies,
+and whether the collision grid resolved and how big it is; and one `transition` line per world change
+naming which signal fired (`MapInfo` reference, its name, `SafeWorld`, the grid's dimensions).
+
+It is **evidence**: it writes a file, changes no decision, and is never on the dodge's path. The one
+thing to check before trusting a session is that the file grew — `(Get-Item <run-dir>\worlds.jsonl).Length`
+of a few hundred bytes means the header and nothing else. The flag sets the managed frame replacement,
+the frame sensor and `DRELAY_WORLDLOG=1` together for exactly that reason: the writer is called from
+the sensor's frame path, so the variable on its own produces a header and no frames. The switch is
+command-line-only and not a configuration key, because a double-click should not start recording
+evidence. [`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §6.2 is the checklist of what to walk
+and note while it records.
+
+**The farmer itself is not in this repository.** The auto-farmer's decision code is a private module
+(`PLAN-AUTOFARM.md` §13): the tree carries a `Farmer` stub with the same surface and no behaviour, and
+a build made from a checkout cannot farm. To use it, put the module at `hook/private/Farmer.cs` and
+rebuild, or copy a privately built `Drelay.Bootstrap.dll` over the one in `out\`. `build.ps1` and
+`out\VERSION.txt` both say which build you have, and the release workflow refuses to publish one that
+contains the module.
+
+### Running the auto-farmer (`--autofarm`)
+
+`--autofarm` is one switch for the whole loop: walk to the nearest enemy, stop at its edge, and let
+the client's own auto-fire and aimbot do the shooting — while still dodging. It implies `--dodge-act`
+(the farmer only publishes a POINT GOAL; the dodge's solver turns it into steering and writes the
+input) and picks `--autoaim closest` when no other source chose an aim mode.
+
+```powershell
+.\\hook\\out\\Drelay.Launcher.exe --autofarm
+```
+
+From the configuration file, the same request is:
+
+```json
+"Farm": { "Enabled": true }
+```
+
+Two things the launcher cannot check, and each is a one-line diagnosis when wrong:
+
+- **the build must contain the private farm module** ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §13).
+  A public build accepts the flag, turns the dodge on, and cannot walk: `out\VERSION.txt` says
+  `farm module: public stub`, and arm time logs *"public farmer stub: no target will be chosen"*.
+- **the game's own Auto-Fire input option must be ON.** The hook writes no firing input
+  ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §3); without it the character walks to a mob
+  and does not shoot.
+
+`--autofarm` cannot be combined with `--move-steer`: both claim the one actuator that moves the
+player, and two typed together is refused by name. The decision window is still the dodge's
+(`--dodge-disc`, `--dodge-window`), and `--autoaim highesthp` overrides the aim score the farmer
+picks for you.
+
+**Where it walks, and what it ignores** ([`PLAN-AUTOFARM.md`](../docs/hook/PLAN-AUTOFARM.md) §14):
+
+```powershell
+# the four knobs, all environment variables (defaults in brackets)
+$env:DRELAY_DODGE_FARM_STOP   = '3'        # [3]   how close it stands to a mob, world units
+$env:DRELAY_DODGE_FARM_IGNORE = 'critter'  # [critter] name/class substrings it will not walk at
+$env:DRELAY_DODGE_FARM_RANGE  = '20'       # [20]  how far away an enemy is still worth walking to
+$env:DRELAY_DODGE_FARM_TRAVEL = '25'       # [25]  the roam waypoint when there is nothing to fight
+```
+
+The ignore list is matched, case-insensitively, against the client's own `Data.Name` and `Data.Class`.
+**And a critter is excluded by a rule, not by its name**: the client has exactly two enemy classes, and
+`EnemyFlat` is the ground creature drawn under the player — the one you walk on rather than shoot — so
+`Data.Class == "EnemyFlat"` and the server-side `Data.NoDie` flag are both refused as farm targets,
+alongside anything the client marks `Effects.Unhittable()`. The name list is the belt for anything
+damageable that is still unwanted. The farm line names what it is walking at, and prints the class and
+the rule counts, so one session can settle whether a given creature is caught:
+
+```
+PHASE 3 DODGE FARM | farm frames=… target=418433 at=2.94 name='Slime' class='Enemy' nodie=False ignored=12 unhittable=0 critters=8
+PHASE 3 DODGE PILOT | pilot lobby=3/3 portal='[US] Cronus (42)' travel=980/41 | stand held for range 990
+```
+
+`lobby=` is the reconnect counter: attempts / the ones the client's own `Portal.Activate(0)` accepted.
+In the Tavern the farmer walks to the nearest realm portal (the one titled `[US] …` / `[EU] …`) — to
+the portal itself, and the planner snaps the search's end cell to the nearest walkable tile, so a
+portal standing on a solid cell is not a path the planner refuses — stands on it and enters, so a
+death does not end the session in the lobby. `travel=` is the roam fallback: frames spent walking a
+waypoint with no enemy in range, and how many waypoints were chosen — that is what gets the character
+out of a realm's spawn haven and keeps it moving between packs. A recorded route replaces it once the
+proxy↔hook bridge exists; see [`HANDOFF-ROUTE-BRIDGE.md`](../docs/hook/HANDOFF-ROUTE-BRIDGE.md).
 
 ### Starting it with no arguments (the configuration file)
 
@@ -126,7 +230,8 @@ Every key is optional, `null` means "not set", unknown keys are ignored, and a *
 (a misspelled `AutoAim`, a number where a boolean belongs) refuses at startup naming the field — a
 typo that silently resolved to "off" would cost a session spent watching the game not aim. The
 test-harness switches (`--test-target`, `--frame-helper`, `--frame-replacement`, `--off`,
-`--full-trace`, `--trace`, `--move-steer`, `--escape-test`, `--assembly`, `--exe`) are **not** in the
+`--full-trace`, `--trace`, `--world-log`, `--world-log-every`, `--move-steer`, `--escape-test`,
+`--assembly`, `--exe`) are **not** in the
 schema and not in the template; a config that offers `FrameHelper` would be offering a switch that
 allocates 64 KB per frame on purpose.
 

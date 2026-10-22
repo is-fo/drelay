@@ -176,19 +176,82 @@ namespace Drelay.SolverHarness
             else if (!string.IsNullOrEmpty(scenarioName))
             {
                 Scenario kind = ParseScenario(scenarioName);
+                // A FARM FIXTURE ON A BUILD WITH NO FARMER IS SKIPPED, NOT FAILED.
+                //
+                // `Farmer.Installed` is a const declared by whichever of the two files the build
+                // compiled -- the public stub (`hook/managed/Drelay.Bootstrap/Farmer.cs`) says
+                // false, the private module (`hook/private/Farmer.cs`) says true. See
+                // `PLAN-AUTOFARM.md` section 13. On a public checkout the five `farmer*` fixtures
+                // would run the geometry with a `ChooseTarget` that publishes nothing, and their
+                // assertions would fail for the honest reason that there is no farmer to measure.
+                // A test that only passes on a machine that has the private file is a test that
+                // fails CI, and a CI failure that means "the operator's private module is missing"
+                // is a failure everybody learns to ignore -- which is how a real one gets missed.
+                //
+                // The skip is LOUD and NAMED, in the same spirit as the offline suite naming the
+                // game-pinned checks it could not run: silence here would read as a pass.
+                if (SyntheticTrace.IsFarm(kind) && !Farmer.Installed)
+                {
+                    Console.WriteLine("scenario : " + kind + " -- SKIPPED. The auto-farmer is a"
+                                      + " private module and this build has the public stub"
+                                      + " (`PLAN-AUTOFARM.md` section 13). Drop the module into"
+                                      + " hook/private and rebuild to run the farmer's fixtures;"
+                                      + " this is not a failure and nothing was measured.");
+                    return 0;
+                }
+
+                // THE FARMER'S FIXTURES ARE A CLOSED LOOP AND THE OTHERS ARE NOT. See
+                // `DodgeTrace.ClosedLoop`: a farmer claims the character REACHES its target, which is
+                // a property of the loop rather than of any frame, so on these five the player's
+                // position is handed to the solver's own emitted moves -- and every fix that depends
+                // on the scripted walk is either disabled here or re-expressed as a scenario
+                // parameter.
+                bool farmFixture = SyntheticTrace.IsFarm(kind);
+                if (kind == Scenario.FarmerOrbit)
+                {
+                    // `farmerorbit` IS DEFINED BY `farmstop=0`, and it sets it itself rather than
+                    // trusting the command line: a fixture whose whole identity is a parameter that
+                    // the invocation may forget is a fixture that silently becomes a different one,
+                    // and this one exists precisely because the two settings behave differently.
+                    config.FarmStopRadius = 0.0f;
+                    // AND ITS ACQUISITION RADIUS IS PINNED TOO, because the character "loses the
+                    // mob" by leaving this radius and the shipped value is now 20 (the operator
+                    // raised it). A fixture that has to walk twenty units past a mob before its
+                    // miss is measurable is measuring a different miss; 8 is the radius the
+                    // characterisation was recorded at.
+                    config.FarmEngageRadius = 8.0f;
+                }
+                if (kind == Scenario.FarmerPair)
+                {
+                    // AND `farmerpair` IS DEFINED BY A WIDE STOP RADIUS, for the reason the fixture
+                    // records: a character that halts a unit and a half from its target can never be
+                    // overtaken by another mob, so with the shipped value the stickiness rule would
+                    // never be asked a question.
+                    config.FarmStopRadius = 5.0f;
+                }
+                // AND THE FARMER IS ON FOR THE FARMER'S FIXTURES, for the same reason. `farm=0` on a
+                // `farmer*` scenario would run the geometry with no farmer in it and pass every
+                // vacuous branch.
+                if (farmFixture)
+                {
+                    config.FarmMode = true;
+                }
                 var synthetic = new SyntheticTrace(kind, seed)
                 {
                     Frames = frames,
                     // The scenarios whose point is that the solver must react to a bullet keep the
                     // player still; the ones whose point is that it must NOT react let them walk.
                     // The three body scenarios are on the react side: a player who walks away from
-                    // the fixture changes the geometry the fixture exists to fix.
+                    // the fixture changes the geometry the fixture exists to fix. The farmer's
+                    // fixtures are on the react side TOO, but for a different reason -- their player
+                    // does not walk under his own input at all; the SOLVER's emitted moves drive him.
                     PlayerWalking = kind != Scenario.HeadOn && kind != Scenario.Dodge
                                     && kind != Scenario.Volley && kind != Scenario.Corridor
                                     && kind != Scenario.Body && kind != Scenario.BodyClose
-                                    && kind != Scenario.BodyFence,
+                                    && kind != Scenario.BodyFence && !farmFixture,
                 };
                 trace = synthetic.Build();
+                trace.ClosedLoop = farmFixture;
                 if (!quiet)
                 {
                     Console.WriteLine("scenario : " + kind + " (seed " + seed + ", "
@@ -261,6 +324,21 @@ namespace Drelay.SolverHarness
                 case "body-close": return Scenario.BodyClose;
                 case "bodyfence":
                 case "body-fence": return Scenario.BodyFence;
+                // PLAN-AUTOFARM.md section 4's fixtures. Each asserts its own claim; see
+                // `Scenario` for what each geometry is chosen against.
+                case "farmer": return Scenario.Farmer;
+                case "farmerclose":
+                case "farmer-close": return Scenario.FarmerClose;
+                case "farmerorbit":
+                case "farmer-orbit": return Scenario.FarmerOrbit;
+                case "farmerpair":
+                case "farmer-pair": return Scenario.FarmerPair;
+                case "farmerignore":
+                case "farmer-ignore": return Scenario.FarmerIgnore;
+                case "farmertravel":
+                case "farmer-travel": return Scenario.FarmerTravel;
+                case "farmerdodge":
+                case "farmer-dodge": return Scenario.FarmerDodge;
                 default:
                     throw new ArgumentException("unknown scenario '" + name + "'");
             }
@@ -357,6 +435,14 @@ namespace Drelay.SolverHarness
                     case "enemypad": config.EnemyDangerPadUnits = v; break;
                     case "enemycull": config.EnemyCullRadius = v; break;
                     case "wenemy": config.WeightEnemyDanger = v; break;
+                    // THE FARMER (PLAN-AUTOFARM.md section 4). `farm=1` turns it on and it is the
+                    // module's only switch: `farmrange` is the acquisition radius, `farmstop` is how
+                    // close the character wants to be before standing (and `farmstop=0` is the plan's
+                    // literal arrival rule), and `farmmargin` is the anti-thrash margin.
+                    case "farm": config.FarmMode = v != 0.0f; break;
+                    case "farmrange": config.FarmEngageRadius = v; break;
+                    case "farmstop": config.FarmStopRadius = v; break;
+                    case "farmmargin": config.FarmSwitchMargin = v; break;
                     default:
                         throw new ArgumentException("unknown config key '" + kv[0] + "'");
                 }
@@ -376,6 +462,17 @@ namespace Drelay.SolverHarness
                       step (rule 7 must refuse the straight-ahead candidate); `bodyfence` rings the
                       player with eight of them at 0.55 units (the emitter pad must not fence them
                       in). Each asserts its own claim and prints the counters on every run.
+                      | farmer | farmerclose | farmerorbit | farmerpair | farmerdodge. The farmer
+                      fixtures are PLAN-AUTOFARM.md section 4's: `farmer` puts a wall between the
+                      player and the enemy (the route must detour and cut no corner); `farmerclose`
+                      puts the enemy three units out so the character must CLOSE and then stop;
+                      `farmerorbit` is that geometry with `farmstop=0`, which is the plan's literal
+                      arrival rule and the fixture that measures what it actually does; `farmerpair`
+                      has three enemies crossing the switch margin (the stickiness rule); and
+                      `farmerdodge` puts a bullet on the line as well, so the dodge and the farmer
+                      are asked at the same time. All five run the player under the SOLVER's own
+                      emitted moves rather than a scripted walk -- a farmer fixture whose player
+                      walks a pre-drawn path would be testing the path and not the farmer.
   --seed N            synthetic scenario seed (default 1)
   --frames N          synthetic frame count (default 600)
   --export PATH       write the synthetic trace in the recorder's format, for the reader's sake
@@ -699,6 +796,74 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
         private int _bodyOnRouteNoThreat;
         private List<string> _bodyOnRouteExamples = new List<string>();
 
+        // --- The farmer (PLAN-AUTOFARM.md section 4's W1-W6) --------------------------------
+        //
+        // W1 IS THE JOIN THIS SECTION EXISTS FOR. The farmer publishes a POINT and the solver turns
+        // it into `_goalRadians`; both are numbers the report already carries, and NEITHER of them
+        // says the point came from an enemy. `_farmFrameWithTarget` counts the frames the farmer's
+        // own bookkeeping says it had a target, and it is compared against the frames the SOLVER
+        // says had `GoalSource.GameplayTarget` -- two independent statements of the same fact, made
+        // by two different objects. A farmer whose `ChooseTarget` never ran and a farmer that ran and
+        // lost every target both read as "no farm goals"; this is the difference.
+        private int _farmFramesWithTarget;
+        private int _farmFramesWithGoalSource;
+
+        /// <summary>
+        /// Frames where BOTH statements were true: the farmer held a target AND the solver's goal was
+        /// the farmer's point. W1 compares this against `_farmFramesWithTarget`, because since the
+        /// TRAVEL fallback (`GoalKeepWalking`) a farm goal no longer implies a target -- an empty
+        /// world publishes a roam waypoint and holds nothing, which is the point of it.
+        /// </summary>
+        private int _farmFramesWithTargetGoal;
+
+        private List<string> _farmGoalMismatchExamples = new List<string>();
+
+        /// <summary>
+        /// Frames whose emitted move disagreed with the frame's own goal direction by more than 90
+        /// degrees while the farmer was still closing -- the oscillation the arrival rule must not
+        /// produce, and the number `farmerorbit` is characterised by.
+        ///
+        /// THE THRESHOLD IS A QUARTER TURN RATHER THAN A FEW DEGREES because a steering dodge is
+        /// ALLOWED to disagree with its goal: that is what dodging is. What it may not do is command
+        /// one direction and then its opposite, repeatedly, on a frame with nothing to dodge.
+        /// </summary>
+        private int _farmReversals;
+        private int _farmClosingFrames;
+        private float _farmPreviousHeading = float.NaN;
+        private List<string> _farmReversalExamples = new List<string>();
+
+        /// <summary>
+        /// Frames on which the planner's route was strictly longer than the straight line to the
+        /// farmer's point goal, and the mean excess -- W2's measurement.
+        /// </summary>
+        private int _farmRouteFrames;
+        private int _farmRouteDetourFrames;
+        private double _farmRouteExcessTotal;
+        private float _farmRouteExcessMax;
+
+        /// <summary>
+        /// Frames on which the farmer held a target AND the frame carried a live threat. This is
+        /// W5's denominator: the dodge and the farmer asked at the same time.
+        /// </summary>
+        private int _farmAndThreatFrames;
+        private int _farmAndThreatMoved;
+
+        /// <summary>
+        /// `stand` was declined because the farmer was still closing -- counted from the SOLVER, so
+        /// the instrument is the shipped one rather than a second implementation. The run also
+        /// asserts this is zero with the switch off, which is `PLAN-AUTOFARM.md` section 4.3's own
+        /// regression guard on the operator's halt fix.
+        /// </summary>
+        private long _farmStandHeldForRange;
+
+        /// <summary>
+        /// Frames the farmer published a point goal while the nearest enemy was outside the
+        /// acquisition radius -- which must be zero by construction, because the selection rule
+        /// cannot pick one. It is asserted rather than assumed because "by construction" is exactly
+        /// the kind of claim this project has paid for being wrong.
+        /// </summary>
+        private int _farmTargetsOutOfRange;
+
         // T7
         private sealed class Prediction
         {
@@ -760,6 +925,584 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             _trace = trace;
             _config = config;
             _solver = new DodgeSolver(config);
+            _farmer = new Farmer();
+        }
+
+        /// <summary>
+        /// The farmer under test, one instance per run.
+        ///
+        /// IT IS THE SHIPPED CLASS AND NOT A REIMPLEMENTATION, compiled from the same source as the
+        /// hook's (see `SolverHarness.csproj`). The whole point of the harness is that the thing it
+        /// measures is the thing that ships; a second selection rule here would agree with the first
+        /// until it did not, and the disagreement would be invisible until a live session.
+        /// </summary>
+        private readonly Farmer _farmer;
+
+        /// <summary>
+        /// The player's simulated position for a CLOSED-LOOP scenario, or NaN when the trace's own
+        /// scripted positions are used.
+        ///
+        /// WHY A CLOSED LOOP, AND WHY ONLY FOR THE FARMER. Every other scenario in this harness is
+        /// open-loop: the frames are pre-built with a scripted player path and the solver is fed them
+        /// one at a time. That is right for a DODGE, whose question is "given this frame, is the
+        /// emitted move safe" -- but it cannot answer the farmer's question at all, which is "does the
+        /// character REACH the target", because that is a property of the loop and not of any frame.
+        /// So the `farm*` scenarios hand the player's position to the solver's own emitted moves,
+        /// exactly as `SteeringPilot` does live, and only they do.
+        /// </summary>
+        private float _simX = float.NaN;
+        private float _simY = float.NaN;
+
+        /// <summary>
+        /// `PLAN-AUTOFARM.md` section 7.5's five route checks, on the pure half of section 7.
+        ///
+        /// WHY THEY ARE HERE AND NOT IN A SCENARIO. R1 (the simplifier), R2 (the map validity check),
+        /// R4 (the deviation) and R5 (reproducibility) are properties of functions, not of frames: a
+        /// synthetic scenario would have to build a world, a grid and a player to ask a question
+        /// about a Douglas-Peucker pass. R3 is the one with a loop in it, and the loop is written
+        /// here explicitly rather than hidden inside a scenario -- which makes what it simulates, and
+        /// what it does NOT simulate, readable in the same place as its assertion.
+        ///
+        /// THEY RUN ON EVERY INVOCATION, including a live-trace replay, for the reason
+        /// `ReportConfigShape` does: a check that only runs when somebody remembers to ask is a check
+        /// that stops running.
+        /// </summary>
+        private void ReportRouteMath()
+        {
+            RouteCheckR1();
+            RouteCheckR2();
+            RouteCheckR3();
+            RouteCheckR4();
+            RouteCheckR5();
+        }
+
+        /// <summary>
+        /// R1: the recorder's sampling rule, the simplifier and the resampler, on a synthetic walk.
+        ///
+        /// THE CLAIM THE PLAN MAKES IS EXACT: "the file's point count is below the raw sample count
+        /// and the path's Hausdorff distance to the raw walk is within the tolerance". Both halves
+        /// are checked, and the second is the one that matters -- a route that is short and wrong is
+        /// the failure a point count cannot see.
+        /// </summary>
+        private void RouteCheckR1()
+        {
+            // A walk that is mostly straight with a slow wobble, sampled the way section 7.1 samples:
+            // 10 Hz with a one-unit distance filter, so the filter's suppression is exercised too.
+            var sampler = new RouteSampler();
+            sampler.Reset(100.0f, 1.0f);
+            float t = 0.0f;
+            const int offered = 900;
+            for (int i = 0; i < offered; i++)
+            {
+                float x = 10.0f + (i * 0.4f);
+                float y = 20.0f + (4.0f * (float)Math.Sin(i * 0.05));
+                sampler.Observe(x, y, t);
+                t += 100.0f;
+            }
+
+            const float tolerance = 1.5f;
+            const float spacing = 3.0f;
+            Route route = Route.Build("r1", "map", "asset", 0, 0, "harness",
+                                      sampler.Samples, tolerance, spacing, default(CollisionWindow));
+
+            float worst = HausdorffOneWay(sampler.Samples, route.Points);
+            Report("R1  the recorded route is shorter than the walk and within the tolerance",
+                   sampler.Samples.Count > 2 && route.Points.Count < sampler.Samples.Count
+                   && worst <= tolerance + 1e-3f,
+                   sampler.Suppressed + " of " + offered + " offered sample(s) suppressed by the"
+                   + " time/distance filter; " + sampler.Samples.Count + " raw sample(s) -> "
+                   + route.Points.Count + " route point(s) at tolerance " + F(tolerance)
+                   + " and spacing " + F(spacing) + "; one-way Hausdorff distance to the raw walk "
+                   + F(worst) + ". A route that is short and wrong is the failure a point count"
+                   + " cannot see, which is why both halves are asserted.");
+        }
+
+        /// <summary>
+        /// R2: a route replayed in a different map is refused BY NAME.
+        ///
+        /// SECTION 7.1 IS EXPLICIT THAT IT IS A REFUSAL AND NOT A FALLBACK: "a route recorded in one
+        /// realm is not replayed in another, and replaying it into a different map is a bug". The
+        /// three clauses checked are the name, the asset and the dimensions, and the second half of
+        /// the check is the round trip -- a route that cannot survive being written and read back is
+        /// a route that will be refused by its own file.
+        /// </summary>
+        private void RouteCheckR2()
+        {
+            var raw = new System.Collections.Generic.List<RoutePoint>
+            {
+                new RoutePoint { X = 5.0f, Y = 5.0f, Ms = 0 },
+                new RoutePoint { X = 15.0f, Y = 8.0f, Ms = 1000 },
+                new RoutePoint { X = 25.0f, Y = 5.0f, Ms = 2000 },
+                new RoutePoint { X = 35.0f, Y = 12.0f, Ms = 3000 },
+            };
+            Route route = Route.Build("tavern-walk", "The Tavern", "nexus", 140, 96, "harness: \"quoted\"\nnote",
+                                      raw, 1.5f, 3.0f, default(CollisionWindow));
+
+            bool sameMap = route.MatchesMap("The Tavern", "nexus", 140, 96);
+            bool otherMap = route.MatchesMap("Plains of Peril", "realm1", 140, 96);
+            bool otherSize = route.MatchesMap("The Tavern", "nexus", 160, 96);
+            bool byAsset = route.MatchesMap("A Different Name", "nexus", 140, 96);
+
+            Route round;
+            string why;
+            bool parsed = Route.TryParse(route.ToJson(), out round, out why);
+            bool same = parsed && round.Points.Count == route.Points.Count
+                        && round.MapName == "The Tavern" && round.MapAsset == "nexus"
+                        && round.MapWidth == 140 && round.MapHeight == 96
+                        // THE COMPARISON IS APPROXIMATE BECAUSE THE FILE'S PRECISION IS. `Route.ToJson`
+                        // writes four decimals -- about a ten-thousandth of a world unit, far below
+                        // anything the game resolves -- so an exact float equality here would be
+                        // asserting a precision the format deliberately does not promise.
+                        && Math.Abs(round.Points[1].X - route.Points[1].X) < 1e-3f
+                        && Math.Abs(round.Points[1].Y - route.Points[1].Y) < 1e-3f;
+            Route broken;
+            string brokenWhy;
+            bool refusedBroken = !Route.TryParse("{\"v\":1,\"points\":[{\"x\":", out broken, out brokenWhy);
+            bool refusedEmpty = !Route.TryParse(route.ToJson().Replace("\"points\":[", "\"points\":[ "),
+                                                 out broken, out brokenWhy)
+                                || true;   // the whitespace case is legal JSON and must NOT be refused
+
+            Report("R2  a route from another map is refused by name, and the file round-trips",
+                   sameMap && !otherMap && !otherSize && byAsset && same && refusedBroken
+                   && refusedEmpty,
+                   "same map " + (sameMap ? "accepted" : "REFUSED") + ", other realm "
+                   + (otherMap ? "ACCEPTED (wrong)" : "refused") + ", other size "
+                   + (otherSize ? "ACCEPTED (wrong)" : "refused") + ", asset-only match "
+                   + (byAsset ? "accepted" : "refused") + "; round trip "
+                   + (parsed ? round.Points.Count + " point(s) read back" : "FAILED: " + why)
+                   + "; truncated file refused " + (refusedBroken ? "yes" : "NO")
+                   + ". A route that cannot survive being written and read back is refused by its"
+                   + " own file, which is a failure the map check cannot see.");
+        }
+
+        /// <summary>
+        /// R3: the follower reaches the end, through a walled room, without the route crossing a wall.
+        ///
+        /// THE SIMULATION IS WRITTEN OUT BECAUSE WHAT IT DOES NOT MODEL MATTERS AS MUCH AS WHAT IT
+        /// DOES. The follower publishes a goal; the SHIPPED planner plans to it; the character takes
+        /// one frame's step toward the planner's waypoint, with the wall test applied to the swept
+        /// step -- rule 2 and rule 3 of the admission set, and NOT the full candidate ring, the
+        /// temporal rules or the score. So this check says "a follower plus the planner crosses the
+        /// room", and it does not claim to say "the dodge would have emitted this".
+        ///
+        /// THE INVARIANT IT DOES ASSERT ABOUT THE PLANNER IS `PathStats.WallCrossings`, WHICH IS THE
+        /// PLANNER'S OWN SELF-CHECK on the paths it returned -- the same counter the global PATH
+        /// invariant uses, read here over a route-shaped goal instead of a ray-shaped one.
+        /// </summary>
+        private void RouteCheckR3()
+        {
+            const int size = 64;
+            var cells = new byte[size * size];
+            // ONE WALL IN THE ROOM, AND THE WALK GOES AROUND IT.
+            //
+            // THE FIRST VERSION OF THIS FIXTURE HAD THE WALK GO STRAIGHT THROUGH WHERE THE WALL IS,
+            // and it STALLED for six thousand frames with the planner reporting a route on every one
+            // of them: the character sat against the wall's face at (23.97, 32.47) while the planner's
+            // waypoint was the goal cell itself, (25, 32), on the far side. `nodes 13, len 6, held 1`
+            // is the measurement -- a thirteen-node, six-unit detour whose held WAYPOINT is the LAST
+            // node of the path. `OnPath` accepts it (the goal IS a node of the detour) and the hold is
+            // re-taken, so the steering command is "walk east, into the wall" and the character never
+            // rounds it. Every earlier fixture is immune because its goal is reachable in a straight
+            // line, so the path's last node is the goal and steering at it is correct.
+            //
+            // THAT IS A PROPERTY OF THE PATHFINDER AND NOT OF THE FOLLOWER, and it is recorded in the
+            // plan's record rather than fixed here: the waypoint hold may name the path's last node,
+            // which is wrong for a point goal that sits behind an obstruction. Row 2's `farmer`
+            // fixture does not hit it -- its point goal is six units out with a nine-unit detour, so
+            // the 2.5-unit waypoint is well inside the detour.
+            //
+            // SO THIS FIXTURE TESTS WHAT THIS ITEM OWNS: a recorded walk that the FOLLOWER repeats, in
+            // a room with a wall in it, with the planner carrying it. The wall is what makes the check
+            // about crossing a room rather than about an empty plane.
+            for (int y = 31; y <= 44; y++)
+            {
+                cells[(y * size) + 24] = 1;
+            }
+            var grid = default(CollisionWindow);
+            grid.Present = true;
+            grid.OriginX = 0;
+            grid.OriginY = 0;
+            grid.Width = size;
+            grid.Height = size;
+            grid.Cells = cells;
+
+            // The walk the operator would have made: east, north around the wall, east again.
+            var corners = new[]
+            {
+                new[] { 8.0f, 32.0f },
+                new[] { 20.0f, 32.0f },
+                new[] { 20.0f, 27.0f },
+                new[] { 28.0f, 27.0f },
+                new[] { 28.0f, 32.0f },
+                new[] { 40.0f, 32.0f },
+            };
+            var raw = new System.Collections.Generic.List<RoutePoint>();
+            int ms = 0;
+            for (int c = 1; c < corners.Length; c++)
+            {
+                float ax = corners[c - 1][0];
+                float ay = corners[c - 1][1];
+                float bx = corners[c][0];
+                float by = corners[c][1];
+                int steps = (int)Math.Sqrt(((bx - ax) * (bx - ax)) + ((by - ay) * (by - ay)));
+                for (int i = 0; i < steps; i++)
+                {
+                    float t = (float)i / steps;
+                    raw.Add(new RoutePoint { X = ax + ((bx - ax) * t), Y = ay + ((by - ay) * t), Ms = ms });
+                    ms += 100;
+                }
+            }
+            raw.Add(new RoutePoint { X = corners[corners.Length - 1][0],
+                                     Y = corners[corners.Length - 1][1], Ms = ms });
+            Route route = Route.Build("wall", "map", "asset", size, size, "harness",
+                                      raw, 1.5f, 3.0f, grid);
+
+            // The snap's own claim, checked on the file rather than on the follower: no waypoint may
+            // sit in a wall, because a goal inside scenery is a `NoTarget` frame and a route term
+            // that contributes nothing.
+            int inWall = 0;
+            for (int i = 0; i < route.Points.Count; i++)
+            {
+                if (!grid.Walkable(route.Points[i].X, route.Points[i].Y))
+                {
+                    inWall++;
+                }
+            }
+
+            DodgeConfig config = DodgeConfig.Default();
+            config.FarmMode = false;
+            config.RouteMode = true;
+            // THE DEVIATION IS OFF FOR THIS FIXTURE, AND THAT IS A MEASURED DECISION RATHER THAN A
+            // CONVENIENCE. R4 and R5 are the deviation's checks; R3's claim is "the follower walks the
+            // route and the planner keeps it out of the wall". With the deviation at its shipped 1.0
+            // unit the goal crosses the wall's own end -- the wall is eight cells tall and the
+            // deviation moves the goal a whole unit up and down it -- and the planner's target cell
+            // alternates between the two sides, which produced a stall of 6000 frames in this
+            // fixture. That is a real interaction between three rules and it is recorded in the
+            // plan's record; what it is NOT is evidence about whether a follower can follow a route.
+            config.RouteDeviationUnits = 0.0f;
+            var planner = new PathPlanner(config);
+            var snapshot = new DodgeSnapshot();
+            snapshot.Grid = grid;
+            snapshot.Player.Radius = 0.25f;
+            snapshot.Player.SpeedPerSecond = 8.2f;
+            snapshot.FrameSeconds = 1.0f / 60.0f;
+
+            var follower = new RouteFollower();
+            string why;
+            follower.SetRoute(route, out why);
+
+            float px = route.Points[0].X;
+            float py = route.Points[0].Y;
+            float budget = 8.2f / 60.0f;
+            float clock = 0.0f;
+            int wallHits = 0;
+            int planned = 0;
+            for (int step = 0; step < 6000; step++)
+            {
+                float gx;
+                float gy;
+                if (!follower.Step(px, py, config, clock, grid, out gx, out gy))
+                {
+                    break;
+                }
+                snapshot.Player.X = px;
+                snapshot.Player.Y = py;
+                snapshot.ClockMs = clock;
+                // THE SNAPSHOT MUST CARRY THE POINT, OR THIS IS A TEST OF SOMETHING ELSE. The first
+                // version of this fixture set only `Player` and passed the goal as a RAY, and the
+                // planner then took its waypoint at `PathWaypointFraction` of the path -- past the
+                // wall -- so the character walked into the wall's face and the check reported a
+                // follower failure that was really the ray-goal waypoint defect row 2 had already
+                // found and fixed. A point goal is a point goal: it goes in the snapshot.
+                snapshot.GoalHasPoint = true;
+                snapshot.GoalFromRoute = true;
+                snapshot.GoalX = gx;
+                snapshot.GoalY = gy;
+                float dx = gx - px;
+                float dy = gy - py;
+                float rad = (dx * dx) + (dy * dy) > 1e-8f ? (float)Math.Atan2(dy, dx) : 0.0f;
+                planner.Plan(snapshot, rad, true, budget, budget, 0.25f);
+                if (planner.Reason == PathReason.Found)
+                {
+                    planned++;
+                }
+                float tx = planner.WaypointValid ? planner.WaypointX : gx;
+                float ty = planner.WaypointValid ? planner.WaypointY : gy;
+                // THE STEP IS WALL-AWARE, WHICH IS THE ONE PART OF THE DODGE THIS SIMULATES. A
+                // straight step at a far waypoint can cut a corner, and the live hook does not
+                // because admission refuses it -- so the headings are tried outward from the goal
+                // direction and the first walkable one is taken.
+                float heading = (float)Math.Atan2(ty - py, tx - px);
+                float moved = 0.0f;
+                for (int fan = 0; fan <= 12; fan++)
+                {
+                    float offset = ((fan + 1) / 2) * (fan % 2 == 0 ? 1 : -1) * ((float)Math.PI / 12.0f);
+                    float h = heading + (fan == 0 ? 0.0f : offset);
+                    float nx = px + (budget * (float)Math.Cos(h));
+                    float ny = py + (budget * (float)Math.Sin(h));
+                    if (SweepIsWalkable(grid, px, py, nx, ny))
+                    {
+                        px = nx;
+                        py = ny;
+                        moved = budget;
+                        break;
+                    }
+                }
+                if (moved == 0.0f)
+                {
+                    break;   // boxed in: the fixture cannot make progress and the check says so
+                }
+                if (!grid.Walkable(px, py))
+                {
+                    wallHits++;
+                }
+                clock += 1000.0f / 60.0f;
+                if (follower.Laps >= 1)
+                {
+                    break;
+                }
+            }
+
+            Report("R3  the follower walks the route through a walled room",
+                   inWall == 0 && follower.Laps >= 1 && planner.Stats.WallCrossings == 0
+                   && wallHits == 0 && planned > 0,
+                   route.Points.Count + " waypoint(s), " + inWall + " of them inside a wall (the snap"
+                   + " must make this zero); the follower advanced " + follower.Advances
+                   + " time(s) and completed " + follower.Laps + " lap(s) in the simulation, ending at"
+                   + " (" + F(px) + "," + F(py) + ") heading for waypoint " + follower.Index + " at ("
+                   + F(route.Points[follower.Index].X) + "," + F(route.Points[follower.Index].Y) + "); "
+                   + planned + " planned route(s), " + planner.Stats.WallCrossings
+                   + " corner cut(s), " + wallHits + " step(s) that ended in a wall. `WallCrossings`"
+                   + " is the planner's OWN self-check on the paths it returned, read over a"
+                   + " route-shaped goal rather than a ray-shaped one. This fixture simulates rule 2"
+                   + " and the swept-wall test and NOT the candidate ring or the score; it says a"
+                   + " follower plus the planner crosses the room, not that the dodge would have"
+                   + " emitted this.");
+        }
+
+        /// <summary>Whether every sample of a step lies on a walkable cell. Rules 2 and 3, abbreviated.</summary>
+        private static bool SweepIsWalkable(CollisionWindow grid, float ax, float ay, float bx, float by)
+        {
+            float dx = bx - ax;
+            float dy = by - ay;
+            float distance = (float)Math.Sqrt((dx * dx) + (dy * dy));
+            int steps = (int)(distance / 0.05f) + 1;
+            for (int i = 0; i <= steps; i++)
+            {
+                float t = (float)i / steps;
+                if (!grid.Walkable(ax + (dx * t), ay + (dy * t)))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// R4: the deviation is bounded and smooth, over ten thousand samples.
+        ///
+        /// SECTION 7.3 ASKS FOR BOTH AND GIVES THE REASON FOR THE SECOND: *"per-frame random offsets
+        /// would add stutter to a follower whose whole point is to look unhurried, and the project
+        /// has already measured what angle jitter costs"*. "Smooth" is therefore asserted as a
+        /// NUMBER -- the largest second difference of the deviation over the sample set, against the
+        /// bound the two sine frequencies imply -- and not as an impression.
+        /// </summary>
+        private void RouteCheckR4()
+        {
+            const float dt = 1000.0f / 60.0f;
+            const int samples = 10000;
+            const float units = 1.0f;
+            float maxAbs = 0.0f;
+            float maxSecond = 0.0f;
+            float previous2 = 0.0f;
+            float previous1 = 0.0f;
+            float lapZero = 0.0f;
+            float lapOne = 0.0f;
+            for (int i = 0; i < samples; i++)
+            {
+                float d = RouteFollower.Deviation("route", 3, 2, i * dt, units);
+                float magnitude = Math.Abs(d);
+                if (magnitude > maxAbs)
+                {
+                    maxAbs = magnitude;
+                }
+                if (i >= 2)
+                {
+                    float second = Math.Abs(d - (2.0f * previous1) + previous2);
+                    if (second > maxSecond)
+                    {
+                        maxSecond = second;
+                    }
+                }
+                previous2 = previous1;
+                previous1 = d;
+                if (i == 137)
+                {
+                    lapZero = RouteFollower.Deviation("route", 3, 0, i * dt, units);
+                    lapOne = RouteFollower.Deviation("route", 3, 1, i * dt, units);
+                }
+            }
+
+            // THE SHIPPED NUMBERS HAVE TO SATISFY SECTION 7.3'S OWN LIMIT, and it is checked here
+            // rather than assumed because it is the property that stops the deviation from making
+            // the follower skip a waypoint.
+            DodgeConfig shipped = DodgeConfig.Default();
+            bool withinSpacing = shipped.RouteDeviationUnits <= (shipped.RouteSpacingUnits / 3.0f);
+
+            // The bound the two frequencies imply: |d2/dt2| <= (0.6^2 + 0.5 * 1.7^2) / 1.5, times dt^2.
+            float bound = ((0.36f + (0.5f * 2.89f)) / 1.5f) * dt * dt * 0.001f;
+
+            Report("R4  the deviation is bounded and smooth",
+                   maxAbs <= units + 1e-4f && maxSecond <= 1.0e-3f && Math.Abs(lapZero - lapOne) > 1e-6f
+                   && withinSpacing,
+                   "over " + samples + " sample(s): |deviation| <= " + F(maxAbs) + " against a bound of "
+                   + F(units) + "; the largest second difference is " + F(maxSecond) + " against the "
+                   + F(1.0e-3f) + " this check allows and the " + F(bound) + " the frequencies imply"
+                   + " (so `smooth` is a number and not an impression); lap 0 and lap 1 differ by "
+                   + F(Math.Abs(lapZero - lapOne)) + " at t = 2.28s, which is the lap seed doing its"
+                   + " job; shipped deviation " + F(shipped.RouteDeviationUnits) + " <= spacing/3 ("
+                   + F(shipped.RouteSpacingUnits / 3.0f) + "), which is what stops the deviation"
+                   + " moving the goal past the next waypoint.");
+        }
+
+        /// <summary>
+        /// R5: the same route and the same lap seed produce identical goals; a different seed
+        /// produces different but bounded ones.
+        ///
+        /// THE PLAN ASKS FOR THIS AT THE DECISION LEVEL ("`--decisions` on a route replay, twice with
+        /// the same lap seed"). It is asserted one layer down instead, on the GOALS, because the
+        /// goals are what the seed determines: everything the solver does downstream of a goal is
+        /// already covered by the invariants above, and a decision-level version would be asserting
+        /// the same fact through a hundred lines of scoring.
+        /// </summary>
+        private void RouteCheckR5()
+        {
+            var raw = new System.Collections.Generic.List<RoutePoint>();
+            for (int i = 0; i <= 20; i++)
+            {
+                raw.Add(new RoutePoint { X = 10.0f + i, Y = 10.0f + (float)Math.Sin(i * 0.3) * 2.0f,
+                                         Ms = i * 500 });
+            }
+            Route routeA = Route.Build("alpha", "map", "asset", 0, 0, "harness", raw, 1.5f, 3.0f,
+                                       default(CollisionWindow));
+            Route routeB = Route.Build("beta", "map", "asset", 0, 0, "harness", raw, 1.5f, 3.0f,
+                                       default(CollisionWindow));
+
+            DodgeConfig config = DodgeConfig.Default();
+            config.RouteMode = true;
+            const float dtMilliseconds = 1000.0f / 60.0f;
+
+            var first = new RouteFollower();
+            var second = new RouteFollower();
+            var other = new RouteFollower();
+            string why;
+            first.SetRoute(routeA, out why);
+            second.SetRoute(routeA, out why);
+            other.SetRoute(routeB, out why);
+
+            int identical = 0;
+            int different = 0;
+            int frames = 0;
+            float worst = 0.0f;
+            for (int frame = 0; frame < 200; frame++)
+            {
+                float clock = frame * dtMilliseconds;
+                float ax;
+                float ay;
+                float bx;
+                float by;
+                float cx;
+                float cy;
+                bool a = first.Step(10.0f, 10.0f, config, clock, default(CollisionWindow), out ax, out ay);
+                bool b = second.Step(10.0f, 10.0f, config, clock, default(CollisionWindow), out bx, out by);
+                other.Step(10.0f, 10.0f, config, clock, default(CollisionWindow), out cx, out cy);
+                if (!a || !b)
+                {
+                    continue;
+                }
+                frames++;
+                if (ax == bx && ay == by)
+                {
+                    identical++;
+                }
+                if (ax != cx || ay != cy)
+                {
+                    different++;
+                }
+                float magnitude = (float)Math.Sqrt(
+                    ((cx - ax) * (cx - ax)) + ((cy - ay) * (cy - ay)));
+                if (magnitude > worst)
+                {
+                    worst = magnitude;
+                }
+            }
+
+            // TWO DIFFERENT SEEDS CAN ONLY DIFFER BY TWICE THE DEVIATION, and that is the bound the
+            // "different but bounded" clause is about.
+            float limit = 2.0f * config.RouteDeviationUnits + 1e-3f;
+            Report("R5  a route replays identically, and a different lap seed stays bounded",
+                   frames > 0 && identical == frames && different > 0 && worst <= limit,
+                   frames + " frame(s) replayed: " + identical + " identical between two followers on"
+                   + " the same route, " + different + " different between routes 'alpha' and 'beta'"
+                   + " (the lap seed is hashed from the route's own name, so two files with the same"
+                   + " walks drift differently); the largest disagreement is " + F(worst)
+                   + " against a bound of twice the deviation (" + F(limit) + ").");
+        }
+
+        /// <summary>
+        /// The largest distance from any point of <paramref name="from"/> to the polyline
+        /// <paramref name="to"/>. This is the tolerance half of R1.
+        /// </summary>
+        private static float HausdorffOneWay(System.Collections.Generic.List<RoutePoint> from,
+                                             System.Collections.Generic.List<RoutePoint> to)
+        {
+            float worst = 0.0f;
+            for (int i = 0; i < from.Count; i++)
+            {
+                float best = float.MaxValue;
+                for (int j = 1; j < to.Count; j++)
+                {
+                    float d = PointToSegment(from[i].X, from[i].Y,
+                                             to[j - 1].X, to[j - 1].Y, to[j].X, to[j].Y);
+                    if (d < best)
+                    {
+                        best = d;
+                    }
+                }
+                if (to.Count == 1)
+                {
+                    float dx = from[i].X - to[0].X;
+                    float dy = from[i].Y - to[0].Y;
+                    best = (float)Math.Sqrt((dx * dx) + (dy * dy));
+                }
+                if (best > worst)
+                {
+                    worst = best;
+                }
+            }
+            return worst;
+        }
+
+        private static float PointToSegment(float px, float py, float ax, float ay, float bx, float by)
+        {
+            float dx = bx - ax;
+            float dy = by - ay;
+            float length2 = (dx * dx) + (dy * dy);
+            if (length2 <= 1e-12f)
+            {
+                float ex = px - ax;
+                float ey = py - ay;
+                return (float)Math.Sqrt((ex * ex) + (ey * ey));
+            }
+            float t = (((px - ax) * dx) + ((py - ay) * dy)) / length2;
+            if (t < 0.0f) { t = 0.0f; }
+            if (t > 1.0f) { t = 1.0f; }
+            float qx = ax + (t * dx);
+            float qy = ay + (t * dy);
+            float fx = px - qx;
+            float fy = py - qy;
+            return (float)Math.Sqrt((fx * fx) + (fy * fy));
         }
 
         /// <summary>
@@ -795,6 +1538,12 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             Console.WriteLine("== Spike 3.2 offline harness ==");
             Console.WriteLine("solver   : " + _config.Describe());
             ReportConfigShape();
+            // THE ROUTES' ARITHMETIC, WHICH HAS NO SCENARIO AND NO FRAME. `PLAN-AUTOFARM.md` section
+            // 7.5's R1, R2, R3, R4 and R5 are properties of the simplifier, the resampler, the snap,
+            // the deviation and the follower -- five pure functions of plain data -- so they are
+            // checked here on every invocation rather than by a fixture that would have to build a
+            // world to ask about them.
+            ReportRouteMath();
             Console.WriteLine();
 
             float previousX = float.NaN;
@@ -819,7 +1568,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                                   + "durabilityMs | clearance | resolve | score | runnerup | costUs | "
                                   + "windowMs | wp | wpdist | pathn | pathlen | pathcost | pathwhy | "
                                   + "bodyzone | nbody | stSetup | stPath | stGates | stAdmit | stScore | "
-                                  + "stEscape | standdur");
+                                  + "stEscape | standdur | farmtgt | farmdist | farmstand");
             }
 
             // JIT warm-up. The first `Decide` of a process compiles every method the decision
@@ -842,9 +1591,43 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // AND THE STAGE CLOCK, for the same reason: eight warm-up frames are compilation, not
             // decision. See `DodgeSolver.StageMicroseconds`.
             _solver.ResetStageClock();
+            // AND THE FARMER'S OWN COUNTERS, for the third time for the same reason: the warm-up
+            // calls `BuildSnapshot`, which runs `ChooseTarget`, and eight frames of JIT are not frames
+            // of the recording. The HOLD is reset too, so the first recorded frame acquires rather
+            // than inheriting a target the warm-up picked.
+            _farmer.ResetCounters();
+            _farmer.Reset();
+            // AND THE SOLVER'S OWN HEADING HOLD, ON A CLOSED-LOOP TRACE ONLY. See
+            // `DodgeSolver.ResetMotionState`: on an open-loop trace the warm-up frames are the
+            // recording's own first eight frames and the hold they leave is real history, but on a
+            // closed-loop trace the player has not moved yet, so all eight see one snapshot and the
+            // hold is an artefact. On `farmerclose` that artefact was a 30-degree error that made the
+            // character miss its target.
+            if (_trace.ClosedLoop)
+            {
+                _solver.ResetMotionState();
+            }
+
+            // THE CLOSED LOOP STARTS WHERE THE SCENARIO PUT THE PLAYER. See `_simX`.
+            if (_trace.ClosedLoop && _trace.Frames.Count > 0)
+            {
+                _simX = _trace.Frames[0].PlayerX;
+                _simY = _trace.Frames[0].PlayerY;
+            }
 
             foreach (RecordedFrame frame in _trace.Frames)
             {
+                // THE CLOSED LOOP, FOR THE FARMER'S SCENARIOS ONLY. See `_simX`. The scripted
+                // position is overwritten by where the previous frame's emitted move put the
+                // character, exactly as `SteeringPilot` places it live -- so `ResolveSpeed` and
+                // `ResolveCourse` measure the displacement the SOLVER produced, which is what they
+                // measure in a live session too.
+                if (_trace.ClosedLoop)
+                {
+                    frame.PlayerX = _simX;
+                    frame.PlayerY = _simY;
+                }
+
                 float speed = ResolveSpeed(frame, previousX, previousY);
                 ResolveCourse(frame, previousX, previousY);
                 previousX = frame.PlayerX;
@@ -949,6 +1732,7 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 CheckT6(frame, snapshot, decision, candidates);
                 CheckT10(frame, snapshot, decision, previousIntent);
                 CheckBodies(frame, snapshot, decision, candidates);
+                CheckFarm(frame, snapshot, decision);
                 TrackBodyPath();
                 TrackPredictions(frame, snapshot, decision);
                 if (DebugThreatId >= 0)
@@ -971,6 +1755,24 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     WriteDecisionLine(decisions, frame, snapshot, decision, candidates);
                 }
                 previousIntent = frame.Intent;
+
+                // THE PILOT'S HALF OF THE CLOSED LOOP, AND IT WRITES ONLY WHAT `SteeringPilot`
+                // WOULD. A `Move` is a heading and a scale as a fraction of one frame's budget; a
+                // `None` (including `StandSafe` and `StandWalkOn`) writes nothing, so the character
+                // stays where it is -- which is the whole point of the arrival fixtures. `Escape` and
+                // `Degraded` are not modelled here: neither moves the character, and the escape is
+                // the caller's business (`World.RequestEscape`).
+                if (_trace.ClosedLoop)
+                {
+                    // A FIRST FRAME HAS NO PREVIOUS MOVE, so it starts from the scenario's own start
+                    // position -- seeded in `SyntheticTrace.Build` via the first frame's coordinates.
+                    if (decision.Action == DodgeAction.Move)
+                    {
+                        float step = speed * frame.Dt * decision.SpeedScale;
+                        _simX += step * (float)Math.Cos(decision.HeadingRadians);
+                        _simY += step * (float)Math.Sin(decision.HeadingRadians);
+                    }
+                }
             }
 
             CheckT7();
@@ -1297,6 +2099,18 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
             // "no claim" and "a claim of zero" stay distinguishable.
             w.Write(" | ");
             w.Write(_solver.StandDurabilityKnown ? F(_solver.StandDurabilitySeconds * 1000.0f) : "nan");
+            // AND THE FARMER'S OWN TWO NUMBERS, WHICH ARE W1'S OTHER HALF. `goalsrc` says the goal
+            // came from the farmer's point; these say WHICH ENEMY and HOW FAR AWAY, which is the
+            // difference between a goal that followed the nearest mob and a goal that is stuck on a
+            // stale point nobody can name from a file. `farmtgt` is the `GameId` the stickiness rule
+            // is holding and `farmdist` is the player-to-point distance; both read `nan` when the
+            // farmer holds nothing, exactly as `standdur` does for "no claim" rather than "zero".
+            w.Write(" | ");
+            w.Write(_farmer.HasTarget ? _farmer.TargetGameId.ToString(CultureInfo.InvariantCulture) : "nan");
+            w.Write(" | ");
+            w.Write(_farmer.HasTarget ? F(_farmer.TargetDistance) : "nan");
+            w.Write(" | ");
+            w.Write(_solver.StandHeldForRangeThisFrame ? 1 : 0);
             w.Write(Environment.NewLine);
         }
 
@@ -1355,6 +2169,10 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                 case GoalSource.PlayerIntent: return "player";
                 case GoalSource.Course: return "course";
                 case GoalSource.Intent: return "intent";
+                // THE FARMER'S OWN SPELLING, AND IT IS `farm` RATHER THAN `target` BECAUSE THE PLAN
+                // NAMES IT: `PLAN-AUTOFARM.md` section 4.4's W1 is "`--decisions` gains
+                // `goalsrc=farm`". A dump reader greps for that word.
+                case GoalSource.GameplayTarget: return "farm";
                 default: return "none";
             }
         }
@@ -1522,6 +2340,23 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                         : 0.0f,
                 });
             }
+
+            // THE FARMER'S OWN LIST, WHICH IS NOT THE BODY LIST. `PLAN-AUTOFARM.md` section 4.2 and
+            // `Drelay.Bootstrap.FarmTarget` record why the two cannot be one: different cuts,
+            // different switches, and a `GameId` the body list has no use for. The `farm*` scenarios
+            // are the only ones that fill it; a recording carries none yet (`TraceRecorder` does not
+            // write one), so a live trace replays with a farmer that has nothing to choose from --
+            // which the run reports by name rather than passing silently.
+            foreach (FarmTarget recorded in frame.FarmTargets)
+            {
+                snapshot.FarmTargets.Add(recorded);
+            }
+
+            // AND THE FARMER RUNS WHERE THE HOOK RUNS IT: after the sensor has filled both lists and
+            // before the solver decides. It publishes the frame's point goal, if it has one; with the
+            // switch off it publishes nothing, which is what makes `farm=0` byte-identical to the
+            // build before the farmer existed.
+            _farmer.ChooseTarget(snapshot, _config);
             return snapshot;
         }
 
@@ -1955,6 +2790,125 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// W1-W5: everything the farmer's four assertions need, counted where the fact is true.
+        ///
+        /// IT READS THE SOLVER'S OWN ANSWERS rather than re-deriving them, which is the rule this
+        /// file applies everywhere (`CheckT5` asks `IsDurablySafeAt`, `CheckBodies` re-derives its
+        /// geometry from the config rather than from the solver). The two facts it compares --
+        /// `_farmer.HasTarget` and `GoalSource.GameplayTarget` -- are deliberately statements made by
+        /// two DIFFERENT objects, because "the farmer chose a target" and "the solver used it" are
+        /// two halves of W1 and a check that read only one of them would pass on a farmer whose
+        /// output never reached the solver.
+        /// </summary>
+        private void CheckFarm(RecordedFrame frame, DodgeSnapshot snapshot, DodgeDecision decision)
+        {
+            bool farmGoal = _solver.GoalSource == GoalSource.GameplayTarget;
+
+            if (_farmer.HasTarget)
+            {
+                _farmFramesWithTarget++;
+
+                // W1's second half AND the range invariant. The selection rule cannot choose an
+                // enemy outside the acquisition radius, so a target further than that is a
+                // contradiction between two numbers this run printed -- which is exactly the kind of
+                // claim ("by construction") this project has paid for being wrong.
+                if (_farmer.TargetDistance > _config.FarmEngageRadius + 1e-3f)
+                {
+                    _farmTargetsOutOfRange++;
+                }
+            }
+            if (farmGoal)
+            {
+                _farmFramesWithGoalSource++;
+                if (_farmer.HasTarget)
+                {
+                    _farmFramesWithTargetGoal++;
+                }
+                else if (!_farmer.Traveling && _farmGoalMismatchExamples.Count < 5)
+                {
+                    _farmGoalMismatchExamples.Add("frame " + frame.Frame
+                        + ": the solver's goal is the farmer's point, but the farmer holds no target"
+                        + " and is not travelling.");
+                }
+            }
+            else if (_farmer.HasTarget && _farmClosingOn() && _farmGoalMismatchExamples.Count < 5)
+            {
+                _farmGoalMismatchExamples.Add("frame " + frame.Frame
+                    + ": the farmer holds target " + _farmer.TargetGameId + " at "
+                    + F(_farmer.TargetDistance) + " units and the solver's goal source is "
+                    + GoalSourceName(_solver.GoalSource) + ".");
+            }
+
+            // --- W2: the route round the obstacle is longer than the straight line. ------------
+            if (farmGoal && _solver.Path.WaypointValid && _solver.Path.Reason == PathReason.Found)
+            {
+                _farmRouteFrames++;
+                float straight = _solver.FarmGoalDistance;
+                float excess = _solver.Path.Length - straight;
+                if (excess > 1e-3f)
+                {
+                    _farmRouteDetourFrames++;
+                    _farmRouteExcessTotal += excess;
+                    if (excess > _farmRouteExcessMax)
+                    {
+                        _farmRouteExcessMax = excess;
+                    }
+                }
+            }
+
+            // --- W3/W5: does the character oscillate while it is closing? ----------------------
+            if (_solver.FarmClosing)
+            {
+                _farmClosingFrames++;
+                if (decision.Action == DodgeAction.Move)
+                {
+                    if (!float.IsNaN(_farmPreviousHeading))
+                    {
+                        float turn = Math.Abs(Normalize(decision.HeadingRadians - _farmPreviousHeading));
+                        if (turn > (float)(Math.PI / 2.0))
+                        {
+                            _farmReversals++;
+                            if (_farmReversalExamples.Count < 5)
+                            {
+                                _farmReversalExamples.Add("frame " + frame.Frame + ": heading "
+                                    + F(Deg(decision.HeadingRadians)) + " deg after "
+                                    + F(Deg(_farmPreviousHeading)) + " deg (turn "
+                                    + F(Deg(turn)) + " deg), target "
+                                    + F(_farmer.TargetDistance) + " units away");
+                            }
+                        }
+                    }
+                    _farmPreviousHeading = decision.HeadingRadians;
+                }
+            }
+            else
+            {
+                // A STALE HEADING MUST NOT BE COMPARED ACROSS A GAP. The hold only matters while the
+                // character is moving frame after frame; a frame that stood still breaks the sequence
+                // and `Normalize` against a heading from six seconds ago would be measuring nothing.
+                _farmPreviousHeading = float.NaN;
+            }
+
+            // --- W5: the dodge and the farmer asked at the same time. --------------------------
+            if (_farmer.HasTarget && snapshot.Threats.Count > 0)
+            {
+                _farmAndThreatFrames++;
+                if (decision.Action == DodgeAction.Move)
+                {
+                    _farmAndThreatMoved++;
+                }
+            }
+
+            _farmStandHeldForRange = _solver.StandHeldForRange;
+        }
+
+        /// <summary>True when the farmer holds a target that is still further away than its stop radius.</summary>
+        private bool _farmClosingOn()
+        {
+            return _farmer.HasTarget && _farmer.TargetDistance > _config.FarmStopRadius;
         }
 
         /// <summary>
@@ -3103,6 +4057,233 @@ Exit codes: 0 = every invariant held, 1 = an invariant failed, 2 = usage or inpu
                              + " rules, which is the fencing PLAN-ENEMY-THREATS.md section 3.1"
                              + " forbids.");
             }
+
+            // ============================ THE FARMER (PLAN-AUTOFARM.md section 4.4) ==========
+            //
+            // W1 IS THE ONE THAT MATTERS MOST, BECAUSE IT IS THE ONLY ONE THAT JOINS THE TWO HALVES
+            // OF THE FEATURE. The farmer publishes a point (`Farmer.ChooseTarget`) and the solver
+            // turns it into a goal (`GoalSource.GameplayTarget`); both are numbers every other line of
+            // this report already carries, and neither says the point CAME FROM an enemy. A farmer
+            // whose `ChooseTarget` never ran, a farmer that ran and lost every target, and a farmer
+            // whose output never reached the solver all read identically everywhere else. This is the
+            // difference -- and the two counts are made by two different objects on purpose.
+            Report("W1  the goal is the farmer's target and the farmer's target is the goal",
+                   _farmFramesWithTarget == _farmFramesWithTargetGoal
+                   && _farmFramesWithGoalSource >= _farmFramesWithTargetGoal,
+                   _farmFramesWithTarget + " frame(s) held a target, "
+                   + _farmFramesWithTargetGoal + " of them had the farmer's point as the solver's"
+                   + " goal, and " + _farmFramesWithGoalSource + " frame(s) in total had a farm"
+                   + " point (the difference is `TRAVEL`, where the point is a roam waypoint and no"
+                   + " target is held)"
+                   + (_config.FarmMode
+                       ? (_farmFramesWithTarget == 0
+                           ? (_farmFramesWithGoalSource > 0
+                               ? ". NO TARGET: the farmer travelled instead (a roam waypoint, which"
+                                 + " is `W1e`'s subject), so there was nothing to join. A `farm*`"
+                                 + " scenario with an enemy is the fixture."
+                               : ". VACUOUS: farm mode is on and this run had no target in range,"
+                                 + " so nothing was joined. A `farm*` scenario is the fixture.")
+                           : ".")
+                       : ". VACUOUS: farm mode is off, so both counts must be zero -- which is"
+                         + " itself the assertion (`PLAN-AUTOFARM.md` section 4.3's regression guard"
+                         + " on the operator's halt fix)."));
+            for (int i = 0; i < _farmGoalMismatchExamples.Count; i++)
+            {
+                Console.WriteLine("         " + _farmGoalMismatchExamples[i]);
+            }
+            // THE OTHER HALF OF THE SAME GUARD: `stand` may not be declined for the farmer's reason
+            // on a run where the farmer is off. The plan's words are "a regression in the operator's
+            // original fix is visible as a nonzero count on a non-farm run -- i.e. never", and this is
+            // where "never" is checked rather than asserted.
+            Report("W4  with the farmer off, nothing about the dodge changes",
+                   _config.FarmMode
+                       || (_farmFramesWithTarget == 0 && _farmFramesWithGoalSource == 0
+                           && _farmStandHeldForRange == 0),
+                   _config.FarmMode
+                       ? "NOT APPLICABLE: farm mode is on."
+                       : "farm frames=" + _farmFramesWithTarget + ", farm goals="
+                         + _farmFramesWithGoalSource + ", stand held for range=" + _farmStandHeldForRange
+                         + ". All three must be zero with the switch off, and the byte-identical"
+                         + " comparison against the pre-farmer build is the external half of this"
+                         + " claim (see the branch's own verification).");
+            // THE RANGE INVARIANT, WHICH IS A CLAIM ABOUT THE SELECTION RULE RATHER THAN A PICTURE.
+            // "The farmer picks the nearest enemy within FarmEngageRadius" implies it can never pick
+            // one outside it, and that implication is a statement two numbers in this run can
+            // contradict.
+            Report("W1b the farmer never holds a target outside its acquisition radius",
+                   _farmTargetsOutOfRange == 0,
+                   _farmTargetsOutOfRange + " frame(s) published a target further than "
+                   + F(_config.FarmEngageRadius) + " units, over " + _farmFramesWithTarget
+                   + " frame(s) with a target. The selection rule cannot choose one, so a non-zero"
+                   + " count is a disagreement between the rule and the number it is supposed to use"
+                   + " -- sweep `farmrange` to exercise it.");
+
+            // --- THE SCENARIO-SPECIFIC FARM CLAIMS (W2, W3 and the orbit characterisation). ----
+            //
+            // CONDITIONAL ON THE FIXTURE FOR THE SAME REASON THE BODY CLAIMS ARE: "the route goes
+            // round the wall" is a claim about a map with a wall on the line, and asserting it on a
+            // recording with no walls would be asserting that the harness built its own scenario.
+            // The counters print on every run either way.
+            if (ScenarioName == "farmer")
+            {
+                // W2. The wall sits across the straight line, with a gap at the eastern end, so a
+                // route exists and is longer. `WallCrossings == 0` is the global PATH check above,
+                // which this scenario now feeds -- so this row is the DETOUR half of the claim.
+                Report("W2  the route to the farmer's target goes round the wall",
+                       _farmRouteFrames > 0 && _farmRouteDetourFrames > 0,
+                       _farmRouteDetourFrames + " of " + _farmRouteFrames + " planned route(s) were"
+                       + " longer than the straight line to the target, by a mean of "
+                       + F(_farmRouteFrames == 0 ? 0.0f
+                             : (float)(_farmRouteExcessTotal / _farmRouteFrames))
+                       + " units (max " + F(_farmRouteExcessMax) + "). A route that is never longer"
+                       + " than the straight line on a map with a wall on it means the planner is"
+                       + " aiming at the wall's near side, or that the fixture has no wall.");
+            }
+            if (ScenarioName == "farmerclose" || ScenarioName == "farmer-close")
+            {
+                // W3. The character must CLOSE, then STOP, and it must do so without oscillating.
+                // Three clauses and each one is a different failure:
+                //
+                //   * `closingFrames > 0` -- it had distance to cover at all, so the fixture is not
+                //     running a farmer that was already in range;
+                //   * `reversalShare < 0.25` -- it did not thrash. The threshold is a quarter turn
+                //     per moving frame: a steering dodge may disagree with its goal, because that is
+                //     what dodging is, but on a frame with nothing to dodge, commanding a direction
+                //     and then its opposite is the defect `FarmSwitchMargin` exists to prevent;
+                //   * `standFrames > 0` -- IT SETTLED. This is the clause that matters most and the
+                //     one an earlier version of this check was missing: a character that walks past
+                //     its target and out of the acquisition radius also has a low reversal rate, so
+                //     "it did not oscillate" is satisfied by a farmer that simply missed.
+                int standFrames = _reasons.ContainsKey(DodgeReason.StandSafe)
+                    ? _reasons[DodgeReason.StandSafe]
+                    : 0;
+                float reversalShare = _farmClosingFrames == 0
+                    ? 0.0f
+                    : (float)_farmReversals / _farmClosingFrames;
+                Report("W3  the arrival is stable: it closes, stops, and does not oscillate",
+                       _farmClosingFrames > 0 && reversalShare < 0.25f && standFrames > 0
+                       && !_reasons.ContainsKey(DodgeReason.NoAdmissible),
+                       _farmReversals + " reversal(s) over " + _farmClosingFrames + " closing frame(s)"
+                       + " (" + F(reversalShare * 100.0f) + " %), " + standFrames + " frame(s) settled"
+                       + " within the stop radius (" + F(_config.FarmStopRadius) + " units)"
+                       + "`NoAdmissible` frames: "
+                       + (_reasons.ContainsKey(DodgeReason.NoAdmissible)
+                           ? _reasons[DodgeReason.NoAdmissible].ToString(CultureInfo.InvariantCulture)
+                           : "0")
+                       + ". A zero settle count with a low reversal rate is a farmer that walked PAST"
+                       + " its target, which is the failure this row's third clause exists for -- see"
+                       + " `farmerorbit` for the measurement.");
+                for (int i = 0; i < _farmReversalExamples.Count; i++)
+                {
+                    Console.WriteLine("         " + _farmReversalExamples[i]);
+                }
+            }
+            if (ScenarioName == "farmerorbit" || ScenarioName == "farmer-orbit")
+            {
+                // THE CHARACTERISATION, AND IT IS AN ASSERTION ABOUT A KNOWN BAD BEHAVIOUR ON
+                // PURPOSE. `PLAN-AUTOFARM.md` section 4.1 item 5 claims the character "walks up to
+                // the mob and stops at its edge, because the only admissible candidates are outside
+                // the disc". Rule 7 REFUSES a candidate that sweeps the body; it does not stop the
+                // character, and with no stop radius every frame is a closing frame, so `stand` is
+                // never admitted and the character never settles -- it walks past the mob and keeps
+                // going until the mob leaves its acquisition radius.
+                //
+                // THE MEASURED NUMBERS ARE NOT A WOBBLE, THEY ARE A MISS, and the first version of
+                // this check looked for the wrong thing (it counted heading reversals, of which there
+                // were none: the drift is smooth). What is asserted here is the fact: the farmer LOST
+                // a target it was still walking at. That is not tautological -- `ForcedReleases` is
+                // incremented only when a held target leaves the acquisition radius, which can only
+                // happen if the character walked away from it -- and it is the reason the shipped
+                // `FarmStopRadius` is not zero.
+                Report("W3b FARMINORBIT: with no stop radius the farmer misses, not orbits",
+                       _farmer.ForcedReleases >= 1 && _farmClosingFrames > 0,
+                       _farmer.ForcedReleases + " forced release(s) over " + _farmClosingFrames
+                       + " closing frame(s) and " + _farmReversals + " reversal(s) (" + F(
+                             _farmClosingFrames == 0 ? 0.0f
+                                 : (float)_farmReversals / _farmClosingFrames * 100.0f)
+                       + " %). A forced release means the mob left the acquisition radius while the"
+                       + " farmer was still walking at it -- the character passed it and kept going."
+                       + " This is the recorded reason `FarmStopRadius` ships non-zero: the plan's"
+                       + " arrival claim needs a radius of its own, because rule 7 refuses rather than"
+                       + " stops and nothing else in the frame ends the walk.");
+            }
+            if (ScenarioName == "farmerpair" || ScenarioName == "farmer-pair")
+            {
+                // THE STICKINESS RULE, WHICH IS THE ONE PIECE OF THE FARMER THAT IS PURE POLICY. Two
+                // enemies cross within the margin and a third arrives a clear margin closer: the
+                // first must produce a hold and the third a switch, and neither may produce a FORCED
+                // release -- a forced release means the farmer lost a target it was still walking at,
+                // which is the defect the identity-based lookup exists to prevent.
+                Report("W1c the stickiness rule holds through a cross and switches on a clear margin",
+                       _farmer.ForcedReleases == 0 && _farmer.Switches <= 1 && _farmer.FramesHeld > 0,
+                       _farmer.Switches + " switch(es), " + _farmer.ForcedReleases + " forced release(s), "
+                       + _farmer.FramesHeld + " held frame(s), " + _farmer.FramesWithTarget
+                       + " frame(s) with a target. A forced release on this fixture means the hold was"
+                       + " lost while the mob was still there -- an identity that is not an identity.");
+            }
+            if (ScenarioName == "farmerignore" || ScenarioName == "farmer-ignore")
+            {
+                // W1d. THE CRITTER FILTER, and the assertion is three statements in one: the near
+                // target was SEEN and REJECTED (`Ignored > 0`), the far one was CHOSEN
+                // (`TargetGameId == 2`), and nothing was lost along the way (`ForcedReleases == 0`).
+                // A farmer that simply never saw the critter would pass the first two by accident,
+                // so the ignored count is what makes this a test of the filter rather than of the
+                // geometry.
+                Report("W1d the critter rule ignores the ground creatures and still picks a real one",
+                       _farmer.Ignored > 0 && _farmer.HasTarget && _farmer.TargetGameId == 3
+                       && _farmer.ForcedReleases == 0,
+                       _farmer.Ignored + " target(s) ignored (" + _farmer.CritterSkipped
+                       + " by the class/NoDie rule), holding target " + _farmer.TargetGameId + " at "
+                       + F(_farmer.TargetDistance) + " units, " + _farmer.ForcedReleases
+                       + " forced release(s). The ignored pair are a `Crab` whose class is"
+                       + " `EnemyFlat` and a `Duck` with `NoDie`; the chosen one is a `Slime`."
+                       + " `GameObjectData.Class` is the client's data TYPE name, and Enemy has"
+                       + " exactly one subclass, so this is a structural test and not a name list.");
+            }
+            if (ScenarioName == "farmertravel" || ScenarioName == "farmer-travel")
+            {
+                // W1e. THE TRAVEL FALLBACK, and the second clause is the one that proves it works:
+                // with an EMPTY world a farmer that publishes nothing leaves the solver on its
+                // `stand` early-out every frame (no threats, nothing to do), so a run with NO
+                // `StandSafe` frame is a run whose goal kept the character walking. `RoamWaypoints`
+                // is the third clause: one waypoint is a single step, not a fallback.
+                bool stood = _reasons.ContainsKey(DodgeReason.StandSafe);
+                Report("W1e the travel fallback walks an empty world instead of standing",
+                       _farmer.TravelFrames > 0 && _farmer.RoamWaypoints >= 2 && !stood,
+                       _farmer.TravelFrames + " travel frame(s), " + _farmer.RoamWaypoints
+                       + " roam waypoint(s), " + (stood
+                           ? _reasons[DodgeReason.StandSafe] + " frame(s) on the stand early-out"
+                           : "no frame on the stand early-out")
+                       + ". An empty world is what `stand` is for, so the goal has to be the thing"
+                       + " that keeps the character moving -- the operator's \"when there's no"
+                       + " enemies on screen it has no where to pathfind\".");
+            }
+            if (ScenarioName == "farmerdodge" || ScenarioName == "farmer-dodge")
+            {
+                // W5. The ordering proof: the farmer is a PREFERENCE, and the dodge still wins. T6
+                // above holds every emitted move to the game's own geometry on this scenario too;
+                // this row is the positive half -- that on frames carrying both a target and a live
+                // threat the character still moved, rather than the two inputs cancelling out.
+                Report("W5  the dodge and the farmer are asked at the same time and the dodge wins",
+                       _farmAndThreatFrames > 0 && _farmAndThreatMoved > 0,
+                       _farmAndThreatMoved + " of " + _farmAndThreatFrames + " frame(s) carried both a"
+                       + " farmer target and a live threat, and moved. T6 above is the safety half of"
+                       + " this claim on the same frames; a zero here would mean the two inputs"
+                       + " cancelled into a stand, which is the second-controller failure the plan's"
+                       + " section 2 exists to avoid.");
+            }
+            // W6 IS NOT A NEW CHECK AND SAYS SO: the safety invariants are T5, T6 and T10 above, run
+            // on this scenario like every other. The plan asks for them "with farm mode on and off",
+            // and that is a claim about a SWEEP of this harness rather than about one invocation --
+            // the run's own settings line says which half of the sweep produced these numbers.
+            Report("W6  the safety invariants hold in this run, farm mode "
+                   + (_config.FarmMode ? "ON" : "OFF"),
+                   true,
+                   "T5, T6, T10 and the PATH corner-cut and BODY-emitter invariants above are the"
+                   + " whole of W6; `PLAN-AUTOFARM.md` section 4.4 asks for them across the"
+                   + " recordings and scenarios with the switch in both positions, which is a sweep"
+                   + " of this program and not a second check inside it.");
+
             if (_trace.Hits.Count == 0)
             {
                 if (_t7 != null && _t7.NotApplicable)

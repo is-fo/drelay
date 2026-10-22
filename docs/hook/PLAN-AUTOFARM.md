@@ -3,6 +3,19 @@
 **Items 2a, 2b, 3c and 3d of the farmer work.** Written 2026-10-17. This is an implementation
 plan, not a record; nothing here is built.
 
+> **§12 IS THE RECORD AND IT SUPERSEDES PARTS OF §4, §6 AND §7.** Rows 2, 3 and 6 of §10's order of
+> work are built on branch `feat/autofarm` — the farmer walks, the `--world-log` collection
+> instrument exists, and a recorded route can be recorded and replayed. §12 names the seven places
+> the plan's own numbers did not survive contact with the harness, all of them measured rather than
+> argued, and the two bugs the world log's offline verifier found before it shipped. **Row 4, the
+> operator's collection session, has now been run twice**: §12.8 is the first run — half the
+> questions answered, three columns silently zero, the instrument defects behind them fixed — and
+> §12.9 is the re-run, in which every column is filled, both dungeons are named *before* entry, the
+> realm's entrance is pinned to one portal at (125.5, 109.5) titled with a player's name, and leaving
+> a dungeon is measured to return to the lobby rather than to the realm. Rows 5, 7, 8 and 9 are still
+> not built; §12.7 says what each is waiting on, and for 5, 7 and 8 the answer is no longer "a
+> measurement".
+
 Read with: [`PLAN-ENEMY-THREATS.md`](PLAN-ENEMY-THREATS.md) (item 1, and a prerequisite for the
 arrival behaviour in §4), [`PLAN-HOOK-CONTROL.md`](../bridge/PLAN-HOOK-CONTROL.md) (items 3a/3b —
 the reason the farmer's switches can be changed without relaunching),
@@ -371,6 +384,17 @@ list (the 8 nearest is enough to name a boss later) and it does not decode the m
 the collision grid the hook already resolves**; if the whole map is needed, that is §7's full-grid
 mirror and it should be built then, not now.
 
+**The operator's surface is one flag**, because the writer is called from the managed frame
+replacement's sensor path and a switch that does not also turn those on writes a header and no
+frames:
+
+```powershell
+.\\hook\out\Drelay.Launcher.exe --world-log
+```
+
+`--world-log-every <frames>` moves the cadence from its 30-frame default and implies `--world-log`
+(§12.5 records the launcher side).
+
 ### 6.2 The operator's checklist
 
 Each line is a thing to walk to and note; the hook's log is the data and the operator's notes are the
@@ -715,3 +739,731 @@ at zero cost and with no code.
   starting value for the offline harness, and none of them may be tuned in a live run — the project's
   own rule, applied since Phase 3 (`IMPLEMENTATION-PLAN.md` Phase 3, "Spike 3.2 — the solver,
   offline").
+
+---
+
+## 12. What was actually built — rows 2 and 3, and the five places the plan was wrong
+
+Written after the fact, on branch `feat/autofarm`. The body of this document above is left as
+written: it is the specification the implementation was measured against, and this section is the
+diff. Rows 5, 7, 8 and 9 of §10's table are **not built**; §12.7 says what each is waiting on, and
+§12.8 is the row-4 session.
+
+### 12.1 Row 2 (§4) is in — `b72077d`, "the farmer walks"
+
+`Farmer.cs` (new, and since §13 a PRIVATE module outside the repository), plus `DodgeSnapshot`,
+`DodgeSolver`, `PathPlanner`, `EnemyReader` and `DodgeAdapter`. `SteeringPilot.cs` is untouched,
+exactly as §10.1's file-ownership table predicted, because the farm writes no input: the client's
+own auto-fire and the existing auto-aim module do the shooting (§3).
+
+The farmer is what §2 says it is — a source of the goal and nothing else. It publishes
+`DodgeSnapshot.GoalHasPoint/GoalX/GoalY`, the solver resolves it into `_goalRadians` ahead of its
+existing ladder and records `GoalSource.GameplayTarget`, and the planner aims at the point's own
+cell. Nothing in `Admit`, the plan walk, the hysteresis or the escape floor changed.
+
+> **A value is not where §4.1 item 2 says it is.** The plan gives the new member as
+> `GoalSource.GameplayTarget = 3`; `PlayerIntent` already holds 3. The new member takes 4, because
+> renumbering an enum the trace format carries would change the meaning of every recorded line.
+
+### 12.2 The four places the plan's own numbers did not survive contact
+
+Each was found by a harness fixture and fixed, and each is a place a reader of §4 alone would get it
+wrong. All five fixtures are new: `--scenario farmer | farmerclose | farmerorbit | farmerpair |
+farmerdodge`.
+
+**(a) `FarmStopRadius` had to become a SECOND radius (§4.1 item 5's arrival claim is wrong).** The
+plan uses `FarmEngageRadius` for both acquisition and arrival, and one number cannot do both: a
+target is by construction inside the acquisition radius, so a single number makes `stand` admissible
+the moment a target is chosen and the character never closes at all.
+
+And the plan's arrival rule — *"the character walks up to the mob and stops at its edge, because the
+only admissible candidates are outside the disc"* — does not happen. **Rule 7 REFUSES a candidate; it
+does not stop the character.** `--scenario farmerorbit` is that measurement, with `farmstop=0`: no
+frame settles, the character walks past the mob, and the mob leaves its acquisition radius
+(`1 forced release(s) over 195 closing frame(s), 0 reversal(s)`). The drift is smooth, which is why
+the first version of the check — counting heading reversals — passed on it. What the shipped rule is
+instead: `stand` is declined while the target is further than `FarmStopRadius`, and admitted once it
+is inside, so the character closes and then stands and shoots. `--scenario farmerclose`, at the
+shipped values: **15 moving frames, then 585 frames of `StandSafe`.**
+
+**(b) `FarmStopRadius` must also clear the enemy's emitter disc.** `PLAN-ENEMY-THREATS.md` gives
+every body a padded danger radius of `enemy.Radius + player.Radius + EnemyDangerPadUnits` — **1.25**
+at the shipped values — and `WeightEnemyDanger` (0.5) penalises a candidate that ends inside it. A
+stop radius *inside* that disc makes the farmer fight its own preference, and the measured result is
+a character that circles at the disc's edge and never settles: `--scenario farmer` at `farmstop=1`
+loses the mob (`262 moving frames, 338 with no target`), while `farmstop=1.5` closes in 83 frames and
+stands for 517. **The shipped 1.5 is that number plus a quarter of a unit of slack, and a deployment
+with a larger pad has to raise it.**
+
+**(c) `WeightIntent` fights the farmer, and the plan does not name it.** §4.3 names the `stand`
+early-out; the scoring layer has the mirror image. `WeightIntent` (0.4) rewards motion along the
+direction the operator's *hands* last asked for, and in a farm session those hands are idle — so with
+the goal due north and the stale intent due east, the ring heading at **60°** beat the goal's own 90°
+by 0.68 of score, and the character walked 30° off its target and missed it entirely. The intent term
+is now zeroed for the frames the farmer is still closing. `IntentSafe` is suppressed on exactly those
+frames too — one flag (`_farmClosing`), so `stand`, `IntentSafe` and the intent term cannot disagree
+about whether the farmer is closing.
+
+**(d) The planner's waypoint distance is wrong for a POINT goal.** `PathWaypointFraction` (0.75) is
+right for a ray goal, and `HANDOFF-DIRECTED-DODGE.md` §4.3 says why — with a ray goal the detour is
+near the *end* of the path. It is wrong for a point goal, where the obstruction is wherever it
+happens to be: a wall in front of the character puts the detour at the START and the 75 % waypoint on
+the far side of the wall, so `WeightPath` cannot see it and the character slides along the wall
+(`--scenario farmer` at `farmstop=1`, before this fix). A point goal now takes its waypoint at
+`PathWaypointUnits` instead.
+
+### 12.3 Two consequences the plan's §9 invariant table does not anticipate
+
+- **`BodyZoneNodes` (E3's counter) has to exempt the target's own emitter disc.** A route that ends
+  at a mob must end inside that mob's disc; `--scenario farmer` measured a non-zero count on all 162
+  frames it had a route, and a permanently red invariant is an ignored one. Every *other* body is
+  still counted, including one standing next to the target, so the property the counter exists for is
+  intact.
+- **`DodgeSolver.Configure` now also drops the heading hold.** A world change invalidates a heading
+  taken against bullets that are no longer in flight.
+
+### 12.4 The measurements §4.4 asks for, and two the plan does not
+
+Fourteen scenarios × farm mode on and off, all green. Every claim below is a harness assertion in
+`hook/tools/SolverHarness/Program.cs`, printed on every run.
+
+| # | check | result |
+|---|---|---|
+| W1 | the goal is the farmer's target and the farmer's target is the goal | PASS. The two counts are made by two different objects (the farmer's own bookkeeping and the solver's `GoalSource`), so a farmer whose output never reached the solver cannot pass it |
+| W1b | the farmer never holds a target outside its acquisition radius | PASS, 0 of 600 |
+| W1c | the stickiness rule holds through a cross and switches on a clear margin | PASS on `farmerpair`: **1 switch, 0 forced releases, 598 held frames of 600** |
+| W2 | the route to the farmer's target goes round the wall | PASS on `farmer`; `WallCrossings == 0` is the existing global PATH check, which this scenario now feeds |
+| W3 | the arrival is stable: it closes, stops, and does not oscillate | PASS on `farmerclose`: 15 moving frames, 585 settled, 0 reversals, 0 `NoAdmissible` |
+| W3b | (new) with no stop radius the farmer misses, not orbits | PASS as a **characterisation** of `farmstop=0` — see §12.2(a). It is asserted on `ForcedReleases >= 1`, which is not tautological: a held target can only leave the acquisition radius if the character walked away from it |
+| W4 | with the farmer off, nothing about the dodge changes | PASS, and measured **two ways**: every decision column of all nine pre-existing scenarios is byte-identical against `94f200d` with the switch off (T9), and byte-identical with the switch **on** and no targets in range (clock columns excluded, exactly as `PLAN-ENEMY-THREATS.md` §8.6 excludes them) |
+| W5 | the dodge and the farmer are asked at the same time and the dodge wins | PASS on `farmerdodge`, with T6 holding every emitted move on the same frames |
+| W6 | the safety invariants hold with farm mode on and off | PASS — this is T5/T6/T10 and the PATH/BODY invariants, run across the whole sweep |
+
+**What is NOT verified, and it is the same gap item 1 has**: no live run. `World.GetEnemies()` is
+exercised, `GameId` resolution is new and untested against the shipped build, and whether a farm mob
+is really at `Radius 0.25` on the live client is unverified — `PLAN-ENEMY-THREATS.md` §8.7 records
+`fallbackRadius=11985` on its own live run, so roughly a quarter of live bodies took the fallback.
+`FarmStopRadius`'s 1.5 is derived from a pad that was itself never measured in a realm.
+
+### 12.5 Row 3 (§6) is in — `6f1a2f6`, "the world log"
+
+`WorldLog.cs` (new), `EnemyReader.SampleEnemies`, one call site in `StartupHook`.
+
+> **The plan calls it `--world-log`, and that is now a launch option.** The hook's own surface is a
+> `DRELAY_` environment variable and always has been (`PHASE1-HANDOFF.md` §4 trap 1), so the writer
+> reads `DRELAY_WORLDLOG=1` and `DRELAY_WORLDLOG_EVERY=<frames>`; but the variable alone is not a
+> usable switch, because `WorldLog.OnFrame` is called from the managed frame replacement's sensor
+> path and `DRELAY_HOOK_FRAME_REPLACEMENT` is deleted from anything the launcher inherits. So
+> `Drelay.Launcher.exe --world-log` sets all three names — the frame replacement, `DRELAY_FRAME_SENSOR`
+> and `DRELAY_WORLDLOG` — and `--world-log-every <frames>` moves the cadence and implies the log. A
+> run that got only the variable would write a header and no frames, which is exactly the empty-file
+> failure `Options.Trace` records.
+
+**The launch surface is the flag** (§6.1's one-line command), and the file lands in the run
+directory the launcher names at the top of its transcript: `<run dir>\worlds.jsonl`, beside the usual
+`hook.log` and `bootstrap.log`. The three environment names still work for a hand-built launch, and
+the launcher's `--world-log` now drops an inherited `DRELAY_WORLDLOG`/`DRELAY_WORLDLOG_EVERY` when it
+writes its own, so a stale shell variable cannot change the cadence of a run that asked for none. It
+is a command-line switch and not a configuration key, for the same reason `--trace` is not one: a
+double-click must not start filling the run directory with evidence nobody asked for.
+`LauncherHarness --check c9` asserts that the flag reaches all three names, that it implies the frame
+replacement, that the cadence implies the log, and that a run without the flag publishes neither of
+the world-log names. Writing the option also closed one latent defect in the environment builder: `--autoaim` used
+to publish `DRELAY_HOOK_FRAME_REPLACEMENT` a second time through the block that also writes it for
+the implied frame replacement, so the child's block carried one name twice — the builder now collapses
+duplicates and `--check c2` asserts one entry per name.
+
+**And the launch surface exposed a second half of the same "half-switched-on" defect, in the writer
+itself.** `EnemyReader` was resolved only by `DodgeAdapter.Resolve`, which returns at its first line
+when `DRELAY_DODGE` is unset — so a collection run with the dodge turned off wrote a well-formed file
+with no enemy rows, while §6.2 item 4 asks the operator where the enemies are densest. `WorldLog.Resolve`
+now resolves the reader itself when it is not already available, and `WorldLogVerify` runs with no
+`DRELAY_DODGE` set, so the enemy-row assertions are the proof that the instrument stands alone. The
+writer also flushes per line now (`AutoFlush`): `Close` is never called, so a buffered writer would
+have ended the evidence at the last buffer boundary — and the "did the file grow" check the operator
+is told to make would have read "header only" for the first several seconds of a working log.
+
+It writes `worlds.jsonl` into the run directory: a header naming every accessor this build could not
+resolve, a frame line every 30 frames with the map block, the world block, the player block, the
+portal list, the eight nearest enemies and the grid's dimensions, and a `transition` line on every
+world change naming which of the five signals fired (§5.1's measurement). It is evidence, it is never
+on the decision path, and it decodes no map — §6.1's rule.
+
+**It is verified offline, and the verification found two real bugs before it shipped.**
+`hook/tools/WorldLogVerify` compiles the *real* `WorldLog.cs` and the *real* `EnemyReader.cs` against
+a fake game whose field and property names are the client's own, and parses every line the writer
+emits. Both would have been invisible in the game for a whole session:
+
+1. the enemy rows were written in `World.GetEnemies()`'s own order and not nearest first, because the
+   distance sort sat inside the truncation branch — so "the 8 nearest" was "the first 8" on every
+   frame with more than eight mobs;
+2. the portal fields were resolved on the **element type** of `World.Activatables`, which is
+   `ActivatableObject`, while `Title`, `Tag`, `Called` and `locked` are declared on `Portal`. Every
+   portal row would have carried a null title and `locked: false`, with the row present and the file
+   well formed — which is a silent wrong answer about the one thing §6 exists to measure.
+
+It is now an offline check in `Test-HookOffline.ps1` (7 checks) and is built by `build.ps1`. The
+resolver sits **after** `DodgeAdapter.Resolve` in `StartupHook`, because it samples the enemy list
+through `EnemyReader` and that is resolved by the adapter.
+
+**Not run in the game.** What is unverified is the live call: that `World.Shared` is non-null at the
+frame tick, and that `Activatables` holds the portals at the moment the operator is in the lobby.
+
+### 12.6 Row 6 (§7) is in — the routes
+
+`Route.cs`, `RouteFollower.cs` and `RouteRuntime.cs` (new), plus the point-goal generalisation below
+and one call site in `StartupHook`. `DRELAY_ROUTE_RECORD=<name>` records the operator's walk into
+`routes/<name>.json`; `DRELAY_DODGE_ROUTE=<name>` follows it when the farmer has no target — §5.3's
+`TRAVEL`. The simplifier, the resampler, the snap, the deviation, the follower and the file format are
+PURE and compile into the harness, which is what makes R1–R5 checkable offline; `RouteRuntime.cs` is
+the only part that touches the client and it does nothing else.
+
+**The route is a third source of the point goal, and the point goal had to be generalised.** The
+planner and the solver both gated the point on `FarmMode`, so a route would have loaded, validated,
+published a goal — and been ignored by the planner, with every counter agreeing the route was
+followed. The gate is now `DodgeConfig.PointGoal` (`FarmMode || RouteMode`), and one new snapshot
+field, `GoalFromRoute`, tells the two apart where they differ: **a farmer stops when it is inside
+`FarmStopRadius`; a route never stops**, because its follower advances to the next waypoint the
+moment this one is reached. That difference is one flag, and `stand`, `IntentSafe` and the `intent`
+score term are all suppressed by the same one.
+
+THREE THINGS THE ROUTE FIXTURES FOUND, and the first two are in code that predates this item.
+
+**(a) §7.3's own loop is inconsistent with its own numbers, and R3 measured it.** The pseudocode is
+`if reached(waypoint[i], 1.0): i = i + 1`, then `goal = waypoint[i] + deviation`. The character walks
+to the DEVIATED point and is therefore `|deviation|` away from the waypoint it is tested against — so
+with the plan's own starting values (a 1.0-unit deviation and a 1.0-unit reach) the loop is exactly
+marginal. R3's first run completed **zero laps in six thousand frames**, with the planner returning a
+route on every one of them. The test's radius is now `RouteReachUnits + |deviation|`.
+
+**(b) The waypoint hold can name the path's LAST node, which is wrong for a point goal behind an
+obstruction.** The first R3 fixture had the walk go straight through where a wall is, and it stalled
+for six thousand frames with the character against the wall's face at `(23.97, 32.47)`. The
+measurement is `nodes 13, len 6, held 1`: a thirteen-node, six-unit detour whose held waypoint is the
+path's final node — the goal cell itself, on the far side of the wall. `OnPath` accepts it (the goal
+IS a node of the detour) and the hold is re-taken every dwell, so the steering command is "walk east,
+into the wall". **This is the pathfinder's, not the follower's**, and it is recorded rather than fixed
+here: every fixture until now had a goal reachable in a straight line, where steering at the path's
+last node is correct. Row 2's `farmer` fixture does not hit it — its point goal is six units out with
+a nine-unit detour, so the 2.5-unit waypoint is well inside the detour. **It is the next thing the
+pathfinder's owner should look at.**
+
+**(c) The route file is rewritten every twenty samples, because nothing closes it.** `TraceRecorder.Close`
+is never called — the replacement does not know when the recording window closes, the native side owns
+that — so a route written only at close is a route that never exists. Twenty samples at 10 Hz is two
+seconds, and a session that ends abruptly leaves the walk up to that moment.
+
+**R1–R5, as measured.** They run on every harness invocation and are now an offline-suite check (8
+checks).
+
+| # | check | result |
+|---|---|---|
+| R1 | the recorded route is shorter than the walk and within the tolerance | PASS: 900 offered samples, 600 suppressed by the time/distance filter, 300 raw → **115 route points**, one-way Hausdorff distance to the raw walk **1.156** against a 1.5 tolerance |
+| R2 | a route from another map is refused by name, and the file round-trips | PASS: same map accepted, other realm refused, other size refused, asset-only match accepted, 11 points read back, a truncated file refused |
+| R3 | the follower walks the route through a walled room | PASS: 13 waypoints, **0 in a wall**, 13 advances, **1 lap**, 283 planned routes, 0 corner cuts, 0 steps that ended in a wall |
+| R4 | the deviation is bounded and smooth | PASS: over 10 000 samples `\|deviation\| ≤ 1.000` against a 1.0 bound, the largest second difference is **0** against the 0.334 the frequencies imply, lap 0 and lap 1 differ by 0.327, and the shipped deviation is exactly spacing/3 |
+| R5 | a route replays identically, and a different lap seed stays bounded | PASS: 200 of 200 goals identical between two followers on one route; 200 of 200 different between routes `alpha` and `beta`, largest disagreement 0.706 against a bound of 2.0 |
+
+**What R3 does NOT test, said plainly**: its simulation applies rule 2 and the swept-wall test and
+NOT the candidate ring or the score, so it says "a follower plus the planner crosses the room" and not
+"the dodge would have emitted this". The `corridor` scenario's existing PATH invariants are what hold
+the ray-goal case.
+
+**And no live run.** `RouteRuntime` resolves `World.Shared`, `Player.Position` and `MapInfo`; the
+route file's map block is written from whatever those accessors return and a recording with no names
+is refused by `MatchesMap` rather than followed. Whether the operator's walk produces a route that
+replays is a session, not a build.
+
+### 12.7 The rows that are not built, and what each is waiting on
+
+| row (§10) | state | waiting on |
+|---|---|---|
+| 4 — the operator's collection session | **run twice** — 2026-10-18 (a failed instrument, §12.8) and its re-run (§12.9). Every column filled; the dungeons named; no dungeon cleared | the boss/exit pass of §6.2 item 7 |
+| 5 — §5 2b, the state machine and lobby navigation | **not built** | nothing measured — §12.9 has the lobby's four portals, the realm entrance, and the "stand on its `Position`" rule |
+| 6 — §7 3c, the recorded route | **built** — see §12.6 | — |
+| 7 — §8.1, the full-grid mirror | **not built, and unblocked** | §12.9's map-identity measurement (name + ref + grid size, all agreeing) — and a `CanTeleport` realm where 1 219-unit jumps occur, which the mirror's invalidation has to tolerate |
+| 8 — §8.2–8.4, the dungeon whitelist and clear-and-advance | **not built, and unblocked** | the key (`MapInfo.Name`) and the entry gate (the portal's `Title` == that name) are measured; the exit-without-boss path is measured. **Blocked on nothing** except a session that kills something, which is the boss research of row 9 |
+| 9 — §8.6, boss behaviour | **not built** | research that is not in this plan |
+
+The plan's §10.1 ordering has not been tested across worktrees: this branch built rows 2, 3 and 6 in
+one worktree, sequentially, and touched `StartupHook.cs` only by adding three statements.
+
+### 12.8 Row 4, run once: what the session answered, and the three columns it could not fill
+
+The run is `%LOCALAPPDATA%\drelay\hook\20261018-011545-p16312`: 302 lines of `worlds.jsonl` (one
+header, 292 frame lines, 9 transitions) covering frames 926–9656, about two and a half minutes of the
+client's clock. It went Tavern → realm → Tavern → realm → Tavern → The Beyond → Tavern → realm →
+Tavern, which is more world changes than §6.2 asked for and exactly what §5.1 needed.
+
+**What it answered.** Four of §5's open questions now have measurements rather than guesses:
+
+- **A realm contains portals.** `Darza's Dominion` reported one and then two `Portal` objects in
+  `World.Activatables` (ids 451313 and 451427), with `portalsOther` between 0 and 2. So §8.4's first
+  exit mechanism — an exit portal, entered by §5.2's preferred path — exists in the place 3d has to
+  leave. §5.4's fourth bullet is answered.
+- **Map identity is the easy half of it.** On all nine transitions the `MapInfo` reference, the name
+  and the collision grid's dimensions moved *together*; the grid alone separates the three maps
+  (Tavern 235×208, The Beyond 81×122, realm 2698×2634). `MapInfo.Name` was byte-identical across
+  three separate entries to the realm. So §5.1's "measured, not assumed" recommendation is now
+  measured, and any of the three signals would do.
+- **`MapInfo.PlayerId` is not an identity, and §6.1's map block should say so.** It changed on every
+  entry, including between two entries to the *same* map: the Tavern reported 3335405, 3335496,
+  3335688, 3335698, 3335940 and the realm 450589, 451133, 614358. It is a per-world-instance number.
+  Nothing keys on it, and nothing should.
+- **The realm's geometry is real numbers now.** The character entered at (660.2, 1427.1) of a
+  2698×2634 map, and the session's own walk reached y = 2120. That is the "bottom part of the map"
+  §5.3 has been waiting for, as a coordinate rather than a heuristic. The full grid §8.1 wants is
+  7.1 M cells — worth the size guard, not worth worrying about.
+
+**And three things §5.1 does not anticipate**, each of which would have been a defect in 2b:
+
+- **`SafeWorld` is not settled on the frame the map changes.** Six of the nine transitions fired the
+  `safeWorld` bit, and in three of the nine the value on the transition line disagrees with the next
+  frame line: The Beyond is `false` then `true` (f 5380 → 5396), the Tavern `false` then `true`
+  (5451 → 5456), and the realm — the one that matters — `true` then `false` (5639 → 5666). It goes
+  wrong in both directions, so it is a transient and not a lag. **A state machine that reads
+  `SafeWorld` on the change frame classifies the realm as the lobby for one frame**, which is
+  precisely the frame §5.1 wants to decide `IN_LOBBY` on. Read it a frame later, or key the lobby on
+  the map name and use `SafeWorld` as a confirmation.
+- **`SafeWorld` is not the same question as "is this the lobby".** *The Beyond* is
+  `SafeWorld == true` — `Utils.SafeWorld` says so — while being an 81×122 map with no portals and no
+  player-vs-world enemies. §5.1's lobby bit is therefore necessary and not sufficient, and 2b has to
+  name the lobby it wants.
+- **The lobby contains things `World.GetEnemies()` calls enemies.** Every Tavern sample carries three
+  rows — two at 69420/69420 HP and one at 1000000/1000000 — with `npc: false`, `dead: false`. So §5.1's
+  `IN_LOBBY = World.SafeWorld && no target available` is false in the room the operator starts in: a
+  target *is* available, it just is not one worth walking to. The acquisition rule of §4.2 has to be
+  gated by the world state, not by whether the target list came back empty. That is a finding about
+  the plan's own state machine, not about the client.
+
+**What it could not fill, and why.** The portal positions were `0`, the portal titles and tags were
+`null`, and the player's `hp`/`maxhp` were `0` — on every one of the 292 frame lines. The header named
+two of those three columns as missing and said nothing about the third, and the offline verifier was
+green on all of it. All three are the same class of defect, and each is now fixed:
+
+| column | why it was empty | what it is now |
+|---|---|---|
+| `Portal.x`/`.y` | the writer looked for a `float X` (then `_x`) on the portal's hierarchy. There is none: a portal's position is `Node.Position`, a `Vector3`, and the client's own convention is `Position.X`/`.Y` in grid units (`StaticObject.LateUpdate` asks `World.Tilemap.GetTile((int)Position.X, (int)Position.Y)`). Neither accessor resolved, `CallFloat(null, …)` answered 0, and **the column was not in `missing` at all** | read through the same `NestedFloat` the player's position uses, with `ExactPosition` as the fallback |
+| `Portal.title`/`.tag` | resolved as *properties on `Portal`*. Both are public **fields on base types** — `ActivatableObject.Title`, `GameObject.Tag` | a field-first, then property, hierarchy walk |
+| `player.hp`/`.maxhp` | `Player` declares `public new int Health`, shadowing `Entity`'s `double`. The hierarchy walk found the int, the accessor returned `double`, and the JIT reinterpreted the bits: **42 read as 2.08E-322**. The header did not name it, because it *had* resolved | `FieldAccessor` now converts any numeric width, refuses a field it cannot read with an exception that names the field, and the header gained a `resolved` block saying which member each column came from |
+
+The third one is not only the log's. `DodgeAdapter`, `SteeringPilot` and `TraceRecorder` all built the
+same mistyped health accessor, so the dodge's `Player.Health` and the trace's health column have been
+2.08E-322 on every live frame. Nothing observable changes today: the escape gate's damage inputs are
+zero by construction (`DodgeAdapter`'s header, note 1), so `ProjectedUnavoidableDamage > Health *
+LethalFraction` is `0 > ~0`, still false; and `SteeringPilot`'s liveness gate happened to be correct
+by accident (a health of 0 reads as 0.0). **The day Deliverable 3.4 arms the damage inputs, the gate
+would have fired on the first unavoidable bullet, because the threshold it compares against was 0.**
+That is the item this run's evidence bought.
+
+Two smaller things the file now says and did not: a frame with no player writes `"ok":false` rather
+than `(0,0)` (every world change produces one, on both sides of the change — the player is torn down
+and rebuilt), and the speed column no longer reports a displacement against that placeholder (the run
+has exactly one such row, `"spd":1917` at f=3146, on a character that walks at 9.3).
+
+**What the run does not do.** No dungeon was entered, so §8.2's whitelist still has no entries and the
+`Title`-as-entry-gate measurement has not been made. The lobby walk was sampled (spawn (117.5, 123.5)
+toward (127.6, 106.1)) but the portal it approached has no position in this file, so that leg is not
+yet a route. And all of it, including the three fixes, is offline-verified only — `WorldLogVerify`
+now asserts each of these columns against a fake game shaped like the client rather than like the
+resolver, which is why it will not pass on a re-run that is still zero. **The re-run is the same one
+flag**, and it is the only thing between §5.2 and a farmer that walks out of the lobby.
+
+### 12.9 The re-run: every column filled, and what a dungeon actually looks like
+
+`20261018-014055-p14892`. The header is v2, `missing` is empty, and `resolved` names every member:
+`Portal.X → Node.Position.X`, `Portal.Title → ActivatableObject.Title`, `Portal.Tag → GameObject.Tag`,
+`Player.Health → Player.Health (Int32)`. 365 lines: 358 frame lines and 7 transition lines over frames
+550–11260. Every number below is a row of that file.
+
+**It answered the two questions §12.8 could not**, and it answered a third that §8 had given up on.
+
+| question (§8.2 / §5.4) | measurement |
+|---|---|
+| is `MapInfo.Name` the whitelist key? | **Yes, and `AssetName` cannot be one.** Both dungeons visited exposed it: `Outback Hunt` reports `asset` as `OutbackHunt1.rmap|OutbackHunt1.rmap|OutbackHunt1.rmap` (a pipe-joined triple) and `River Maze` reports `null.null`. Names are clean single tokens: `Outback Hunt`, `River Maze`. |
+| can the whitelist gate entry *before* entering? | **Yes.** Every realm portal carries a `Title` of the form `<dungeon name>\nLV <n>`, and the name is *exactly* the `MapInfo.Name` the client reports after entry — `Outback Hunt\nLV 25` → `Outback Hunt`, `River Maze\nLV 25` → `River Maze`. Measured on both dungeons, so it is a rule and not one lucky portal. |
+| what is a dungeon, as opposed to a realm? | `MapInfo.Difficulty` is the tier — **0 = lobby, 1 = realm, 2 = dungeon** — and `MapInfo.Levels` is `"Level: 25"` in a dungeon and `""` everywhere else. Either would separate the three worlds; `Name` is still the identity. |
+
+The four worlds, as the file reports them:
+
+| `Name` | `AssetName` | size | `Difficulty` | `Levels` | `SafeWorld` |
+|---|---|---|---|---|---|
+| The Tavern | `TheTavernRemade_Halloween.bmap` | 235×208 | 0 | `""` | true |
+| Darza's Dominion | `NewDominion2048.rmap` | 2698×2634 | 1 | `""` | false |
+| Outback Hunt | `OutbackHunt1.rmap|…|…` | 331×339 | 2 | `Level: 25` | false |
+| River Maze | `null.null` | 1024×1024 | 2 | `Level: 25` | false |
+
+**Entering is standing on the portal.** Not next to it, not in front of it — *on* its `Position`, and
+the file has four walks into three portals:
+
+| portal | `Position` | character's last position before the world changed | distance |
+|---|---|---|---|
+| `[US] pocquette (45)`, The Tavern | (125.5, 109.5) | (125.468, 109.347) at f 730 → realm at f 771 | 0.16 |
+| `[US] pocquette (46)`, The Tavern | (125.5, 109.5) | (125.092, 109.675) at f 2140 → realm at f 2193 | 0.44 |
+| `Outback Hunt\nLV 25`, the realm | (1244.058, 301.597) | (1244.271, 302.152) at f 1900 → Outback Hunt at f 1927 | 0.59 |
+| `River Maze\nLV 25`, the realm | (463.791, 1200.188) | (463.791, 1200.188) at f 11020 → River Maze at f 11037 | 0.00 |
+
+So §5.2's "walk to it, then enter it" is one goal point — the portal's own `Position` — and the
+client's `ActivatableObject.ActivateDistance` (2 units) is the radius that matters, not a click. What
+the file records is a *position*, not an activation, so the attribution rests on the coincidence
+being 0.16 units twice with no other portal inside two units; that is the strongest reading a log can
+give. It also settles §5.2's third question, "which portal leads to the realm", and the answer is the
+one nobody would have guessed from the plan: **the lobby's realm entrance is a portal titled with a
+region, a player name and a level** — `[US] pocquette (45)` — and it names the *realm instance*, not
+the destination, because the destination is always `Darza's Dominion`. §5.2's "with no target
+identifier available, the choice is by position and by rank" therefore stands; the title is a filter
+(`[EU]`/`[US]`) and a log line, not a destination.
+
+**Titles are not identities.** `[US] pocquette (45)` became `(46)` and then `(47)` during the session
+— the host levelling — while the other five titles were byte-identical across every sample. Both
+facts matter: a whitelist may key on a dungeon's title, and nothing may key on a lobby portal's.
+
+**`World.Activatables` is server-fed, not a spatial query.** Three realm portals appeared while the
+character stood still at (1251, 270): one 16 units away, then one 1 284 units away, then one 1 219
+units away. So "find the portals" (§5.2 item 1) is "keep the ones the client has been told about";
+a farmer cannot enumerate a map's portals from one place, and a portal it wants may arrive while it
+is farming somewhere else. Six realm portals were learned in 10 000 frames, in clusters a thousand
+units apart, each with a `Position` that never changed.
+
+**Leaving a dungeon goes to the lobby, not back to the realm**, and not through the portal that names
+the destination. *River Maze*'s only portal is titled `Darza's Dominion` and the character stood on it
+at f 11080–11140; the world change at f 11177 went to **The Tavern**. Same shape from *Outback Hunt*
+(f 1927 → f 2063, The Tavern), which had no portals at all. `hp` never moved off 738/738 and `dead`
+was never true, so this is not a death: it is the nexus, §8.4's mechanism 3, and it is the one that
+needs no per-dungeon knowledge — which is the whitelist's whole safety argument, now measured once.
+
+**The dungeons were looked at, not cleared.** 136 frames in *Outback Hunt* and 140 in *River Maze*
+(~2.3 s each), the character never left the entry point (`spd` 0 on every sample), no enemy was ever
+`dead`, and `hp` never changed. §6.2 item 7's "walk to the boss, kill it, note how the exit works" is
+still not done, so §8.3's clear-and-advance has no data and §8.6's boss lead is untouched.
+
+**And the enemies are still the thing the lobby cannot be defined by.** 51 distinct ids in the realm;
+the same stationary, high-HP, `npc:false` entities in every world — 69420 in the lobby and at both
+dungeon entrances, 1000000 in the lobby, 106000 in *River Maze* — with exactly one of them seen
+moving (Outback Hunt id 265, 69420). §12.8's finding stands unchanged: `!Dead && !Npc` does not
+exclude them, so farm acquisition has to be gated by the world state and not by the target list.
+No enemy in 358 lines was ever `dead`, which is consistent with a session that killed nothing.
+
+**One thing the instrument still owed, now paid.** §12.8's only unanswered question was *which* lobby
+object enters the realm, and the file said `"portalsOther": 23` — a count, not a name. The client has
+**40** direct `ActivatableObject` subclasses, 39 of them not `Portal` (`SoloDungeonStatue`,
+`ChainingPortal`, `NpcShop`, `VaultTerminal`, `DungeonChest`, …), so the entrance could have been any
+of them. The frame line now
+carries an `others` block: the non-`Portal` activatables summarised **by runtime type**, each with its
+count, its nearest instance's `Title` and that instance's position. The next session answers the
+question for good — and, from this run, the answer is probably "none of them": the entrance was a
+`Portal`, it just did not look like one.
+
+Two smaller measurements worth having. The realm reports `CanTeleport = true`, and a 1 219-unit jump
+appears between two samples of a character that was farming (f 10990 → 11020) — so positions in that
+map are not always walks, and a recorder that treats every pair of samples as a step records a
+teleport as one. And the whole lobby is four portals inside a 30-unit square, which makes §5.2's
+"walk down a bit" a route of a few seconds rather than a navigation problem.
+
+
+
+
+### 13. The private module: what ships, what does not, and how to drop it in
+
+The operator's constraint, recorded before the next row was built:
+
+> *"A constraint of the autofarmer is that I do not want to share it like everything else. I should be
+> able to drop in the class file or .dll and have it, but not pushed to remote or packaged in
+> releases."*
+
+This is a distribution decision, not a behaviour change: **the auto-farmer's decision code is not
+published.** Everything else in this component is — the solver, the planner, the point-goal plumbing
+that the farmer and the routes share, the world log, the harness, and this document. The line is
+drawn at the one file that decides which enemy to walk at.
+
+| | public tree | private |
+|---|---|---|
+| `hook/managed/Drelay.Bootstrap/Farmer.cs` | **the stub**: `Drelay.Bootstrap.Farmer` with the module's whole public surface and no behaviour (`ChooseTarget` publishes nothing, every counter stays zero, `Installed` is `false`) | — |
+| `hook/private/Farmer.cs` | — | **the module**: the same class with the target selection, the stickiness rule and the counters, `Installed = true` |
+| the point-goal plumbing (`DodgeSnapshot.GoalHasPoint/GoalX/GoalY`, the solver's `GameplayTarget` resolution, the planner's point target, the `stand` range condition) | yes, and it does nothing without a publisher | — |
+| the harness's five `farmer*` fixtures and their W1–W6 assertions | yes, and they **skip by name** on a build without the module | — |
+| this plan, including §4 and §12 | yes | — |
+
+#### 13.1 The mechanism, in five places
+
+1. **`hook/.gitignore` ignores `private/`.** This is the mechanism, not a convenience: a release is
+   built from a checkout, and a checkout contains only tracked files, so a released
+   `Drelay.Bootstrap.dll` is the stub build by construction.
+2. **`build.ps1` prints which build it made** — `private farm module: absent` or `private farm
+   module: N source(s)` with a red *NOT FOR DISTRIBUTION* — and stamps the answer into
+   `out\VERSION.txt` as `farm module: public stub` or `farm module: private (NOT FOR DISTRIBUTION)`.
+   The stamp is the fact that travels with the artefact.
+3. **Both project files apply the same rule** (`Drelay.Bootstrap.csproj` and
+   `SolverHarness.csproj`): if `hook/private` exists, `Compile Remove` the stub and compile
+   `private/**/*.cs` instead, and define `DRELAY_PRIVATE_FARMER`. They are separate files and could
+   drift, which is why the harness is also the thing that checks the result (point 5).
+4. **`Farmer.Installed` is a `const`** — `false` in the stub, `true` in the module. It is the only
+   fact the two files may disagree on, and being a `const` means no caller can be compiled against
+   the other build's answer. It is how the adapter warns at arm time that `DRELAY_DODGE_FARM=1` was
+   set in a build that has no farmer, and how the harness decides to skip rather than fail.
+5. **`Test-HookOffline.ps1` checks the boundary in three ways**: `git check-ignore` proves
+   `hook/private` cannot be committed; `out\VERSION.txt` must name the build that the private
+   directory implies; and `SolverHarness --scenario farmer` must *skip* when the module is absent and
+   *run* when it is present. The last one is a separate program compiled from the same rule, so it
+   catches one project file applying the rule and the other not.
+
+The release workflow adds a fourth guard: `hook-release.yml` refuses to publish if `hook/private`
+exists in the checkout or if `out\VERSION.txt` does not say `farm module: public stub`. A release
+that contains the farmer cannot be taken back, which is why the check is in the pipeline as well as
+in the ignore file.
+
+#### 13.2 Switching it on: `--autofarm`
+
+The farmer is one launch switch, `--autofarm`, or one configuration key, `"Farm": { "Enabled": true }`.
+Both go through the launcher's single implication pass, so the two spellings produce the same run:
+
+| what it turns on | why it is a dependency and not a preference |
+|---|---|
+| the dodge (`DRELAY_DODGE=1`) | the farmer publishes a POINT GOAL; the solver is the only thing that turns it into a heading. A goal nobody reads is a number. |
+| the live actuator (`DRELAY_DODGE_ACT=1`, `DRELAY_MOVE_STEER=dodge`) | the decision has to reach the input or the character never walks. This is the *same* actuator `--dodge-act` names — `--autofarm` does not add a second way to move the player. |
+| `AutoAim = "closest"`, **only when no other source chose a mode** | `Player.Shoot` aims through the aimbot, so without a mode the client shoots somewhere other than where the character walked. An operator's `--autoaim highesthp` or config `AutoAim` is left alone. |
+| `DRELAY_DODGE_FARM=1` | the module's own switch (`DodgeConfig.FarmMode`). Nothing else in the launcher writes it, and a stale value in the operator's shell is dropped when the launcher writes its own. |
+
+**Firing is still not the hook's, and must not be.** `PLAN-AUTOFARM.md` §3: auto-fire is the client's
+`InputOptions.AutoFire`, and the hook writes no firing input on any run. The launcher help says so,
+because "it walked up and did not shoot" is the one failure `--autofarm` cannot diagnose for you.
+
+Two contradictions are handled rather than discovered: `--autofarm --move-steer X` is **refused** by
+name (two pilots, both typed by hand), and `"Farm": {"Enabled": true}` in the file beside
+`--move-steer` on the command line is a **run** in which the command line takes the actuator and the
+file's request is cleared with a notice — the same rule `Dodge.Act` already followed.
+
+The template a first run writes names the key and leaves it `false`: a double-click is not a request
+to farm. `LauncherHarness` checks all of this as `c10`, including that no run without the flag writes
+`DRELAY_DODGE_FARM` and that the flag on a public build still parses (it just cannot walk).
+
+#### 13.3 Dropping it in
+
+**The class file.** Put `Farmer.cs` at `hook/private/Farmer.cs` and run `build.ps1`. The build picks
+it up, removes the stub, prints the red line, and stamps `out\VERSION.txt` as private. Nothing else
+changes; the module's surface is the stub's surface, and a member added to one and not the other
+breaks the build loudly in whichever direction it is missing.
+
+**The DLL.** Take the `Drelay.Bootstrap.dll` a private build produced and copy it over the one in
+`out\`. The bootstrap is the only file that differs — it is where `Farmer` lives — so there is no
+second assembly to load, no plugin directory to configure, and no version skew between the module
+and the code it feeds. `out\VERSION.txt` is stale in that hand-copied case; the private build's own
+stamp is the record of what was copied.
+
+**Why not a runtime plugin.** A `Drelay.Farmer.dll` loaded with `Assembly.LoadFrom` would make the
+module replaceable without a rebuild, and it was considered. It loses on two counts that matter
+here: the first call into an un-JITted plugin would happen inside a patched game frame, which is
+exactly what `DodgeAdapter.Prepare` exists to prevent; and the plugin's ABI against
+`DodgeSnapshot`/`DodgeConfig` would become a thing that can drift from the bootstrap's, where today
+it is the same compile. A one-file swap is the smallest mechanism that satisfies the constraint.
+
+#### 13.4 What this does not hide
+
+The plan describes the farmer's design in §4 and records its measurements in §12, and both stay
+public on the operator's explicit instruction. What is private is the implementation of the
+selection rule, the hold, the counters and the arrival policy's farm-mode clause — enough that the
+published binary cannot farm, and not a claim that the technique is secret. The public build is
+otherwise the same program: `DRELAY_DODGE_FARM=1` is still parsed, `FarmEngageRadius` and
+`FarmStopRadius` are still settings, and the solver still resolves a point goal — because the routes
+(§7) publish one too, and they are not private.
+
+**The docs in §12 cite commits that no longer exist in that form.** The farmer's decision code was
+committed locally before this constraint was known, so the local branch was rewritten to replace
+every historical `Farmer.cs` with the stub; the SHAs in §12 are the post-rewrite ones. The branch is
+still not pushed: the module's history is not something a rewrite can put back into the public
+record, and it never needed to be there.
+
+
+---
+
+### 14. The first live farm session: critters, a three-unit distance, and the lobby it never left
+
+`20261018-023243-p21896`, the first run with `--autofarm`. It worked -- the farmer walked to mobs,
+held targets, switched seven times over ~5900 frames, and the dodge stayed in charge -- and it did
+three things the operator did not want. Each is recorded here with the number that decided the fix.
+
+**14.1 It walked at critters, and the report could not say what they were.** The farmer's line read
+`target=418433 at=0.85`; nothing in the run said what 418433 was. The realm's ambient creatures are
+ordinary `Enemy` objects to `World.GetEnemies()` -- `Dead` false, `Npc` false, a position, a health
+bar -- so every filter the farmer had passed them, and they die when the character walks over them,
+so the character spent its session switching between them. **No geometric rule separates a critter
+from a mob.** The fix is the client's own name for it:
+
+- `EnemyReader` now reads `GameObject.Data`, then `GameObjectData.Name` and `.Class`, and carries
+  them on `FarmTarget` -- optional like every other accessor, so a build where `Data` moved loses
+  the filter and keeps the farmer;
+- `DodgeConfig.FarmIgnore` is a comma-separated, case-insensitive substring list matched against
+  both strings. **It ships `critter`**, because a default that matches nothing costs nothing: if the
+  client does not use that word, no enemy is filtered and the behaviour is the old one;
+- the farmer's line now carries the held target's **name**, which is how the next session names a
+  name to ignore instead of quoting an id;
+- `--scenario farmerignore` is the offline fixture: the near enemy is a `Baby Critter`, the far one
+  a `Slime`, and W1d asserts the near one was seen and rejected (`Ignored > 0`) and the far one
+  chosen.
+
+If `critter` is not the client's word, one run of `--autofarm` shows the name in the farm line and
+`DRELAY_DODGE_FARM_IGNORE=<name>` sets it without a rebuild.
+
+**14.2 It stood too close.** `FarmStopRadius` shipped 1.5 -- one and a quarter units of emitter disc
+plus a quarter of slack -- and the run ended holding a target at **0.85 units**, inside a mob's own
+contact reach. The operator's request is three tiles, and the shipped value is now **3.0**: still
+well inside `FarmEngageRadius` (8), still clear of the emitter disc, and the character stops there
+instead of walking into the mob. `DRELAY_DODGE_FARM_STOP` moves it. The `farmerclose` fixture moved
+its enemy from three units to six so that W3 still measures closing AND settling, and `farmerdodge`'s
+target moved onto the stop radius so the bullet still arrives at the same relative position.
+
+**14.3 It never went to a portal, because nothing asked it to.** The state machine of §5.1 is row 5
+and is still not built, but the half the operator watched fail is the half a farmer needs after every
+death: the character respawns in the Tavern and stands there. That half is now in:
+
+- **`PortalReader`** (public, a reader and not a policy, like `EnemyReader`) resolves
+  `World.Activatables`, the `Portal` subclass, `Node.Position.X/Y` and `ActivatableObject.Title`, and
+  samples the frame's portals into `DodgeSnapshot.Portals` -- in a safe world only, because that is
+  the only place the lobby pilot uses them;
+- **the private module's lobby branch** picks the nearest **realm entrance** -- the portal whose
+  title starts with `[US]`/`[EU]`, which is what the 2026-10-18 session measured; `Storage Vault` and
+  `Guild Hall` do not -- publishes its `Position` as the point goal, and calls
+  `PortalReader.TryActivate`, which is `Portal.Activate(0)`: the client's own entry point, warmed at
+  arm time and running the client's own locked/cooldown gates. It retries every ~3 s until the world
+  changes;
+- **`DodgeSnapshot.GoalIsPortal`** is the one thing the arrival policy needs to know: a portal must
+  be walked all the way onto (`FarmPortalRadius`, 1.5) rather than stopped three units short, so the
+  solver's `stand` gate reads that radius for this goal and `FarmStopRadius` for a mob.
+
+**What this still is not.** The §5.1 machine's other states -- `IN_DUNGEON`, the whitelist, the
+clear-and-advance loop, the explicit exit -- are rows 7-9 and remain unbuilt. The lobby branch is
+enter-only; the way back out of a dungeon is still the client's own nexus (§8.4), which is the
+measured behaviour and needs no code. And **none of §14's three changes has had a live run**: the
+portal reader is reflection against a live `World.Activatables` that no offline fixture can hold.
+The run's log will say which half resolved -- `portals: World.Activatables -> Portal | x/y Position |
+title Title | enter Activate(0)`, or the named failure -- and the farm line carries
+`lobby=<attempts>/<activations> portal='<title>'`.
+
+**14.4 The second live session: a portal it would not approach, a haven it would not leave**
+
+`20261018-030319-p26800`, and every one of §14.1–14.3's changes is in its log. Two of the operator's
+observations are the same defect seen twice -- **no target means no goal, and no goal means a
+character that stands**.
+
+**(a) The portal approach was the portal's own tile.** The farm line proved the pilot ran
+(`lobby=5/5`, `portal='[US] Foley (45)'`), and the world log shows the character walking to
+(123.6, 105.6) and entering. What it also shows is the character arriving on the portal and then
+standing on it for up to 150 frames. The operator's diagnosis was the fix: *"it could maybe be solved
+by trying to pathfind to a coordinate near the portal"* -- a portal is an object on a tile, and a
+path search whose target cell is occupied refuses the search, which from the outside is a farmer that
+will not walk at a portal it can see. **The goal is now a point `FarmPortalRadius` short of the
+portal on the player's side, recomputed every frame from the portal's current position** -- which is
+the second half of the operator's sentence, *"since they slightly change position every now and
+then"*. The activation test stays measured against the portal itself, so arrival and entry agree.
+
+**(b) The safe haven, and the empty screen, are `TRAVEL`.** After entering a realm the character
+spawns inside a small enclosure with no enemies in it; between packs the screen is empty because the
+farmer killed everything. Both frames published nothing, and the solver's `stand` early-out answered
+`StandSafe` -- the correct answer to "nothing to do". The farmer now has a **roam waypoint**:
+`FarmTravelRadius` (25 units) away, south first (the operator's own "bottom part of the map is the
+best place to start farming"), then the other cardinals and the diagonals, replaced when reached,
+when it is not reached in five seconds, or when a teleport says the map changed. It is published with
+`DodgeSnapshot.GoalKeepWalking`, which suppresses `stand` exactly as a route's `GoalFromRoute` does,
+so the character keeps walking instead of stopping three units short and calling it arrival. The
+25-unit step is deliberate: the planner's window is 64 units, so a short waypoint leaves room to
+route around the haven's wall rather than aiming straight into it.
+
+`--scenario farmertravel` is the fixture: an empty world, 600 frames, two or more waypoints, and
+**no `StandSafe` frame at all** -- the assertion that the goal, not the dodge's early-out, is what
+moves the character. W1 was rewidened for it: a farm goal no longer implies a target, so W1 compares
+target frames against frames where a target AND the farmer's point agreed, and allows the goal-source
+count to exceed them by the travel frames.
+
+**(c) The real answer is a route, and it is a handoff.** The operator's instruction is to record a
+route and to defer it until the proxy↔hook bridge exists. `HANDOFF-ROUTE-BRIDGE.md` is that handoff:
+what §7 already built, the four commands the bridge needs (`route.record.start/stop`,
+`route.play/stop`), why the hook should keep owning the file, and the one open measurement (what a
+recorder should do with a teleport). The roam waypoint is the stopgap and is named as one wherever it
+appears.
+
+**14.5 The third session: the portal's own tile, a 20-unit range, and critters as a rule**
+
+`20261018-031916-p21156`. Two of §14.4's changes were in it and one of them was wrong.
+
+**(a) The portal approach double-counted its own radius.** §14.4 published a point
+`FarmPortalRadius` short of the portal "on the player's side" to give the path search a walkable
+target. But the arrival policy then used `FarmPortalRadius` as the distance at which it stops, so the
+character stopped `FarmPortalRadius` + `FarmPortalRadius` = 3.0 units short — and the run's world log
+has it holding at **2.7 units** from `[US] Orion (37)` for a hundred and fifty frames, entering only
+when the operator walked it the rest of the way. The operator's sentence — *"it never walks to a
+portal, I did that manually. But it does enter"* — is exactly that arithmetic.
+
+The fix puts each number back where it belongs: **the goal is the portal's own position, and the
+`PathPlanner` snaps a POINT goal whose cell is not walkable to the nearest walkable cell within three
+cells**, instead of returning `NoTarget`. That is the operator's original suggestion — "pathfind to a
+coordinate near the portal" — made generic, and it also helps a route waypoint that lands on a rock.
+The goal point itself is untouched, so the score terms, the distance and the arrival policy still see
+the portal; only the search's end cell moves.
+
+**(b) The acquisition range was four paces.** `FarmEngageRadius` shipped 8 units on a 2698x2634
+realm — the operator's *"the range it paths to enemies are quite small, can it be increased?"*. It is
+now **20**, still inside the planner's 64-unit window so the whole approach is visible to the search,
+and still a separate number from the client's weapon range (which decides what can be SHOT, not what
+is worth walking to). `DRELAY_DODGE_FARM_RANGE` moves it, and `farmerorbit` pins 8 for itself because
+its characterisation is "the character leaves the acquisition radius", which is a different walk at
+20.
+
+**(c) Critters are a RULE, not a name list.** §14.1's `critter` substring did not catch them. The
+operator names crabs, ducks and *"different kinds"*, and the defining fact is mechanical:
+*"they're not shootable or damageable as normal enemies, the only way to subdue them is to walk on
+top of them"*. A research pass over the decompiled client found the structure behind that sentence,
+and one of its findings killed the first guess:
+
+- **`GameObjectData.Class` is not a gameplay category — it is the .NET TYPE NAME of the data class.**
+  `GameObject.Create` selects the live type with `_types.TryGetValue(data.Class, ...)` where the keys
+  are `Type.Name`, and `Enemy` has exactly one subclass: `EnemyFlat`. So every object in
+  `World.GetEnemies()` has `Class` ∈ {`"Enemy"`, `"EnemyFlat"`}, and no substring like `critter` can
+  ever match it (it can only match `Data.Name`).
+- **`EnemyFlat : Enemy` is the ground creature.** No shadow, `GlowColor = Transparent`, a
+  ground-flat `SetPosition`, and it is added to the world's flat-ground layer instead of the y-sorted
+  object layer — it is drawn *under* the player, which is what "walk on top of it" looks like. It has
+  a dedicated empty data class, `EnemyFlatData : EnemyData`.
+- **`EntityData.NoDie` is parsed and never read** anywhere in 1897 decompiled files. That is the
+  signature of a flag enforced on the server: projectiles are applied locally and reported with
+  `GmHit`, and the server decides whether they count. It is the only per-object bit in the data that
+  says "this does not die to damage".
+- **`Effects.Unhittable()` is not the same predicate as "not shootable".** The client's projectile
+  hit test skips only `Npc` and two status-effect ids, while `Unhittable()` ORs three — so one of its
+  three does not stop a bullet. Client-side, any non-NPC non-invulnerable enemy eats bullets and
+  shows damage numbers; a critter's immunity *must* be server-authoritative. The aimbot's own
+  refusal is a third thing again: `AimbotSystem.GetEnemyPriority(enemy) == 0` for dead/NPC, for a
+  non-`EnemyData`, and for an empty or unrecognised `EnemyData.Exp` — which is the likeliest reason
+  the operator sees the aimbot ignore them, and it is an *allowlist of twelve `Exp` values*, so it
+  would also drop real mobs and is not used.
+
+So the farmer's filter is now two data rules plus the name list:
+
+- `Data.Class == "EnemyFlat"` — structural, covers every kind the client renders as a ground
+  creature;
+- `Data.NoDie == true` — the server-side flag, inferred rather than proven;
+- `Effects.Unhittable()` — kept, because a phase-invulnerable boss is not a farm target while it is
+  invulnerable (and the flag is re-read every frame, so it returns when the phase ends);
+- the name list (`critter,crab,duck`) stays as a belt for anything damageable and still unwanted.
+
+`EnemyReader` carries `Class`, `NoDie` and `Unhittable` on `FarmTarget`, the farm line prints the
+held target's `class='…' nodie=…` and counts the rule separately (`critters=` beside
+`unhittable=`), and the arm-time log names every member the two halves resolved:
+
+```
+farm filter: name GameObjectData.Name / GameObjectData.Class / EntityData.NoDie | cannot-be-damaged StatusEffects.Unhittable()
+```
+
+**`--scenario farmerignore` is the fixture and the two ignored targets are the two rules**: a `Crab`
+whose class is `EnemyFlat`, and a `Duck` with `NoDie`; the chosen one is an ordinary `Slime`.
+W1d fails if either rule regresses.
+
+**What one live session settles.** The rule is a *category* test, not a proven identity for these
+particular creatures (confidence ≈ 0.7 that crabs and ducks are `EnemyFlat`). The farm line is the
+measurement: run `--autofarm`, walk over a crab, and `class='…'` says it outright. `EnemyFlat`
+confirms it; `Enemy` refutes it and points at `nodie=true`, and if both are false the answer is the
+aimbot's `GetEnemyPriority` — which the reader does not resolve today and would need a new accessor.
+
+**And the two lines are separate lines now.** The farm line had reached the 256-byte truncation
+edge with the target name and the lobby/travel counters on it, and the tail it would have lost is
+exactly the part a session that never left the spawn needs. `PHASE 3 DODGE FARM` keeps the target
+numbers; `PHASE 3 DODGE PILOT` carries `lobby=`, `portal=` and `travel=`.

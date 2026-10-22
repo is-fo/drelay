@@ -860,9 +860,28 @@ DWORD WINAPI WatcherThread(LPVOID) {
     //    consume CPU: the bridge is Phase 4 and until then there is nothing to
     //    wait for but shutdown.
     uint32_t idlePatchPolls = 0;
+    uint32_t tripsReported = 0;
     for (;;) {
         if (InterlockedCompareExchange(&g_shutdownRequested, 0, 0) != 0) {
             break;
+        }
+        // THE CET HIJACK TRIPS ARE LOGGED FROM HERE, AND ONLY FROM HERE.
+        //
+        // The reporter counts them (DrelayHijackTripCount) and writes no report,
+        // because writing one from the exception handler is what used to kill the
+        // process -- see the comment above STATUS_RETURN_ADDRESS_HIJACK_ATTEMPT in
+        // DrelayCrash.cpp.  A trip is the runtime suspending a managed thread for a
+        // collection, so the count is a measure of collection pressure: it is the
+        // number that explains an "autofarm dies quickly" run without a crash.txt.
+        // Logged once per run, because a busy run trips repeatedly and the ring
+        // buffer in hook.log is small.
+        const uint32_t trips = DrelayHijackTripCount();
+        if (trips != 0 && tripsReported == 0) {
+            DrLog(DRLOG_INFO, "CET hijack trip observed (%u so far): the runtime suspended a managed "
+                              "thread for a collection -- routine, passed straight through, and NOT a "
+                              "crash. No crash.txt is written for it",
+                  trips);
+            tripsReported = trips;
         }
         // THE PROBE STILL RUNS HERE, AFTER THE EVIDENCE HAS BEEN WRITTEN, AND THAT
         // IS NOT AN OVERSIGHT.
@@ -900,6 +919,7 @@ DWORD WINAPI WatcherThread(LPVOID) {
         Sleep(500);
     }
 
+    DrLog(DRLOG_INFO, "CET hijack trips in this run: %u", DrelayHijackTripCount());
     DrLog(DRLOG_INFO, "watcher thread exiting");
     DrLogFlushNow();
     return 0;
@@ -1011,12 +1031,22 @@ __declspec(dllexport) int __cdecl DrelayHook_PeReadMvid(const wchar_t* path,
 
 } // extern "C"
 
-BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID) {
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         // The loader lock is held here.  Everything DllMain is allowed to do is
         // the line below, and nothing else belongs here -- the work is in
         // DrelayHook_Init, which the injector calls afterwards.
         DisableThreadLibraryCalls(module);
+    }
+    if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
+        // AN EXPLICIT `FreeLibrary`, AND NOT PROCESS EXIT.  `reserved` is non-null
+        // when the process is terminating, and there is nothing to unregister on
+        // the way down -- the game is that case and never reaches this branch.  On
+        // a real unload the crash reporter's handler addresses are about to become
+        // unmapped memory that ntdll still holds, so it has to be removed first;
+        // `Test-HookAbi.ps1` is the caller that found this (the offline suite used
+        // to die with 0xC0000409 the moment that test finished).
+        drelay::DrelayDetachCrashReporter();
     }
     return TRUE;
 }

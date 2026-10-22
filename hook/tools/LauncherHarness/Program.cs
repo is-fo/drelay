@@ -13,6 +13,9 @@
 //   C5  a zero-argument run with redirected input never pauses
 //   C6  the written template contains no test-harness key
 //   C7  every config field has a flag, and every user-facing flag a field
+//   C8  the pinned record carries what discovery needs
+//   C9  the world log's launch surface sets all three names, and nothing when it is off
+//   C10 the autofarm switch turns on the whole loop, and only that switch writes DRELAY_DODGE_FARM
 //
 // plus the boundary cases section 11 asks for by step.  Each check prints one line; a failure
 // prints what it expected and what it found, and the process exits 1.
@@ -110,6 +113,8 @@ namespace Drelay.LauncherHarness
                 new KeyValuePair<string, Action>("c6 the first-run template", C6),
                 new KeyValuePair<string, Action>("c7 config fields and flags, both directions", C7),
                 new KeyValuePair<string, Action>("c8 the pinned record discovery needs", C8),
+                new KeyValuePair<string, Action>("c9 the world log's launch surface", C9),
+                new KeyValuePair<string, Action>("c10 the autofarm switch", C10),
                 new KeyValuePair<string, Action>("r1 the config reader's boundaries", R1),
                 new KeyValuePair<string, Action>("r2 the command line's boundaries", R2),
             };
@@ -189,7 +194,7 @@ namespace Drelay.LauncherHarness
         private static void Usage()
         {            Console.WriteLine(@"LauncherHarness -- the launcher's configuration, offline.
 
-  --check NAME     run only the checks whose name starts with NAME (c1..c8, r1, r2)
+  --check NAME     run only the checks whose name starts with NAME (c1..c10, r1, r2)
   --source PATH    Program.cs, so C5 can assert Main's single pause is behind FirstRun.ShouldPause
   --known-build PATH  hook/known-build.json, so C8 can assert the record carries the app id and
                       the OpenGL assembly size that discovery names the variant with
@@ -345,6 +350,24 @@ namespace Drelay.LauncherHarness
             return Get(variables, name) != null;
         }
 
+        /// <summary>
+        /// One entry per name, which is the environment block's own documented rule.
+        ///
+        /// IT IS AN INVARIANT RATHER THAN A STYLE: a block that names one variable twice has a
+        /// meaning that depends on how the child's runtime resolves duplicates. Two code paths used
+        /// to produce exactly that (`--autoaim` wrote `DRELAY_HOOK_FRAME_REPLACEMENT` beside the
+        /// block that already wrote it for the implied `FrameReplacement`), which is why the builder
+        /// now collapses them and this check exists to keep it that way.
+        /// </summary>
+        private static void ExpectUnique(List<KeyValuePair<string, string>> variables, string what)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var pair in variables)
+            {
+                Expect(seen.Add(pair.Key), what + ": '" + pair.Key + "' appears more than once");
+            }
+        }
+
         // ------------------------------------------------------------------
         // the tables
         // ------------------------------------------------------------------
@@ -360,6 +383,7 @@ namespace Drelay.LauncherHarness
             ("AutoAim", "DRELAY_AIM_MODE"),
             ("Dodge.Enabled", "DRELAY_DODGE"),
             ("Dodge.Act", "DRELAY_DODGE_ACT"),
+            ("Farm.Enabled", "DRELAY_DODGE_FARM"),
             ("Dodge.DecisionDisc", "DRELAY_DODGE_DECISION_DISC"),
             ("Dodge.WindowSeconds", "DRELAY_DODGE_WINDOW_S"),
             ("CollectDelayMs", "DRELAY_HOOK_COLLECT_DELAY_MS"),
@@ -383,6 +407,7 @@ namespace Drelay.LauncherHarness
             ("--autoaim", "closest"),
             ("--dodge", null),
             ("--dodge-act", null),
+            ("--autofarm", null),
             ("--dodge-disc", "2"),
             ("--dodge-window", "1"),
             ("--collect-delay", "1"),
@@ -406,6 +431,7 @@ namespace Drelay.LauncherHarness
   ""GamePath"": ""C:\\cfg-game"",
   ""AutoAim"": ""closest"",
   ""Dodge"": { ""Enabled"": true, ""Act"": true, ""DecisionDisc"": 2.5, ""WindowSeconds"": 0.25 },
+  ""Farm"": { ""Enabled"": true },
   ""CollectDelayMs"": 111,
   ""DiscoveryWindowMs"": 222,
   ""ResolveDelayMs"": 33,
@@ -507,12 +533,14 @@ namespace Drelay.LauncherHarness
                 "DRELAY_HOOK_AIM_REPLACEMENT", "DRELAY_AIM_MODE", "DRELAY_DODGE", "DRELAY_DODGE_ACT",
                 "DRELAY_HOOK_MOVE_REPLACEMENT", "DRELAY_MOVE_STEER", "DRELAY_HOOK_TEST_TARGETS",
                 "DRELAY_HOOK_FULLTRACE", "DRELAY_TRACE", "DRELAY_FRAME_SENSOR", "DRELAY_HOOK_OFF",
+                "DRELAY_WORLDLOG", "DRELAY_WORLDLOG_EVERY", "DRELAY_DODGE_FARM",
                 "DOTNET_DbgEnableMiniDump",
             };
             foreach (string name in neverWritten)
             {
                 Expect(!Has(vars, name), "a field nobody set must reach the child as NOTHING: " + name);
             }
+            ExpectUnique(vars, "the child's environment");
 
             string[] alwaysWritten =
             {
@@ -534,6 +562,7 @@ namespace Drelay.LauncherHarness
             // Every field of the schema reaches the variable it claims to.
             var full = Resolve(Config(FullConfigJson()), Empty(), new FakeEnv());
             var fullVars = Env(full);
+            ExpectUnique(fullVars, "the environment for a config that sets every field");
             foreach (var row in FieldEnv)
             {
                 if (row.Env == null) { continue; }
@@ -550,6 +579,7 @@ namespace Drelay.LauncherHarness
             ExpectEqual("12345", Get(fullVars, "DRELAY_HOOK_TIMEOUT_MS"), "TimeoutMs");
             ExpectEqual("2.5", Get(fullVars, "DRELAY_DODGE_DECISION_DISC"), "Dodge.DecisionDisc");
             ExpectEqual("0.25", Get(fullVars, "DRELAY_DODGE_WINDOW_S"), "Dodge.WindowSeconds");
+            ExpectEqual("1", Get(fullVars, "DRELAY_DODGE_FARM"), "Farm.Enabled");
             ExpectEqual("1", Get(fullVars, "DOTNET_DbgEnableMiniDump"), "DbgDump");
 
             // The fields with no variable are still read, and land on the launcher.
@@ -818,8 +848,8 @@ namespace Drelay.LauncherHarness
             var expected = new List<string>
             {
                 "GamePath", "AutoAim", "Dodge", "Dodge.Enabled", "Dodge.Act", "Dodge.DecisionDisc",
-                "Dodge.WindowSeconds", "CollectDelayMs", "DiscoveryWindowMs", "LiveSeconds",
-                "PauseAfterRun",
+                "Dodge.WindowSeconds", "Farm", "Farm.Enabled", "CollectDelayMs",
+                "DiscoveryWindowMs", "LiveSeconds", "PauseAfterRun",
             };
             var actual = new List<string>(recognised);
             expected.Sort(StringComparer.Ordinal);
@@ -838,6 +868,11 @@ namespace Drelay.LauncherHarness
             Expect(settings.DodgeAct == true, "and acting, not only logging");
             Expect(settings.DodgeDisc == null, "the template must leave the disc window unset");
             Expect(settings.DodgeWindowSeconds == null, "and the floor unset");
+            // THE FARMER IS NAMED AND OFF. `PLAN-AUTOFARM.md` section 13: a double-click is not a
+            // request to farm, and the private module is not in every build anyway. The key is
+            // written so the switch is discoverable; the value must be false.
+            Expect(settings.AutoFarm == false,
+                   "the template must leave the auto-farmer OFF; a double-click is not a request to farm");
 
             // The timing knobs really are the compiled defaults, from the same fields the launcher
             // uses -- a default changed in Options without changing the template fails here.
@@ -900,11 +935,18 @@ namespace Drelay.LauncherHarness
             foreach (ConfigField field in ConfigFile.Schema)
             {
                 expected.Add(field.Key);
-                if (field.Key.StartsWith("Dodge.", StringComparison.Ordinal) && !expected.Contains("Dodge"))
+                int dot = field.Key.IndexOf('.');
+                if (dot > 0)
                 {
-                    // `Dodge` itself is recognised too, and it is one key however many children it
-                    // has: the reader records the parent once, when it opens the object.
-                    expected.Add("Dodge");
+                    // A grouped key's PARENT is recognised too, and it is one key however many
+                    // children it has: the reader records the object once, when it opens it. Both
+                    // `Dodge` and `Farm` are groups, which is why this is a rule rather than the
+                    // name of the one group that existed when the check was written.
+                    string parent = field.Key.Substring(0, dot);
+                    if (!expected.Contains(parent))
+                    {
+                        expected.Add(parent);
+                    }
                 }
             }
             var actual = new List<string>(recognised);
@@ -964,6 +1006,185 @@ namespace Drelay.LauncherHarness
                        "known-build.json must record game.steamAppId: discovery reads the app manifest with it");
                 Expect(appId.GetInt32() > 0, "steamAppId must be a real app id, not 0");
             }
+        }
+
+        // ------------------------------------------------------------------
+        // C9 -- the world log's launch surface
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// PLAN-AUTOFARM.md section 6's instrument, as the launcher publishes it.
+        ///
+        /// THE FAILURE THIS EXISTS TO PREVENT IS AN EMPTY FILE THAT LOOKS LIKE A QUIET GAME. The
+        /// hook's writer is called from the managed frame replacement's sensor path, so
+        /// `DRELAY_WORLDLOG=1` on its own resolves, writes a header and records no frame. The flag
+        /// therefore has to carry all three names, and the check asserts all three rather than the
+        /// one a reader would think to look at.
+        /// </summary>
+        private static void C9()
+        {
+            // NOTHING ASKED FOR: none of the three names reaches the child.
+            var off = Env(Resolve(Empty(), Cli("--game", @"C:\g"), new FakeEnv()));
+            foreach (string name in new[] { "DRELAY_WORLDLOG", "DRELAY_WORLDLOG_EVERY" })
+            {
+                Expect(!Has(off, name), "without --world-log the child must not be told " + name);
+            }
+
+            // THE FLAG: the switch, its two dependencies, and the frame replacement it implies.
+            Options log = Resolve(Empty(), Cli("--game", @"C:\g", "--world-log"), new FakeEnv());
+            Expect(log.WorldLog, "--world-log must reach Options");
+            Expect(log.FrameReplacement,
+                   "--world-log must imply the managed frame replacement: WorldLog.OnFrame is called "
+                   + "from that path and nothing else calls it");
+            var vars = Env(log);
+            ExpectUnique(vars, "the environment for --world-log");
+            ExpectEqual("1", Get(vars, "DRELAY_WORLDLOG"), "--world-log reaches the writer's switch");
+            ExpectEqual("1", Get(vars, "DRELAY_FRAME_SENSOR"),
+                        "--world-log reaches the sensor it is sampled on; without it the log records no frame");
+            ExpectEqual("1", Get(vars, "DRELAY_HOOK_FRAME_REPLACEMENT"),
+                        "--world-log reaches the entry point it is called from");
+            Expect(!Has(vars, "DRELAY_WORLDLOG_EVERY"),
+                   "a cadence nobody asked for must be absent, so the hook's own 30-frame default decides");
+
+            // THE CADENCE IMPLIES THE LOG, so one flag is enough to do one thing.
+            Options every = Resolve(Empty(), Cli("--game", @"C:\g", "--world-log-every", "120"), new FakeEnv());
+            Expect(every.WorldLog, "--world-log-every must imply --world-log rather than write nothing");
+            Expect(every.FrameReplacement, "and therefore the frame replacement too");
+            ExpectEqual("120", Get(Env(every), "DRELAY_WORLDLOG_EVERY"), "the cadence reaches the hook");
+
+            // THE EQUALS SPELLING, because a script is the most likely caller of a collection run.
+            Settings parsed;
+            List<string> gameArguments;
+            bool help;
+            string error;
+            Expect(CommandLine.TryParse(new[] { "--game", @"C:\g", "--world-log-every=60" },
+                                        out parsed, out gameArguments, out help, out error),
+                   "--world-log-every=N must parse: " + error);
+            Expect(parsed.WorldLogEvery == 60, "--world-log-every=60 carries 60");
+
+            // A CADENCE THE HOOK WOULD READ AS "NOT SET" IS REFUSED BY NAME.
+            foreach (string bad in new[] { "0", "-1", "abc" })
+            {
+                Expect(!CommandLine.TryParse(new[] { "--world-log-every", bad },
+                                             out parsed, out gameArguments, out help, out error),
+                       "--world-log-every " + bad + " must be refused");
+                Expect(error != null && error.Contains("--world-log-every"),
+                       "and must name the flag, got: " + error);
+            }
+
+            // A STALE SHELL VARIABLE IS DROPPED WHEN THE LAUNCHER WRITES ITS OWN, and the run gets
+            // one entry per name -- the rule the rest of the block follows.
+            var inherited = Env(log, "DRELAY_WORLDLOG=0", "DRELAY_WORLDLOG_EVERY=999");
+            ExpectUnique(inherited, "the environment for --world-log beside stale inherited names");
+            ExpectEqual("1", Get(inherited, "DRELAY_WORLDLOG"),
+                        "the launcher's own switch must replace an inherited one, not sit beside it");
+            Expect(!Has(inherited, "DRELAY_WORLDLOG_EVERY"),
+                   "and an inherited cadence must not silently time a run that asked for none");
+
+            // AND THE OPPOSITE: with no flag the operator's own variable is still theirs, because
+            // plain `DRELAY_` names are passed through by design.
+            var passed = Env(Resolve(Empty(), Cli("--game", @"C:\g"), new FakeEnv()), "DRELAY_WORLDLOG=1");
+            ExpectEqual("1", Get(passed, "DRELAY_WORLDLOG"),
+                        "a run without --world-log must not strip the operator's own DRELAY_ name");
+        }
+
+        // ------------------------------------------------------------------
+        // C10 -- the autofarm switch
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// `PLAN-AUTOFARM.md` section 13, and the operator's request: one switch turns the whole
+        /// loop on, from the command line or from the configuration file.
+        ///
+        /// THE CHECK IS ABOUT THE IMPLICATIONS, because the flag itself is trivial and the parts
+        /// are not: a farmer that publishes a goal nobody reads (no dodge), or that cannot steer
+        /// (no live actuator), or that walks at a mob while the client aims somewhere else (no aim
+        /// mode) is the half-switched-on failure this project keeps paying sessions for.
+        /// </summary>
+        private static void C10()
+        {
+            // NOTHING ASKED FOR: nothing acts and the child is not told.
+            var off = Resolve(Empty(), Cli("--game", @"C:\g"), new FakeEnv());
+            Expect(!off.AutoFarm, "the farmer must be off unless it was asked for");
+            Expect(!Has(Env(off), "DRELAY_DODGE_FARM"),
+                   "a run without --autofarm must not write the farmer's switch");
+
+            // THE FLAG, AND EVERYTHING IT IMPLIES.
+            Options farm = Resolve(Empty(), Cli("--game", @"C:\g", "--autofarm"), new FakeEnv());
+            Expect(farm.AutoFarm, "--autofarm must reach Options");
+            Expect(farm.Dodge,
+                   "--autofarm must imply the dodge: the farmer publishes a point goal that only the solver reads");
+            Expect(farm.DodgeAct,
+                   "--autofarm must imply the live actuator, or the character never walks");
+            ExpectEqual("dodge", farm.MoveSteer,
+                        "--autofarm must steer through the one actuator --dodge-act names, not a second one");
+            ExpectEqual("closest", farm.AutoAim,
+                        "--autofarm must choose an aim mode when no other source did, or the client shoots somewhere else");
+            Expect(farm.FrameReplacement,
+                   "--autofarm must imply the frame replacement, through the dodge and the aim module");
+
+            var vars = Env(farm);
+            ExpectUnique(vars, "the environment for --autofarm");
+            ExpectEqual("1", Get(vars, "DRELAY_DODGE_FARM"),
+                        "--autofarm reaches the farmer's own switch (`DodgeConfig.FarmMode`)");
+            ExpectEqual("1", Get(vars, "DRELAY_DODGE"), "--autofarm reaches the solver");
+            ExpectEqual("1", Get(vars, "DRELAY_DODGE_ACT"), "--autofarm reaches the adapter's act gate");
+            ExpectEqual("dodge", Get(vars, "DRELAY_MOVE_STEER"), "--autofarm reaches the pilot's mode");
+            ExpectEqual("closest", Get(vars, "DRELAY_AIM_MODE"), "--autofarm reaches the aim module");
+
+            // THE OPERATOR'S AIM MODE WINS. The farmer needs *an* aim mode, not *its* aim mode.
+            Options hp = Resolve(Empty(), Cli("--game", @"C:\g", "--autofarm", "--autoaim", "highesthp"),
+                                 new FakeEnv());
+            ExpectEqual("highesthp", hp.AutoAim, "an explicit --autoaim must survive --autofarm");
+            ExpectEqual("highesthp", Get(Env(hp), "DRELAY_AIM_MODE"),
+                        "and must be the mode the child actually gets");
+
+            // THE CONFIG FILE IS THE SAME RUN, which is the point of putting the implication in
+            // `ApplyImplications` rather than in the parser.
+            Options fromConfig = Resolve(
+                Config(@"{ ""GamePath"": ""C:\\g"", ""Farm"": { ""Enabled"": true } }"), Empty(), new FakeEnv());
+            Expect(fromConfig.AutoFarm, "Farm.Enabled must reach Options");
+            Expect(fromConfig.Dodge && fromConfig.DodgeAct,
+                   "Farm.Enabled must imply the dodge and its actuator exactly as --autofarm does");
+            ExpectEqual("closest", fromConfig.AutoAim, "and the same default aim mode");
+            ExpectEqual("1", Get(Env(fromConfig), "DRELAY_DODGE_FARM"),
+                        "Farm.Enabled reaches the farmer's own switch");
+
+            // FALSE IS "OFF" AND NOTHING ELSE. It must not re-enable anything as a side effect.
+            Options configOff = Resolve(
+                Config(@"{ ""GamePath"": ""C:\\g"", ""Farm"": { ""Enabled"": false } }"),
+                Empty(), new FakeEnv());
+            Expect(!configOff.AutoFarm, "Farm.Enabled false turns the farmer off");
+            Expect(!configOff.DodgeAct, "and must not leave the dodge's actuator on");
+
+            // A STALE SHELL VARIABLE IS REPLACED WHEN THE LAUNCHER WRITES ITS OWN...
+            var inherited = Env(farm, "DRELAY_DODGE_FARM=0");
+            ExpectUnique(inherited, "the environment for --autofarm beside a stale inherited switch");
+            ExpectEqual("1", Get(inherited, "DRELAY_DODGE_FARM"),
+                        "the launcher's own switch must replace an inherited one");
+            // ...AND LEFT ALONE WHEN IT DOES NOT, because plain `DRELAY_` names are the operator's.
+            ExpectEqual("1", Get(Env(off, "DRELAY_DODGE_FARM=1"), "DRELAY_DODGE_FARM"),
+                        "a run without --autofarm must not strip the operator's own DRELAY_ name");
+
+            // TWO PILOTS TYPED TOGETHER IS A MISTAKE AND IS REFUSED, naming both.
+            ResolveResult both = ResolveRaw(
+                Empty(), Cli("--game", @"C:\g", "--autofarm", "--move-steer", "hold:90:1000"), new FakeEnv());
+            Expect(both.Outcome == ResolveOutcome.Invalid,
+                   "--autofarm with --move-steer must be refused, not silently resolved");
+            Expect(both.Error != null && both.Error.Contains("--autofarm") && both.Error.Contains("--move-steer"),
+                   "and the refusal must name both flags, got: " + both.Error);
+
+            // THE FILE YIELDS TO THE COMMAND LINE, with a notice -- the same rule as `Dodge.Act`.
+            ResolveResult yielded = ResolveRaw(
+                Config(@"{ ""GamePath"": ""C:\\g"", ""Farm"": { ""Enabled"": true } }"),
+                Cli("--move-steer", "hold:90:1000"), new FakeEnv());
+            Expect(yielded.Outcome == ResolveOutcome.Ready,
+                   "Farm.Enabled in the file beside --move-steer must be a run, got: " + yielded.Error);
+            Expect(!yielded.Options.AutoFarm && !yielded.Options.DodgeAct,
+                   "the command line's split from the file's farm: the file's actuator request is cleared");
+            ExpectEqual("hold:90:1000", yielded.Options.MoveSteer, "and --move-steer is the pilot");
+            Expect(yielded.Notices.Count > 0 && yielded.Notices[0].Contains("move-steer"),
+                   "the run must say why the file's farm is off");
         }
 
         // ------------------------------------------------------------------

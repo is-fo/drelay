@@ -1634,6 +1634,16 @@ namespace Drelay.Bootstrap
                 TraceRecorder.OnFrame(SensorRead.LiveObjects, SensorRead.LiveKeys,
                                       (int)SensorRead.Frame, TrajectorySampler.LastFrameSeconds());
 
+                // THE WORLD LOG, WHICH IS THE OPERATOR'S COLLECTION INSTRUMENT AND NOT PART OF THE
+                // DECISION (`PLAN-AUTOFARM.md` section 6). It runs here, on the frame tick, because
+                // that is where the world is freshest -- and it runs AFTER the trace recorder and
+                // BEFORE the adapter for a reason that is about the file and not about the frame: it
+                // reads the world, the map, the portals and the enemy list, none of which the
+                // adapter's snapshot is allowed to carry (the solver is a pure function of plain
+                // data), so it needs the live objects rather than the snapshot. It is off by default
+                // and returns on one boolean when it is off.
+                WorldLog.OnFrame((int)SensorRead.Frame, (float)Clock.Elapsed.TotalMilliseconds);
+
                 // DELIVERABLE 3.3'S DECIDING END, AND IT RUNS HERE FOR THE REASON SECTION 4 OF
                 // PHASE3-HANDOFF.md GIVES: the frame tick is where the world is freshest and where
                 // the snapshot belongs. It borrows the sensor's own projectile list for the same
@@ -1646,6 +1656,15 @@ namespace Drelay.Bootstrap
                                      (int)SensorRead.Frame);
 
                 TrajectorySampler.ReleaseTrajectories();
+
+                // THE ROUTE RECORDER, WHICH IS SECTION 7.1 AND RUNS AFTER THE ADAPTER. It reads the
+                // player's position and, every twenty samples, rewrites `routes/<name>.json` -- and it
+                // runs AFTER `DodgeAdapter.OnFrame` rather than before it so that the grid it snaps
+                // waypoints against is the current frame's window rather than the last one. One
+                // boolean when neither route switch is set.
+                RouteRuntime.OnFrame(DodgeAdapter.CurrentConfig, (int)SensorRead.Frame,
+                                     (float)Clock.Elapsed.TotalMilliseconds,
+                                     DodgeAdapter.CurrentGrid);
 
                 // THE PHASE'S FOUR NUMBERS, PERIODICALLY RATHER THAN AT AN END THIS CODE
                 // CANNOT SEE.  The replacement does not know when the recording window
@@ -2412,6 +2431,16 @@ namespace Drelay.Bootstrap
                                            + why + " -- no trace will be written");
                     }
                 }
+
+                // THE WORLD LOG IS NOT RESOLVED HERE, AND THE ORDER IS STILL THE REASON. It samples
+                // the enemy list through `EnemyReader`, whose `Resolve`/`ResolveWorld` are called
+                // from `DodgeAdapter.Resolve` further down. `WorldLog.Resolve` can now resolve that
+                // reader for itself when it has to -- a collection run with the dodge off used to
+                // write a file with no enemy rows, because only the adapter ever resolved it -- but
+                // resolving after the adapter means the log reports the reader the dodge already
+                // uses rather than standing up a second one. It is still outside the trace
+                // recorder's `else if` chain, for the reason recorded there: this is evidence, and
+                // the decision must not gate it. See the resolve after the adapter below.
             }
             catch (Exception ex)
             {
@@ -2441,6 +2470,46 @@ namespace Drelay.Bootstrap
                                            + why + " -- the sensor, the trace and the actuator are "
                                            + "unaffected, but no live decision will be made");
                     }
+                }
+
+                // THE WORLD LOG IS RESOLVED HERE RATHER THAN BESIDE THE TRACE RECORDER, AND THE
+                // ORDER STILL MATTERS. It samples the enemy list through `EnemyReader`, and
+                // `EnemyReader.Resolve`/`ResolveWorld` are called from `DodgeAdapter.Resolve`; the
+                // log can now provide that reader itself (see `WorldLog.Resolve`), so the order is
+                // what keeps it reporting the reader the dodge already uses instead of standing up a
+                // second one. It is still outside the trace recorder's `else if` chain, for the
+                // reason recorded there: this is evidence and the decision must not gate it.
+                if (WorldLog.Resolve(game, Environment.GetEnvironmentVariable("DRELAY_HOOK_RUNDIR")))
+                {
+                    AppendLog("INFO", WorldLog.Describe());
+                }
+                else
+                {
+                    string why = WorldLog.UnresolvedReason;
+                    if (why != null && why.IndexOf("DRELAY_WORLDLOG", StringComparison.Ordinal) >= 0)
+                    {
+                        AppendLog("INFO", "world log idle: " + why);
+                    }
+                    else
+                    {
+                        AppendLog("ERROR", "the world log was asked for and is NOT available: "
+                                           + why + " -- no worlds.jsonl will be written");
+                    }
+                }
+
+                // AND THE ROUTES, FOR THE SAME REASON AND AT THE SAME PLACE. Section 7's recorder and
+                // follower need the config the adapter just resolved and the routes directory, and
+                // neither exists before this point.
+                if (RouteRuntime.Resolve(game, DodgeAdapter.CurrentConfig,
+                                        Environment.GetEnvironmentVariable("DRELAY_HOOK_RUNDIR")))
+                {
+                    AppendLog("INFO", RouteRuntime.Describe());
+                }
+                else
+                {
+                    AppendLog("ERROR", "the route runtime is NOT available: "
+                                       + RouteRuntime.UnresolvedReason
+                                       + " -- no route will be recorded and none will be followed");
                 }
             }
             catch (Exception ex)

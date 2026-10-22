@@ -264,6 +264,110 @@ namespace Drelay.Bootstrap
     }
 
     /// <summary>
+    /// One enemy the FARMER may walk to, as the sensor saw it. `PLAN-AUTOFARM.md` section 4.2.
+    ///
+    /// IT IS A SECOND, SEPARATE LIST FROM <see cref="DodgeSnapshot.Bodies"/>, AND THE SEPARATION IS
+    /// NOT TIDINESS. The two lists answer different questions and are culled by different radii:
+    /// the body list is rule 7's input and is cut at `EnemyCullRadius` (12 units, about twice the
+    /// longest horizon the planner reasons over), while the farmer's list is cut at
+    /// `FarmEngageRadius` -- how far away an enemy is still worth walking to. Sharing one list
+    /// would make `DRELAY_DODGE_ENEMIES=0` silently disable the farmer and would make the body
+    /// cull a hard limit on the farmer's reach; and because `EnemyBodies` is the switch whose whole
+    /// job is to restore today's decisions byte for byte (the T9 doctrine), nothing the farmer
+    /// needs may be smuggled into it.
+    ///
+    /// IT CARRIES A `GameId` AND THE BODY LIST DOES NOT, because the farmer's first requirement is
+    /// *stickiness*: "keep the current target while it is alive and in range" is a statement about
+    /// an IDENTITY, and a target remembered by position is a target that is lost the moment it
+    /// moves. `World.GetEnemies()` may return the array in any order, so an index is not an
+    /// identity either. `GameId` is the same field the sampler's own `ThreatKey` uses, resolved the
+    /// same way (`FieldLookup.Find`, which walks the hierarchy because it lives on `GameObject`).
+    /// </summary>
+    public struct FarmTarget
+    {
+        /// <summary>`GameObject.GameId` -- the identity the stickiness rule holds on to.</summary>
+        public int GameId;
+
+        public float X;
+        public float Y;
+
+        /// <summary>
+        /// `GameObjectData.Name` and `.Class`, read so the farmer can IGNORE a kind of enemy rather
+        /// than walk at everything `GetEnemies()` calls an enemy.
+        ///
+        /// THE OPERATOR'S FIRST LIVE FARM SESSION IS WHY: the character walked at the realm's ambient
+        /// critters, which die when it walks over them, and spent its time switching between them.
+        /// Nothing geometric tells a critter from a mob -- they are the same `Enemy` with the same
+        /// fields -- so the only honest discriminator is what the client calls them. See
+        /// `DodgeConfig.FarmIgnore`.
+        ///
+        /// THEY ARE STRING REFERENCES THE CLIENT ALREADY HOLDS (`Data.Name`, `Data.Class`), so the
+        /// per-frame cost is one indirect read each and no allocation. Null when the reader could not
+        /// resolve `Data`, which makes the ignore list a no-op rather than a wrong filter.
+        /// </summary>
+        public string Name;
+
+        public string Class;
+
+        /// <summary>
+        /// `Entity.Effects.Unhittable()` -- the client's own "this cannot be damaged" predicate, the
+        /// same one `AutoAim` already resolves and uses to exclude a target.
+        ///
+        /// THE OPERATOR'S THIRD SESSION IS WHY IT IS HERE: the CRITTERS they described -- crabs,
+        /// ducks, several kinds -- are *"not shootable or damageable as normal enemies, the only way
+        /// to subdue them is to walk on top of them"*. That is precisely the class of object the
+        /// client's own `Unhittable()` marks (Invincible, Invulnerable, Cutscene), and it is a rule
+        /// rather than a name list: it covers every kind, including the ones nobody has seen yet.
+        ///
+        /// It is OPTIONAL, like every other field the reader resolves: a build where `Effects` moved
+        /// leaves it false and the farmer keeps its old behaviour (which is to walk at everything).
+        /// </summary>
+        public bool Unhittable;
+
+        /// <summary>
+        /// `EntityData.NoDie` -- the server's own "normal damage cannot kill this" flag, and the
+        /// second half of the CRITTER rule.
+        ///
+        /// THE CLIENT PARSES IT AND NEVER READS IT (it appears only in `EntityData.Parse`), which is
+        /// exactly the signature of a flag whose meaning is enforced server-side: projectiles are
+        /// applied locally and reported with `GmHit`, and the server decides whether they count. So a
+        /// critter that cannot be shot can be flagged here without the client ever consulting it.
+        /// That makes the flag INFERRED rather than proven -- see `PLAN-AUTOFARM.md` section 14.5 --
+        /// but it is the only per-object bit in the data that says "this does not die to damage".
+        /// </summary>
+        public bool NoDie;
+    }
+
+    /// <summary>
+    /// One portal the LOBBY PILOT may walk to (`PLAN-AUTOFARM.md` section 5.2), as the sensor saw it.
+    ///
+    /// IT CARRIES THE LIVE OBJECT BECAUSE ENTERING IS A CLIENT CALL, not a coordinate. Section 5.2's
+    /// preferred path is `Portal.Activate(0)` -- the function the input handler calls -- and that
+    /// needs the instance. The position is what the walk uses; the title is what chooses between the
+    /// realm entrance and the Vault/Guild Hall.
+    ///
+    /// A REFERENCE IN A SNAPSHOT IS DELIBERATE HERE: the portals are long-lived objects owned by the
+    /// world, so this is not a copy of game state and cannot go stale inside a frame. It is cleared
+    /// every frame with the rest of the snapshot.
+    /// </summary>
+    public struct PortalTarget
+    {
+        public object Object;
+
+        public float X;
+        public float Y;
+
+        /// <summary>
+        /// `ActivatableObject.Title`. The measured realm entrances are `[US] Cronus (42)` and
+        /// `[EU] Ulysses (1)`; the Vault and Guild Hall portals are titled `Storage Vault` and
+        /// `Guild Hall`; dungeon portals are `<name>\nLV <n>`. So "starts with '['" is the realm
+        /// entrance rule the 2026-10-18 session measured, and it is a filter on a value the client
+        /// already displays rather than a guess at a destination id (§1: there is none).
+        /// </summary>
+        public string Title;
+    }
+
+    /// <summary>
     /// The client's own collision grid, windowed to what a 600 ms horizon can reach.
     ///
     /// THE WINDOW IS AN OPTIMISATION WITH A PRECISE MEANING. A real map's grid is
@@ -436,6 +540,91 @@ namespace Drelay.Bootstrap
         public readonly System.Collections.Generic.List<EntityBody> Bodies =
             new System.Collections.Generic.List<EntityBody>();
 
+        /// <summary>
+        /// The enemies the farmer may walk to. Empty is legal and is the switch's off position.
+        /// See <see cref="FarmTarget"/> for why this is not the body list.
+        /// </summary>
+        public readonly System.Collections.Generic.List<FarmTarget> FarmTargets =
+            new System.Collections.Generic.List<FarmTarget>();
+
+        /// <summary>
+        /// The portals in the current world, filled only when the farmer is on (`FarmMode`). The
+        /// LOBBY PILOT's input: `PLAN-AUTOFARM.md` section 5.2's "find the portals, walk to one,
+        /// enter it". Empty is legal -- a realm has no realm entrance and the dungeon exit is the
+        /// nexus, not this list.
+        /// </summary>
+        public readonly System.Collections.Generic.List<PortalTarget> Portals =
+            new System.Collections.Generic.List<PortalTarget>();
+
+        /// <summary>
+        /// THE FARMER'S GOAL AS A POINT, WHICH IS THE WHOLE OF WHAT THE FARMER ADDS TO THE SOLVER.
+        ///
+        /// THE EXISTING GOAL IS A RAY AND A RAY CANNOT EXPRESS ARRIVAL. `GoalSource` is resolved from
+        /// `PlayerView.IntentRadians`/`CourseRadians` -- a heading, with no notion of "and stop when
+        /// you get there" -- so "walk to that enemy" is not a question the ray form can ask.
+        /// `PLAN-AUTOFARM.md` section 4.1 makes this the smallest change that produces the walk.
+        ///
+        /// IT IS SET BY THE FARMER AND READ BY THE SOLVER AND THE PLANNER. The solver turns it into
+        /// `_goalRadians` (so every existing goal term, fan and path target works unchanged), and
+        /// `PathPlanner.BeginFrame` uses the point's own cell as the search target when the point is
+        /// inside the grid window. `GoalHasPoint` is cleared every frame by <see cref="Clear"/>: a
+        /// point left over from the previous frame is a goal built for a world that no longer exists,
+        /// which is the same reasoning the adapter uses when it clears a pending command each frame.
+        /// </summary>
+        public bool GoalHasPoint;
+
+        public float GoalX;
+        public float GoalY;
+
+        /// <summary>
+        /// WHICH MODULE PUBLISHED THE POINT, which the solver needs and cannot infer.
+        ///
+        /// THE TWO PUBLISHERS WANT DIFFERENT ARRIVAL BEHAVIOUR AND EVERYTHING ELSE IS SHARED. A
+        /// farmer walks at a mob and then STOPS, because standing in weapon range and letting the
+        /// client's auto-fire work is the point of the farmer; a route is a WALK, so its follower
+        /// advances to the next waypoint and the character must keep going. Both are "a point goal"
+        /// to the planner and to every score term, and they differ in exactly one place -- the
+        /// arrival policy of `PLAN-AUTOFARM.md` section 4.3 -- so the discriminator is one boolean
+        /// rather than a second snapshot field carrying a second point.
+        ///
+        /// THE FARMER WINS WHEN BOTH COULD PUBLISH, because `RouteRuntime.ApplyGoal` returns without
+        /// touching the snapshot when a point is already there -- see section 5.3's "if target: walk
+        /// at it; else: travel".
+        /// </summary>
+        public bool GoalFromRoute;
+
+        /// <summary>
+        /// True when the point goal is a PORTAL the character must stand ON, not a mob it stops
+        /// beside. `PLAN-AUTOFARM.md` section 5.2's entry rule, measured: entering is standing on the
+        /// portal's own `Position`, and the client's `ActivateDistance` is two units.
+        ///
+        /// IT CHANGES EXACTLY ONE NUMBER. The arrival policy of section 4.3 admits `stand` inside
+        /// `FarmStopRadius` (3 units, so the character does not stand inside a mob's contact reach);
+        /// a portal has to be walked all the way onto, so the same policy reads
+        /// `FarmPortalRadius` instead. The solver is where that decision is made, and it is a flag
+        /// on the goal rather than a second goal so the planner, the score terms and the hysteresis
+        /// are untouched.
+        /// </summary>
+        public bool GoalIsPortal;
+
+        /// <summary>
+        /// True when the point goal is a TRAVEL waypoint -- somewhere to walk when there is nothing
+        /// to fight -- so the arrival policy must not park the character three units short of it.
+        ///
+        /// THE OPERATOR'S SECOND LIVE SESSION IS WHY: *"when there's no enemies on screen (which
+        /// happens often since it kills them), it has no where to pathfind"*, and *"when entering the
+        /// world it's stuck inside a small safe haven, it has to try and breach out of there"*. Both
+        /// are the same state -- `TRAVEL` in `PLAN-AUTOFARM.md` section 5.1 -- and the farmer's answer
+        /// until the recorded routes of section 7 are driven from the bridge is a roam waypoint: a
+        /// point a fixed distance away, rotated until the character is out of the haven and walking.
+        ///
+        /// IT SUPPRESSES `stand` EXACTLY AS A ROUTE DOES (`GoalFromRoute`), and for the same reason:
+        /// a waypoint is a place to ARRIVE at and then replace, not a place to stop near. Keeping it a
+        /// second flag rather than reusing `GoalFromRoute` is what lets the log say which module
+        /// published the point, which is the same argument `GoalFromRoute` itself carries.
+        /// </summary>
+        public bool GoalKeepWalking;
+
         public CollisionWindow Grid;
 
         /// <summary>True when the sensor could not produce a usable picture this frame.</summary>
@@ -445,6 +634,14 @@ namespace Drelay.Bootstrap
         {
             Threats.Clear();
             Bodies.Clear();
+            FarmTargets.Clear();
+            Portals.Clear();
+            GoalHasPoint = false;
+            GoalX = 0.0f;
+            GoalY = 0.0f;
+            GoalFromRoute = false;
+            GoalIsPortal = false;
+            GoalKeepWalking = false;
         }
     }
 
@@ -872,6 +1069,223 @@ namespace Drelay.Bootstrap
         /// </summary>
         public float WeightEnemyDanger;
 
+        // --- The farmer (PLAN-AUTOFARM.md section 4) -------------------------------------
+        //
+        // THE FARMER IS A NEW SOURCE OF THE GOAL AND NOTHING ELSE. It does not admit, refuse, steer,
+        // aim or fire: it publishes a POINT (`DodgeSnapshot.GoalHasPoint`) and the solver's goal,
+        // fan, path target and score terms all work off it unchanged. That placement is the whole
+        // safety argument of the plan -- the farmer cannot walk into a bullet because the candidate
+        // set it steers through is still the admissible set, and it cannot disable the dodge because
+        // it touches no admission rule. `PLAN-AUTOFARM.md` section 2.
+        //
+        // EVERY NUMBER HERE IS A STARTING VALUE FOR THE OFFLINE HARNESS AND NONE MAY BE TUNED LIVE
+        // -- the project's own rule, applied since Phase 3.
+
+        /// <summary>
+        /// Whether the farmer walks the character at an enemy. Off by default, and off restores
+        /// today's decisions byte for byte -- the T9 doctrine, asserted by the harness with farm
+        /// mode off over every scenario.
+        ///
+        /// IT IS ITS OWN SWITCH AND NOT A RIDER ON `EnemyBodies`. The farmer and rule 7 read two
+        /// different lists (see <see cref="FarmTarget"/>), so either can be A/B'd without the other;
+        /// `DRELAY_DODGE_ENEMIES=0` must keep restoring the vacuous rule 7 without turning the farmer
+        /// into a no-op, and `FarmMode=1` must not resurrect rule 7.
+        /// </summary>
+        public bool FarmMode;
+
+        /// <summary>
+        /// How far away an enemy is still worth walking to, world units -- the farmer's ACQUISITION
+        /// radius. `PLAN-AUTOFARM.md` section 4.2: "distance &lt;= FarmEngageRadius (default: the
+        /// weapon range, from the same client call AutoAim uses)".
+        ///
+        /// `8.0` WAS A GUESS THAT MEASURED TOO SMALL, and the shipped value is `20.0`. The operator's
+        /// third session: *"the range it paths to enemies are quite small, can it be increased?"* --
+        /// and the run agrees, because a realm is 2698x2634 units and 8 units is four paces. The
+        /// client's own weapon range is the wrong bound for the ACQUISITION question: the farmer can
+        /// see a pack 20 units away, walk to it, and shoot when it arrives. 20 is still inside the
+        /// planner's 64-unit window, so the path search sees the whole approach. `AutoAim`'s range
+        /// still decides what can be SHOT; this only decides what is worth walking to.
+        ///
+        /// `DRELAY_DODGE_FARM_RANGE` moves it.
+        /// </summary>
+        public float FarmEngageRadius;
+
+        /// <summary>
+        /// HOW CLOSE THE FARMER WANTS TO BE, world units -- the radius inside which standing still
+        /// and letting the client's auto-fire shoot the target is the correct behaviour.
+        ///
+        /// THIS IS A SECOND RADIUS AND `PLAN-AUTOFARM.md` DOES NOT HAVE IT. The plan uses one number
+        /// for both jobs -- "an enemy within `FarmEngageRadius` is a target" and "`stand` is admitted
+        /// only if the character is already within weapon range of its target" -- and those two
+        /// sentences cannot both be about one radius: a target is BY CONSTRUCTION inside the
+        /// acquisition radius, so a single number makes `stand` admissible the moment a target is
+        /// chosen and the farmer never closes the distance at all.
+        ///
+        /// AND THE PLAN'S ARRIVAL CLAIM (section 4.1 item 5, "the character walks up to the mob and
+        /// stops at its edge, because the only admissible candidates are outside the disc") IS
+        /// WRONG, measured rather than argued. Rule 7 REFUSES a candidate that sweeps the body; it
+        /// does not stop the character. At the body's edge every forward candidate is refused and the
+        /// tangential ones are admissible, so the goal term keeps re-aiming at a direction that is
+        /// unavailable and the character ORBITS the mob -- `--scenario farmerorbit` is that
+        /// measurement, and it is why a stop radius exists. The farmer must stop BEFORE rule 7's
+        /// boundary, not on it.
+        ///
+        /// ZERO MEANS "KEEP CLOSING UNTIL SOMETHING REFUSES", and the harness's `farmerorbit`
+        /// fixture is the measurement of what that does -- see below.
+        ///
+        /// IT MUST CLEAR THE ENEMY'S EMITTER DISC. `PLAN-ENEMY-THREATS.md` gives every enemy body a
+        /// padded danger radius, `enemy.Radius + player.Radius + EnemyDangerPadUnits` -- 1.25 at the
+        /// shipped values -- and `WeightEnemyDanger` (0.5) penalises a candidate that ends inside it.
+        /// A stop radius INSIDE that disc makes the farmer fight its own preference: the goal says
+        /// "come closer", the emitter says "get out", and the measured result is a character that
+        /// circles at the disc's edge and never settles. `--scenario farmer` at `farmstop=1` does
+        /// exactly that -- 262 moving frames, 338 with no target, the mob lost -- while the 1.5 it
+        /// shipped with closed in 83 frames and stood for the remaining 517. 1.5 was 1.25 plus a
+        /// quarter of a unit of slack.
+        ///
+        /// THE SHIPPED VALUE IS NOW 3.0, ON THE OPERATOR'S REQUEST AFTER THE FIRST LIVE SESSION:
+        /// *"it needs to not walk too close to enemies, try to keep a 3-tile distance"*. The 1.5
+        /// cleared the emitter disc but stood the character inside a mob's contact reach -- the run
+        /// `20261018-023243-p21896` ended holding a target at **0.85 units**, which is close enough
+        /// that a mob's own collision or contact damage is unavoidable. Three units is still inside
+        /// `FarmEngageRadius` (8) and still clears the disc by more than a unit, so the settle
+        /// behaviour the harness measures is unchanged in kind; the character simply stops earlier.
+        /// It is a setting (`DRELAY_DODGE_FARM_STOP`) because the right distance depends on the mob.
+        ///
+        /// A DEPLOYMENT WITH A LARGER `EnemyDangerPadUnits` HAS TO RAISE THIS WITH IT, and that is a
+        /// real coupling rather than a hidden one: the two numbers are in the same config struct and
+        /// the settings line prints both.
+        /// </summary>
+        public float FarmStopRadius;
+
+        /// <summary>
+        /// Enemies whose `Data.Name` OR `Data.Class` contains one of these (comma-separated,
+        /// case-insensitive) are NOT farm targets, world units free.
+        ///
+        /// IT EXISTS BECAUSE GEOMETRY CANNOT TELL A CRITTER FROM A MOB, and the operator's first live
+        /// session is the measurement: *"it paths to critters, they die by walking over them but
+        /// should be ignored"*. A critter is an ordinary `Enemy` to `World.GetEnemies()`, an ordinary
+        /// body to rule 7, and a valid target to every rule the farmer had -- the one thing that
+        /// distinguishes it is the name the client shows. So the filter is on that name (and on
+        /// `Data.Class`, which is where a category like "critter" would live), read by
+        /// `EnemyReader` and applied by the farmer.
+        ///
+        /// THE DEFAULT IS `critter,crab,duck`, AND A DEFAULT THAT MATCHES NOTHING COSTS NOTHING: if
+        /// the client does not use a word, no enemy is filtered by it. The operator's third session
+        /// named the kinds they had seen -- crabs and ducks, "and there's different kinds" -- so the
+        /// two names join the generic word, and the farm line's `name='...'` is how the next kind
+        /// gets added. The RULE for them is `FarmTarget.Unhittable`, not this list: a critter is by
+        /// definition something the client says cannot be damaged, and that covers kinds nobody has
+        /// named yet. The list is the belt for anything damageable that is still not worth walking
+        /// at. The operator can widen it with `DRELAY_DODGE_FARM_IGNORE=<a,b,c>` or empty it with
+        /// `DRELAY_DODGE_FARM_IGNORE=` (an empty value means "ignore nothing", which is a different
+        /// statement from "unset").
+        /// </summary>
+        public string FarmIgnore;
+
+        /// <summary>
+        /// HOW CLOSE THE LOBBY PILOT HAS TO BE TO A PORTAL BEFORE IT CALLS `Portal.Activate(0)`,
+        /// world units.
+        ///
+        /// THE CLIENT'S OWN `ActivatableObject.ActivateDistance` IS 2 UNITS, measured rather than
+        /// assumed (`PLAN-AUTOFARM.md` section 5.2's third question, and the 2026-10-18 session's
+        /// four walks: the character's last position was 0.16, 0.44, 0.59 and 0.00 units from the
+        /// portal's own `Position`). 1.5 is inside that, so the call runs the client's own gates
+        /// rather than being refused for being too far away.
+        /// </summary>
+        public float FarmPortalRadius;
+
+        /// <summary>
+        /// HOW FAR the roam waypoint is from the character when there is nothing to fight, world
+        /// units. See `DodgeSnapshot.GoalKeepWalking`.
+        ///
+        /// IT IS SHORT ENOUGH FOR THE PLAN'S WINDOW TO SEE AROUND IT. The planner searches a 128x128
+        /// window (`GridRadius` 64), so a waypoint 25 units away leaves the search room to route
+        /// around a haven's wall instead of aiming into it -- which is exactly the "stuck in the small
+        /// safe haven" the operator reported. `60` or more would put the target's cell outside the
+        /// window on the first frame and fall back to "furthest cell along the direction", which is a
+        /// straight line into the wall.
+        ///
+        /// THE DIRECTION ROTATES WHEN THE WAYPOINT IS NOT REACHED: south first (the operator's own
+        /// "bottom part of the map is the best place to start farming"), then the cardinals and the
+        /// diagonals. A haven with one gap is a haven one of eight directions faces.
+        /// </summary>
+        public float FarmTravelRadius;
+
+        /// <summary>
+        /// How much closer a different enemy must be before the farmer abandons the one it is
+        /// walking at, world units. `PLAN-AUTOFARM.md` section 4.2.
+        ///
+        /// THE STICKINESS RULE IS NOT A NICETY AND THIS IS THE NUMBER THAT MAKES IT ONE. Tab-target
+        /// thrash between two equidistant mobs is the classic farmer defect: the character oscillates
+        /// between two goals and reaches neither. The rule is the same shape as the solver's own
+        /// heading hysteresis -- a hold with a margin, plus a FORCED release when the held target
+        /// dies or leaves the acquisition radius. It is a hold on the GOAL and not on the heading,
+        /// which is what keeps T10 ("hysteresis cannot hold an unsafe heading") untouched.
+        /// </summary>
+        public float FarmSwitchMargin;
+
+        // --- The routes (PLAN-AUTOFARM.md section 7) --------------------------------------
+        //
+        // A ROUTE IS A THIRD SOURCE OF THE GOAL, and it is the same kind of thing the farmer is: a
+        // POINT that the solver's existing goal machinery consumes. It is used when the farmer has
+        // NO target, which is section 5.3's `TRAVEL` state -- "no target in radius; follow the route
+        // or the goal". Everything downstream is row 2's code, unchanged.
+        //
+        // EVERY NUMBER HERE IS A STARTING VALUE FOR THE OFFLINE HARNESS. `PLAN-AUTOFARM.md` section
+        // 11 says so for all of them and repeats the project's rule: none may be tuned in a live run.
+
+        /// <summary>Whether a recorded route may publish the frame's goal.</summary>
+        public bool RouteMode;
+
+        /// <summary>
+        /// The route's name -- the file stem, `<run>/routes/<name>.json`.
+        ///
+        /// IT IS THE `DRELAY_DODGE_ROUTE` VALUE AND NOT A SECOND SETTING, so one variable names the
+        /// route and turns the mode on; an empty name is the off position, which is the same shape
+        /// `DRELAY_TRACE` uses.
+        /// </summary>
+        public string RouteName;
+
+        /// <summary>
+        /// The deviation's maximum magnitude, world units -- `PLAN-AUTOFARM.md` section 7.3's
+        /// "bounded". At most a third of `RouteSpacingUnits`, so the deviation can never move the
+        /// goal past the next waypoint and make the follower skip one.
+        /// </summary>
+        public float RouteDeviationUnits;
+
+        /// <summary>
+        /// The minimum spacing the recorder resamples to, world units. Section 7.2: "so the follower
+        /// has a fixed step to count on". The follower's whole loop is "am I at waypoint i; if so
+        /// advance", and a route whose points alternate between a hundredth of a unit apart and four
+        /// units apart is a route whose reached-radius means different things in different places.
+        /// </summary>
+        public float RouteSpacingUnits;
+
+        /// <summary>
+        /// Douglas-Peucker's tolerance at record time, world units. Section 7.2 item 1: "the general
+        /// shape, not the exact path". A hand-drawn curve through an open room becomes three points.
+        /// </summary>
+        public float RouteToleranceUnits;
+
+        /// <summary>
+        /// How close counts as "at the waypoint", world units. Section 7.3's `RadiusReached = 1.0`.
+        /// An exact reach is a waypoint nobody ever arrives at, because the character moves in steps.
+        /// </summary>
+        public float RouteReachUnits;
+
+        /// <summary>
+        /// Whether EITHER point-goal module is on -- the farmer or the routes.
+        ///
+        /// IT IS ONE PROPERTY RATHER THAN TWO CHECKS IN TWO FILES. The solver and the planner both ask
+        /// "may the snapshot's point be the goal", and the answer is the same question: a point goal
+        /// is a point goal whoever published it. Two separate `FarmMode || RouteMode` expressions
+        /// would be two places to forget the second module, and the failure would be a route that
+        /// loads, validates, publishes a goal -- and is then ignored by the planner, with every
+        /// counter agreeing that the route was followed.
+        /// </summary>
+        public bool PointGoal => FarmMode || RouteMode;
+
         /// <summary>
         /// How much of the move carries the character toward the imaginary point in front of them.
         ///
@@ -1081,6 +1495,37 @@ namespace Drelay.Bootstrap
             // harness cannot settle it further yet -- no live recording carries bodies, so there is
             // no real mob geometry to sweep against. `DRELAY_DODGE_W_ENEMY` moves it in one run.
             c.WeightEnemyDanger = 0.50f;
+            // THE FARMER, OFF, WITH ITS STARTING VALUES. `FarmMode` ships false because the farmer is
+            // a new behaviour and every existing number in this project was measured without it.
+            // `--scenario farmer*` in the SolverHarness is where these are exercised.
+            c.FarmMode = false;
+            c.FarmEngageRadius = 20.0f;
+            // 3.0 AND NOT 1.5: see `FarmStopRadius`. It must clear the enemy's emitter disc (1.25 at
+            // these pad values) or the farmer fights `WeightEnemyDanger` and never settles, and the
+            // operator's first live session showed 1.5 stands the character close enough to be inside
+            // a mob's contact reach (it settled at 0.85 units). Three units is still well inside the
+            // acquisition radius, so this is a distance the character chooses to stop at, not a
+            // change to what it will walk to.
+            c.FarmStopRadius = 3.0f;
+            c.FarmSwitchMargin = 1.0f;
+            // WHAT TO IGNORE BY NAME, AND `critter` IS A SAFE DEFAULT BECAUSE A MISS MATCHES NOTHING.
+            // See `FarmIgnore`: the live session's ambient creatures are the things this exists for,
+            // and the client's own name for them is the only signal that separates them from a mob.
+            c.FarmIgnore = "critter,crab,duck";
+            // The client's own activation distance is 2 units; 1.5 is inside it. See `FarmPortalRadius`.
+            c.FarmPortalRadius = 1.5f;
+            // HOW FAR THE ROAM WAYPOINT IS when there is nothing to fight. See `FarmTravelRadius`.
+            c.FarmTravelRadius = 25.0f;
+            // THE ROUTES, OFF, WITH SECTION 7'S OWN STARTING VALUES. `RouteMode` ships false and
+            // `RouteName` ships empty, which is the same switch: one variable names the route and
+            // turns the mode on. The deviation is a THIRD of the spacing (1.0 against 3.0), which is
+            // section 7.3's own limit and the reason the follower cannot skip a waypoint.
+            c.RouteMode = false;
+            c.RouteName = "";
+            c.RouteDeviationUnits = 1.0f;
+            c.RouteSpacingUnits = 3.0f;
+            c.RouteToleranceUnits = 1.5f;
+            c.RouteReachUnits = 1.0f;
             // THE GOAL TERM KEEPS ITS OWN VALUE, AND THAT IS A MEASUREMENT RATHER THAN AN OVERSIGHT.
             // The first version of this cut `WeightGoal` from 0.90 to 0.30 whenever the path was on,
             // on the reasoning that the path's waypoint IS the goal whenever the goal is walkable and
@@ -1272,6 +1717,32 @@ namespace Drelay.Bootstrap
             c.EnemyDangerPadUnits = Float("DRELAY_DODGE_ENEMY_PAD", c.EnemyDangerPadUnits);
             c.EnemyCullRadius = Float("DRELAY_DODGE_ENEMY_CULL", c.EnemyCullRadius);
             c.WeightEnemyDanger = FloatAllowZero("DRELAY_DODGE_W_ENEMY", c.WeightEnemyDanger);
+            // THE FARMER'S KNOBS. `DRELAY_DODGE_FARM=1` is the switch and it is OFF by default, for
+            // the reason the default above records. `DRELAY_DODGE_FARM_STOP=0` is legal and is the
+            // plan's literal arrival rule -- see `FarmStopRadius` for what it measures.
+            c.FarmMode = Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM") == "1";
+            c.FarmEngageRadius = Float("DRELAY_DODGE_FARM_RANGE", c.FarmEngageRadius);
+            c.FarmStopRadius = FloatAllowZero("DRELAY_DODGE_FARM_STOP", c.FarmStopRadius);
+            c.FarmSwitchMargin = FloatAllowZero("DRELAY_DODGE_FARM_MARGIN", c.FarmSwitchMargin);
+            // THE IGNORE LIST: A NAME SUBSTRING LIST, AND `null`/unset KEEPS THE DEFAULT.
+            //
+            // The distinction between unset and empty matters and is the same one every other knob
+            // here makes: `DRELAY_DODGE_FARM_IGNORE=` (typed, empty) means "ignore nothing, I want
+            // every enemy", while a variable that is not there at all means "the shipped default".
+            // Without it an operator could not turn the critter filter off without editing a build.
+            string ignore = Environment.GetEnvironmentVariable("DRELAY_DODGE_FARM_IGNORE");
+            if (ignore != null) { c.FarmIgnore = ignore; }
+            c.FarmPortalRadius = FloatAllowZero("DRELAY_DODGE_FARM_PORTAL", c.FarmPortalRadius);
+            c.FarmTravelRadius = Float("DRELAY_DODGE_FARM_TRAVEL", c.FarmTravelRadius);
+            // THE ROUTE'S KNOBS. `DRELAY_DODGE_ROUTE=<name>` is both the switch and the name, for the
+            // reason the field records; the four numbers move one at a time from the command line.
+            string routeName = Environment.GetEnvironmentVariable("DRELAY_DODGE_ROUTE");
+            c.RouteName = routeName ?? "";
+            c.RouteMode = !string.IsNullOrEmpty(routeName);
+            c.RouteDeviationUnits = FloatAllowZero("DRELAY_DODGE_ROUTE_DEV", c.RouteDeviationUnits);
+            c.RouteSpacingUnits = Float("DRELAY_DODGE_ROUTE_SPACING", c.RouteSpacingUnits);
+            c.RouteToleranceUnits = FloatAllowZero("DRELAY_DODGE_ROUTE_TOL", c.RouteToleranceUnits);
+            c.RouteReachUnits = Float("DRELAY_DODGE_ROUTE_REACH", c.RouteReachUnits);
             c.PlanLookaheadSeconds = Float("DRELAY_DODGE_PLAN_LOOKAHEAD_S", c.PlanLookaheadSeconds);
             c.GoalLookaheadSeconds = Float("DRELAY_DODGE_GOAL_LOOKAHEAD_S", c.GoalLookaheadSeconds);
             c.GoalFanSteps = Int("DRELAY_DODGE_GOAL_FAN", c.GoalFanSteps);
@@ -1360,7 +1831,9 @@ namespace Drelay.Bootstrap
             string weights = DescribeWeights().Replace("\n", " ").Replace("\r", " ").Trim();
             string path = DescribePath().Replace("\n", " ").Replace("\r", " ").Trim();
             string enemies = DescribeEnemies().Replace("\n", " ").Replace("\r", " ").Trim();
-            return plan + " " + weights + " " + path + " " + enemies;
+            string farm = DescribeFarm().Replace("\n", " ").Replace("\r", " ").Trim();
+            string route = DescribeRoute().Replace("\n", " ").Replace("\r", " ").Trim();
+            return plan + " " + weights + " " + path + " " + enemies + " " + farm + " " + route;
         }
 
         /// <summary>A one-line description for the log, so a run's own settings are readable from it.</summary>
@@ -1380,7 +1853,9 @@ namespace Drelay.Bootstrap
             string weights = DescribeWeights().TrimEnd('\r', '\n');
             string path = DescribePath().TrimEnd('\r', '\n');
             string enemies = DescribeEnemies().TrimEnd('\r', '\n');
-            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n";
+            string farm = DescribeFarm().TrimEnd('\r', '\n');
+            string route = DescribeRoute().TrimEnd('\r', '\n');
+            return plan + "\n" + weights + "\n" + path + "\n" + enemies + "\n" + farm + "\n" + route + "\n";
         }
 
         /// <summary>
@@ -1455,6 +1930,40 @@ namespace Drelay.Bootstrap
             return string.Format(CultureInfo.InvariantCulture,
                 "enemies bodies={0} emitter={1} pad={2} cull={3} wEnemy={4}",
                 EnemyBodies, EnemyEmitter, EnemyDangerPadUnits, EnemyCullRadius, WeightEnemyDanger);
+        }
+
+        /// <summary>
+        /// The farmer's own numbers, on their own line, for the same 256-byte reason as the other
+        /// four (`DrelayLog.cpp` truncates with no mark saying so, and a truncated settings line is
+        /// a run whose settings cannot be read back).
+        ///
+        /// IT MATTERS FOR THE SAME REASON `DescribeEnemies` DOES: `FarmMode` off and `FarmMode` on
+        /// with no target in range produce the SAME decision on a quiet frame, and only the settings
+        /// line tells a run where the farmer was never enabled from one where it had nothing to do.
+        /// </summary>
+        public string DescribeFarm()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "farm on={0} engage={1} stop={2} margin={3} ignore='{4}' portal={5} travel={6}",
+                FarmMode, FarmEngageRadius, FarmStopRadius, FarmSwitchMargin,
+                FarmIgnore ?? "", FarmPortalRadius, FarmTravelRadius);
+        }
+
+        /// <summary>
+        /// The route's own numbers, on their own line, for the same 256-byte reason as the other
+        /// five (`DrelayLog.cpp` truncates with no mark saying so).
+        ///
+        /// THE LINE MATTERS FOR THE REASON THE FARMER'S DOES: a run with `RouteMode` off and a run
+        /// with it on and the player already at the route's first waypoint produce the same decision
+        /// on a quiet frame, and only the settings line tells a run where no route was loaded from
+        /// one where the route had nothing to say.
+        /// </summary>
+        public string DescribeRoute()
+        {
+            return string.Format(CultureInfo.InvariantCulture,
+                "route on={0} name='{1}' dev={2} spacing={3} tol={4} reach={5}",
+                RouteMode, RouteName, RouteDeviationUnits, RouteSpacingUnits, RouteToleranceUnits,
+                RouteReachUnits);
         }
     }
 

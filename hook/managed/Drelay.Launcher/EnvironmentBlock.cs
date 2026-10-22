@@ -62,6 +62,29 @@ namespace Drelay.Launcher
                     removed.Add(key);
                     continue;
                 }
+                // THE WORLD LOG'S TWO NAMES ARE THE SAME CASE. `--world-log` writes them itself, and
+                // a stale `DRELAY_WORLDLOG=1` (or a cadence from a previous experiment) left in the
+                // operator's shell would either duplicate the name or silently change the cadence of
+                // a run that did not ask for one. They are dropped only when the launcher is about
+                // to write them, which is the rule everywhere else in this loop.
+                if (options.WorldLog &&
+                    (key.Equals("DRELAY_WORLDLOG", StringComparison.OrdinalIgnoreCase) ||
+                     key.Equals("DRELAY_WORLDLOG_EVERY", StringComparison.OrdinalIgnoreCase)))
+                {
+                    removed.Add(key);
+                    continue;
+                }
+                // AND THE AUTO-FARMER'S OWN SWITCH IS THE SAME CASE, for the same reason: a
+                // `DRELAY_DODGE_FARM=1` left in the operator's shell from an earlier experiment would
+                // otherwise decide that a run which did not ask for the farmer walks at things. It is
+                // dropped only when the launcher is about to write it, so a hand-set variable still
+                // works on a run without the flag.
+                if (options.AutoFarm &&
+                    key.Equals("DRELAY_DODGE_FARM", StringComparison.OrdinalIgnoreCase))
+                {
+                    removed.Add(key);
+                    continue;
+                }
                 variables.Add(new KeyValuePair<string, string>(key, entry.Value));
             }
 
@@ -205,6 +228,28 @@ namespace Drelay.Launcher
                 variables.Add(new KeyValuePair<string, string>("DRELAY_FRAME_SENSOR", "1"));
                 variables.Add(new KeyValuePair<string, string>("DRELAY_TRACE", "1"));
             }
+            if (options.WorldLog)
+            {
+                // PLAN-AUTOFARM.md SECTION 6, AND THE SAME THREE-NAMES ARGUMENT AS THE TRACE ABOVE.
+                //
+                // `WorldLog.OnFrame` is called from the managed frame replacement's sensor path
+                // (`StartupHook.cs`), so the sensor and the log switch are dependencies rather than
+                // conveniences: with either name missing the writer still resolves, writes its
+                // header, and records no frame -- a file that reads as "nothing happened in the
+                // game" rather than "the instrument was half-switched-on". The frame replacement
+                // itself is already written above, because `Options.ApplyImplications` sets it for
+                // this flag and that is the one place both sources would go through.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_FRAME_SENSOR", "1"));
+                variables.Add(new KeyValuePair<string, string>("DRELAY_WORLDLOG", "1"));
+                if (options.WorldLogEvery > 0)
+                {
+                    // ONLY WHEN ASKED FOR, so the hook's own 30-frame default stays authoritative
+                    // (section 13 C2, and the same reason `--dodge-disc` has a sentinel).
+                    variables.Add(new KeyValuePair<string, string>(
+                        "DRELAY_WORLDLOG_EVERY",
+                        options.WorldLogEvery.ToString(CultureInfo.InvariantCulture)));
+                }
+            }
             if (!string.IsNullOrEmpty(options.MoveSteer))
             {
                 // BOTH NAMES, AND THE SECOND ONE IS THE OPERATOR'S OWN.
@@ -280,8 +325,22 @@ namespace Drelay.Launcher
                 variables.Add(new KeyValuePair<string, string>("DRELAY_HOOK_MOVE_REPLACEMENT", "1"));
                 variables.Add(new KeyValuePair<string, string>("DRELAY_MOVE_STEER", "dodge"));
             }
-            if (options.EscapeTestSeconds >= 0.0)
+            if (options.AutoFarm)
             {
+                // THE FARMER'S OWN SWITCH (`DodgeConfig.FarmMode`), AND ONLY THIS FLAG WRITES IT.
+                //
+                // The dodge, its live actuator and the aim mode are already in the block above,
+                // because `Options.ApplyImplications` turns them on for this flag -- writing them a
+                // second time here would be the duplicate-name defect the dedupe at the bottom of
+                // this method exists to prevent, and it would also make the two places able to
+                // disagree. This is the one name nothing else in the launcher writes.
+                //
+                // A PUBLIC BUILD ACCEPTS IT AND CANNOT FARM (`PLAN-AUTOFARM.md` section 13): the
+                // variable reaches `DodgeConfig.FromEnvironment` either way, and the module that
+                // would use it is private. The adapter warns at arm time, so the run says so.
+                variables.Add(new KeyValuePair<string, string>("DRELAY_DODGE_FARM", "1"));
+            }
+            if (options.EscapeTestSeconds >= 0.0)            {
                 // Same two-name split as `--move-steer`, and for the same reason: the
                 // *flag* that decides whether managed code is entered lives in the
                 // namespace the launcher owns and deletes inherited values from
@@ -307,6 +366,29 @@ namespace Drelay.Launcher
                 foreach (string key in removed)
                 {
                     report("                  " + key);
+                }
+            }
+
+            // ONE ENTRY PER NAME, AND THE LATER WRITE WINS.
+            //
+            // Two code paths above can ask for the same name -- `--autoaim` writes
+            // `DRELAY_HOOK_FRAME_REPLACEMENT` beside the block that writes it for
+            // `FrameReplacement`, and the world log's block relies on that same dedupe to keep its
+            // own names single. Two entries for one name is a block whose meaning depends on how
+            // the child's runtime resolves duplicates, which is not a contract to rely on (see the
+            // `DRELAY_KEEP_READING` note above). This removes the earlier entry rather than the
+            // later one, so the launcher's own value is the one that survives, and it runs BEFORE
+            // the sort because `List.Sort` is not stable and a stable-order choice is the point.
+            for (int i = 0; i < variables.Count; i++)
+            {
+                for (int j = variables.Count - 1; j > i; j--)
+                {
+                    if (string.Equals(variables[i].Key, variables[j].Key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        variables.RemoveAt(i);
+                        i--;
+                        break;
+                    }
                 }
             }
 

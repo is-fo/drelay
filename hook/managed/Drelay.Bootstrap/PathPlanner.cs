@@ -220,6 +220,48 @@ namespace Drelay.Bootstrap
         private bool _targetSet;
         private int _targetIndex;
 
+        /// <summary>
+        /// True when THIS frame's search target was the farmer's POINT rather than a cell on the goal
+        /// ray. It changes one thing -- how far along the path the waypoint is taken -- and the reason
+        /// is a measured defect rather than a preference.
+        ///
+        /// `PLAN-AUTOFARM.md` SECTION 4.4's W2 FIXTURE IS WHAT FOUND IT. That fixture puts a wall
+        /// across the straight line from the player to the target, and the character does not go
+        /// round it: it walks up to the wall and slides along it. The cause is the waypoint's
+        /// DISTANCE, which is `PathWaypointFraction` (0.75) of the path's length. That fraction is
+        /// right for a RAY goal and the handoff says why ("a path that detours only at its far end
+        /// still points at the goal for its whole first half", `HANDOFF-DIRECTED-DODGE.md` section
+        /// 4.3) -- with a ray goal the detour is always near the END of the path, so a waypoint 75 %
+        /// along is in the region where the route has committed to it. **It is wrong for a POINT
+        /// goal, where the obstruction is wherever it happens to be** -- and a wall immediately in
+        /// front of the character puts the detour at the START, where the 75 % waypoint cannot see it
+        /// because it is on the far side of the wall.
+        ///
+        /// So a point goal takes its waypoint at `PathWaypointUnits` instead: the first two and a
+        /// half world units of the route, which is inside the initial detour and still beyond the
+        /// one-cell quantisation the same field exists to avoid. `WeightPath` then bends the walk
+        /// east along the wall, the gap is reached, and the route completes.
+        ///
+        /// IT CANNOT AFFECT A NON-FARM FRAME. The flag is only ever set when `FarmMode` is on and the
+        /// snapshot carries a point, so `farm=0` is byte-identical -- which the harness's T9
+        /// comparison against the pre-farmer build asserts over every scenario.
+        /// </summary>
+        private bool _pointTarget;
+
+        /// <summary>
+        /// The emitter disc of the body that IS the farmer's point goal, resolved once in
+        /// `BeginFrame` so the body-zone counter can exempt it. See the exemption's own comment.
+        ///
+        /// `_goalBodyFound` IS FALSE WHEN THE POINT IS NOT ON A BODY, and then nothing is exempt: a
+        /// route to a bare coordinate must still go round every mob, and a target that is a
+        /// coordinate rather than a mob (a route waypoint, `PLAN-AUTOFARM.md` section 7) is exactly
+        /// the case where the old strictness is right.
+        /// </summary>
+        private bool _goalBodyFound;
+        private float _goalBodyX;
+        private float _goalBodyY;
+        private float _goalBodyRadius;
+
         // --- The per-threat danger envelope, resolved once per frame ---------------------------
         //
         // ONE TIGHT RADIUS PER THREAT, WHICH IS THE WHOLE COST OPTIMISATION HERE. The honest question
@@ -406,6 +448,13 @@ namespace Drelay.Bootstrap
 
         /// <summary>True when the last <see cref="Plan"/> produced a usable waypoint.</summary>
         public bool WaypointValid => _waypointValid;
+
+        /// <summary>
+        /// True when this frame's search aimed at the farmer's POINT rather than a cell on the goal
+        /// ray. See <see cref="_pointTarget"/> -- the harness reads it to tell a farm route from a
+        /// dodge route in the same column.
+        /// </summary>
+        public bool PointTarget => _pointTarget;
 
         /// <summary>The waypoint's world position, valid when <see cref="WaypointValid"/>.</summary>
         public float WaypointX => _waypointX;
@@ -631,6 +680,10 @@ namespace Drelay.Bootstrap
             _cost = 0.0f;
             _fresh = false;
             _waypointValid = false;
+            // The point-goal flag belongs to the frame that resolved it: a reader that asks after an
+            // early return must not be handed the previous frame's answer. See `_pointTarget`.
+            _pointTarget = false;
+            _goalBodyFound = false;
 
             if (!_config.PathEnable)
             {
@@ -718,7 +771,11 @@ namespace Drelay.Bootstrap
             // never less than `PathWaypointUnits`. The first node beyond that distance is the
             // waypoint, and a path shorter than that is its own far end.
             int waypointNode = -1;
-            float waypointReach = _length * _config.PathWaypointFraction;
+            // THE WAYPOINT'S DISTANCE IS A FACT ABOUT WHICH KIND OF GOAL THIS IS, and the farmer's
+            // point goal is a different kind. See `_pointTarget` for the measurement that forced it.
+            float waypointReach = _pointTarget
+                ? _config.PathWaypointUnits
+                : _length * _config.PathWaypointFraction;
             if (waypointReach < _config.PathWaypointUnits)
             {
                 waypointReach = _config.PathWaypointUnits;
@@ -879,15 +936,70 @@ namespace Drelay.Bootstrap
             }
 
             // --- The target: one cell on the goal ray, at a fixed travel time. ----------------
+            //
+            // `PLAN-AUTOFARM.md` SECTION 4.1 ITEM 4 PUTS ONE CASE IN FRONT OF THAT RAY: when the
+            // farmer has published a POINT and the point is inside the grid window, the target is the
+            // point's own cell. That is the whole of 2a's pathfinding work -- the search, the danger
+            // envelope, the diagonal rule, the waypoint hysteresis and the `WallCrossings` self-check
+            // are all unchanged, so "walk to that enemy" costs one target and nothing else.
+            //
+            // THE OUT-OF-WINDOW CASE KEEPS TODAY'S BEHAVIOUR ON PURPOSE, and it is not a fallback
+            // that got left in. The window is 128 cells across and the planner reaches
+            // `PathTargetSeconds` of travel -- about 12 units -- so a target inside the window is
+            // within reach of the search and a target outside it is not something this search can
+            // route to. Clamping the ray to the window edge is "the furthest cell along the direction
+            // to it", which is exactly what the plan asks for here: the character walks the right way
+            // and re-plans next frame, by which time the target is nearer.
+            //
+            // A WALL CELL IS REFUSED, NOT ROUNDED. `PathReason.NoTarget` is this planner's existing
+            // honest degradation (`BeginFrame` already returns it when the ray's clamped cell is
+            // solid), and the consequence is the documented one: no path, so `WeightPath` contributes
+            // nothing and the goal term decides as before. The character still walks at the enemy --
+            // it just does not get a route it cannot have.
             float reach = _speedPerSecond * _config.PathTargetSeconds;
-            float tx = _playerX + (reach * (float)Math.Cos(goalRadians));
-            float ty = _playerY + (reach * (float)Math.Sin(goalRadians));
+            float tx;
+            float ty;
+            bool pointTarget = _config.PointGoal && snapshot.GoalHasPoint
+                               && _grid.InWindow(snapshot.GoalX, snapshot.GoalY);
+            _pointTarget = pointTarget;
+            if (pointTarget)
+            {
+                tx = snapshot.GoalX;
+                ty = snapshot.GoalY;
+                // WHICH BODY, IF ANY, THE POINT IS ON. See `_goalBodyFound`: only a point that lands
+                // on an enemy gets the counter exemption, because only a route to an enemy has to end
+                // inside an emitter disc.
+                float bestD2 = 0.75f * 0.75f;
+                for (int b = 0; b < snapshot.Bodies.Count; b++)
+                {
+                    EntityBody body = snapshot.Bodies[b];
+                    float bx = body.X - tx;
+                    float by = body.Y - ty;
+                    float d2 = (bx * bx) + (by * by);
+                    if (d2 <= bestD2)
+                    {
+                        bestD2 = d2;
+                        _goalBodyFound = true;
+                        _goalBodyX = body.X;
+                        _goalBodyY = body.Y;
+                        _goalBodyRadius = body.DangerRadius;
+                    }
+                }
+            }
+            else
+            {
+                tx = _playerX + (reach * (float)Math.Cos(goalRadians));
+                ty = _playerY + (reach * (float)Math.Sin(goalRadians));
+            }
 
             // AND IT IS PULLED INSIDE THE WINDOW BEFORE IT IS INDEXED. A goal ray that leaves the
             // recorded window is the normal case, not an error: the window is ~128 units across and a
             // 1.5 s lookahead at 8.2 units/s is 12.3 units, but the player is not always at the
             // centre of play. Clamping keeps the search inside the region the client's grid actually
             // covers, which is the only region this planner is entitled to have an opinion about.
+            //
+            // IT IS A NO-OP FOR THE POINT CASE, AND THAT IS BY CONSTRUCTION RATHER THAN BY LUCK: the
+            // branch above only took a point it had already proved `InWindow`.
             if (!_grid.InWindow(tx, ty))
             {
                 tx = Clamp(tx, _grid.OriginX + 1.0f, _grid.OriginX + _gridW - 2.0f);
@@ -896,6 +1008,29 @@ namespace Drelay.Bootstrap
 
             _targetIndex = IndexOf(tx, ty);
             _targetSet = _targetIndex >= 0 && WalkableIndex(_targetIndex);
+            if (!_targetSet && pointTarget)
+            {
+                // A POINT GOAL ON A SOLID CELL IS NOT "NO TARGET", IT IS "END BESIDE IT".
+                //
+                // The ray case's answer (refuse, and let the goal term decide) is right for a ray:
+                // the heading is the information and there is nowhere to route. A POINT is
+                // different -- it names a place, and the place is usually an OBJECT: a portal stands
+                // on a tile, a mob's centre can be over a wall corner, a route waypoint can land on
+                // a rock. Refusing the search there produced the operator's bug report ("it never
+                // walks to a portal"), because the character then has no route and, with a portal
+                // goal, stands at the arrival radius doing nothing.
+                //
+                // SO THE TARGET SNAPS TO THE NEAREST WALKABLE CELL, within `PathPointSnapCells`
+                // cells, in rings so the first hit is the nearest. The goal POINT is untouched --
+                // the score terms, the goal distance and the arrival policy still see the real
+                // place -- and only the search's end cell moves. If no walkable cell is within the
+                // radius the search still refuses, honestly, as before.
+                if (TrySnapToWalkable(_targetIndex, out int snapped))
+                {
+                    _targetIndex = snapped;
+                    _targetSet = true;
+                }
+            }
             if (!_targetSet)
             {
                 _reason = PathReason.NoTarget;
@@ -908,6 +1043,25 @@ namespace Drelay.Bootstrap
             // projected-danger term is a question about the field.
             _fieldReady = _threatCount > 0;
             return true;
+        }
+
+        /// <summary>
+        /// True when a world position lies inside the emitter disc of the body the farmer is walking
+        /// at. See `_goalBodyFound` and the exemption in `Search`'s body-zone counter.
+        ///
+        /// IT USES THE SAME DISC THE SEARCH ITSELF COSTED -- centre and `DangerRadius` -- rather than
+        /// a second distance test, for the reason the counter's own comment gives: a counter that
+        /// re-derived "inside a disc" would agree with the search until it did not.
+        /// </summary>
+        private bool BodyIsTheTarget(float x, float y)
+        {
+            if (!_goalBodyFound || _goalBodyRadius <= 0.0f)
+            {
+                return false;
+            }
+            float dx = x - _goalBodyX;
+            float dy = y - _goalBodyY;
+            return (dx * dx) + (dy * dy) < (_goalBodyRadius * _goalBodyRadius);
         }
 
         private static float Clamp(float v, float lo, float hi)
@@ -1234,13 +1388,31 @@ namespace Drelay.Bootstrap
             // IT READS THE SAME CELL FIELD THE EDGE COST READ, so the counter and the search cannot
             // disagree about what "inside a disc" means -- which is the failure a re-derived distance
             // test would have introduced the moment one of the two changed.
+            // AND THE FARMER'S OWN TARGET IS EXEMPT, BECAUSE A ROUTE THAT ENDS THERE MUST END INSIDE
+            // ITS EMITTER DISC. This is not a weakening of E3; it is E3 being asked the right
+            // question on a fixture it was not written for. The claim is "the route goes AROUND a
+            // body rather than THROUGH it", and a body the route is trying to reach is not something
+            // it can go around. With the farmer's point goal the target's own disc covers the last
+            // node of every successful search -- `farm` measured a non-zero count on all 162 frames
+            // it had a route -- and without this exemption the check would be permanently red on
+            // exactly the fixtures that exercise the farmer, which is how an invariant gets ignored.
+            //
+            // EVERY OTHER BODY IS STILL COUNTED, INCLUDING ONE STANDING NEXT TO THE TARGET, so the
+            // property the counter exists for is intact: put a mob between the player and the target
+            // and the route still may not pass through it.
+            bool exemptTarget = _pointTarget;
             for (int i = 0; i < _pathCount; i++)
             {
-                if (BodyCostAt(WorldX(_pathIndex[i]), WorldY(_pathIndex[i])) > 0.0f)
+                if (BodyCostAt(WorldX(_pathIndex[i]), WorldY(_pathIndex[i])) <= 0.0f)
                 {
-                    _bodyZoneNodes++;
-                    _stats.BodyZoneNodes++;
+                    continue;
                 }
+                if (exemptTarget && BodyIsTheTarget(WorldX(_pathIndex[i]), WorldY(_pathIndex[i])))
+                {
+                    continue;
+                }
+                _bodyZoneNodes++;
+                _stats.BodyZoneNodes++;
             }
 
             _length = length;
@@ -1367,6 +1539,79 @@ namespace Drelay.Bootstrap
                 return -1;
             }
             return (cy * _gridW) + cx;
+        }
+
+        /// <summary>
+        /// How many cells a POINT goal may be pulled aside to find walkable ground. Three is a tile
+        /// and a bit: enough for an object's footprint (a portal, a mob over a corner) and small
+        /// enough that "beside the goal" cannot become "on the other side of the wall it was
+        /// adjacent to".
+        /// </summary>
+        private const int PathPointSnapCells = 3;
+
+        /// <summary>
+        /// The nearest walkable cell to <paramref name="index"/>, searched in rings so the first
+        /// ring with a hit is the nearest. See the call site: a point goal on a solid cell is
+        /// "end beside it", not `NoTarget`.
+        /// </summary>
+        private bool TrySnapToWalkable(int index, out int snapped)
+        {
+            snapped = -1;
+            if (index < 0 || _grid.Cells == null)
+            {
+                return false;
+            }
+            int cx = index % _gridW;
+            int cy = index / _gridW;
+            for (int ring = 1; ring <= PathPointSnapCells; ring++)
+            {
+                int best = -1;
+                int bestD2 = int.MaxValue;
+                int x0 = cx - ring;
+                int x1 = cx + ring;
+                int y0 = cy - ring;
+                int y1 = cy + ring;
+                for (int y = y0; y <= y1; y++)
+                {
+                    if (y < 0 || y >= _gridH)
+                    {
+                        continue;
+                    }
+                    int row = y * _gridW;
+                    for (int x = x0; x <= x1; x++)
+                    {
+                        if (x < 0 || x >= _gridW)
+                        {
+                            continue;
+                        }
+                        // The ring only: the interior was searched by an earlier pass or does not
+                        // exist at ring 1.
+                        if (x != x0 && x != x1 && y != y0 && y != y1)
+                        {
+                            continue;
+                        }
+                        int cell = row + x;
+                        if (_grid.Cells[cell] != 0)
+                        {
+                            continue;
+                        }
+                        int dx = x - cx;
+                        int dy = y - cy;
+                        int d2 = (dx * dx) + (dy * dy);
+                        if (d2 < bestD2)
+                        {
+                            bestD2 = d2;
+                            best = cell;
+                        }
+                    }
+                }
+                if (best >= 0)
+                {
+                    snapped = best;
+                    return true;
+                }
+            }
+            return false;
         }
 
         private bool WalkableIndex(int index)
